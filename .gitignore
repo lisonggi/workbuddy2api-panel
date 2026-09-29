@@ -20,6 +20,11 @@ config.json
 *.tmp
 __pycache__/
 
+# 面板前端（web/）的依赖与构建产物。dist 只保留 .gitkeep（没构建前端时 go:embed 也能通过编译）
+web/node_modules/
+internal/panel/dist/*
+!internal/panel/dist/.gitkeep
+
 # Backups (contains auth tokens)
 backups/
 
