@@ -101,10 +101,17 @@ tar xzf wb2api-panel-linux-amd64.tar.gz
 # 1. 构建面板前端（Node.js 22+）：类型检查 + ESLint + 单元测试 + 打包到 internal/panel/dist
 (cd web && npm ci && npm run build)
 
-# 2. 构建并运行网关（Go 1.22+）
+# 2. 检查并运行网关（Go 1.22+）：格式、静态检查、测试，CI 跑的也是这几条
+git ls-files -z '*.go' | xargs -0 gofmt -l   # 没有输出才算通过，有输出就 gofmt -w 这些文件
+go vet ./...
+golangci-lint run   # v2.14.0，只开 vet、staticcheck、unused、ineffassign，配置见 .golangci.yml
 go test ./...
 go run ./cmd/server -config config.json
 ```
+
+Go 测试不连外网、不碰真实账号：上游、Redis（用 miniredis）、自更新下载都是测试里起的本机假服务。
+
+CI 用的是 `go.mod` 里写的 Go 1.22.5，不是最新版。新旧版本的 `gofmt` 偶尔排得不一样（比如一组行尾注释里有一行特别长时怎么对齐），本地用新版检查通过、CI 仍可能报格式错误。用 `GOTOOLCHAIN=go1.22.5 go fmt ./...` 按 CI 的版本排一遍；两个版本排法冲突时，把那条长注释挪到上一行。
 
 前端产物 `internal/panel/dist` 不进版本库，`go build` 时经 `go:embed` 打进二进制。没构建前端也能编译通过，只是打开面板会看到「前端还没有构建」的提示，网关和 `/panel/api/*` 不受影响。
 
@@ -129,7 +136,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o credit     ./cmd/credit
 2. 在浏览器里打开链接并登录；
 3. 面板自动检测到登录完成，凭证写入 `auths/workbuddy-<uid>.json`，账号**热加载进池，不用重启**，并顺带完成首次签到。
 
-也可以在同一个对话框里导入 cockpit tools 导出的 JSON，失败项会逐条列出。
+也可以在同一个对话框里导入 JSON，失败项会逐条列出：账号池「导出凭证」得到的文件（企业版、国际版等信息原样保留，适合备份或迁到另一台网关），或 cockpit tools 导出的账号（没有企业 ID，按域名判断国内版 / 国际版）。
 
 **方式 B：命令行（Linux / macOS，依赖 bash 与 python3）**
 

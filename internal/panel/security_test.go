@@ -19,8 +19,8 @@ func TestSecurityHeadersOnAllPanelResponses(t *testing.T) {
 		{"GET", "/panel/"},
 		{"GET", "/panel/theme-init.js"},
 		{"GET", "/panel/assets/nonexistent.js"}, // 404
-		{"GET", "/panel/api/overview"}, // 401（未提供 key）
-		{"POST", "/panel/api/config"},  // 401
+		{"GET", "/panel/api/overview"},          // 401（未提供 key）
+		{"POST", "/panel/api/config"},           // 401
 		{"GET", "/panel/api/nonexistent"},
 	}
 	for _, c := range paths {

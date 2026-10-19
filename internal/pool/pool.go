@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 type Pool struct {
@@ -46,14 +46,18 @@ type Pool struct {
 	// 账号 credits < floor 时不再参与选号——防止收费请求把余额打穿、连免费模型都
 	// 402 冷却到次日签到。签到回血（SetCreditsDetailed）越过 floor 即自动恢复。
 	// 全池触底且无免费模型可接时选号返回 nil（硬语义：宁 503 不打穿）。
-	// 收费与否的判据见 floorBlockedForModel：本地实测台账优先，缺失时用上游目录
+	// 收费与否的判据见 floorBlockedForRealmModel：本地实测台账优先，缺失时用上游目录
 	// 倍率（modelRateOf 注入）兜底，避免「无观测的高价新模型」绕过保底。
 	creditFloor int64
 	// modelRateOf 按 (realm, 模型) 查上游目录积分倍率（"0.79" / "" = 未知）。
 	// 由 main 用 upstream.Client.ModelRate 注入——pool 不依赖 upstream 包（避免
 	// 循环依赖与分层破坏），nil 时倍率兜底不生效（退化为仅本地台账判定）。
-	// 仅在持 p.mu 时由 floorBlockedForModel 调用；回调不得反向调用 Pool 方法。
+	// 仅在持 p.mu 时由 floorBlockedForRealmModel 调用；回调不得反向调用 Pool 方法。
 	modelRateOf func(realm, model string) string
+	// modelServes 按模型目录判断某个号能不能接某个模型（企业号各有自己的目录，企业专属
+	// 模型不派给个人号）。由 main 用 upstream.Client.ServesModel 注入；nil = 不按目录过滤。
+	// 仅在持 p.mu 时调用；回调不得反向调用 Pool 方法。
+	modelServes func(uid, realm string, enterprise bool, model string) bool
 	// 加权路由的闲置补偿调优（SetWeights 注入；默认值见 defaultIdle*）。
 	idleWeightPerHour float64
 	idleWeightMax     float64
@@ -236,6 +240,31 @@ func (p *Pool) SetModelRateOf(fn func(realm, model string) string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.modelRateOf = fn
+}
+
+// SetModelServes 注入按模型目录的选号过滤（main 用 upstream.Client.ServesModel 装配）。
+// fn 可为 nil（清注入）；回调只在持 p.mu 时被调用，不得反向调用 Pool 方法。
+func (p *Pool) SetModelServes(fn func(uid, realm string, enterprise bool, model string) bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.modelServes = fn
+}
+
+// servableFor 账号对该模型可选：healthyForModel（禁用/暂停/冷却）且按目录能接这个模型。
+// 调用方必须已持有 p.mu（读锁或写锁）。
+func (p *Pool) servableFor(e *entry, now time.Time, model string) bool {
+	if !e.healthyForModel(now, model) {
+		return false
+	}
+	return p.servesModel(e, model)
+}
+
+// servesModel 按目录判断账号能不能接这个模型；未注入或模型为空时放行。调用方必须已持有 p.mu。
+func (p *Pool) servesModel(e *entry, model string) bool {
+	if p.modelServes == nil || model == "" {
+		return true
+	}
+	return p.modelServes(e.a.UID, e.a.Realm(), e.a.IsEnterprise(), model)
 }
 
 // SetMaxInFlight 注入单账号最大在途请求数；0 = 不限。负值保留原值。

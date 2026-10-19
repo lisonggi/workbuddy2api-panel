@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
+	"github.com/yreidev/workbuddy2api-panel/internal/prompt"
 )
 
 // Config 顶层配置。
@@ -348,13 +348,20 @@ func ParseConfig(raw []byte) (*Config, error) {
 	return ParseConfigInto(raw, Default())
 }
 
+// 测试可替换：随机数失败回退、写配置失败。默认值就是原来的直接调用，行为不变。
+var (
+	randRead        = rand.Read
+	configFileWrite = (*os.File).Write
+	configFileClose = (*os.File).Close
+)
+
 // WriteDefault 在 path 落一份推荐配置（首次运行自动生成，双击即开免手工复制样例）。
 // 值取自 Default()（含超时/熔断/签到排程等推荐值），api_key 用 crypto/rand 随机生成：
 // 安全默认优于示例占位符（listen 绑定 0.0.0.0，空 key 会把网关裸暴露给局域网）。
 // 返回生成的 key 供启动日志透出。已存在时经 O_EXCL 原子拒绝，绝不改写用户配置。
 func WriteDefault(path string) (string, error) {
 	raw := make([]byte, 18)
-	if _, err := rand.Read(raw); err != nil {
+	if _, err := randRead(raw); err != nil {
 		return "", fmt.Errorf("gen api_key: %w", err)
 	}
 	key := "sk-" + base64.RawURLEncoding.EncodeToString(raw)
@@ -376,7 +383,7 @@ func WriteDefault(path string) (string, error) {
 		return "", fmt.Errorf("write config: %w", err)
 	}
 	defer f.Close()
-	if _, err := f.Write(out); err != nil {
+	if _, err := configFileWrite(f, out); err != nil {
 		return "", fmt.Errorf("write config: %w", err)
 	}
 	return key, nil
@@ -540,14 +547,10 @@ func (c *Config) normalize() error {
 		c.Pool.BreakerThreshold = 3
 	}
 	// 连败降权参数缺省归一（非法/未设置回落默认，与 breaker_threshold 同风格）。
+	// degrade_cooldown / degrade_cooldown_max 的默认值由 Default() 给出，显式写 "" 在上面
+	// 解析时报错（与 breaker_cooldown 一致），这里不再回落。
 	if c.Pool.DegradeThreshold <= 0 {
 		c.Pool.DegradeThreshold = 5
-	}
-	if c.Pool.DegradeCooldown == "" {
-		c.Pool.DegradeCooldown = "10m"
-	}
-	if c.Pool.DegradeCooldownMax == "" {
-		c.Pool.DegradeCooldownMax = "2h"
 	}
 	// global 在途分档：0/负数视为未设置回落默认 2（WAF 403 修复 P1-1）。
 	if c.Pool.MaxInFlightGlobal <= 0 {

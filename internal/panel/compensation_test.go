@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 // 批量领取隔离单号失败，包含暂停账号，过滤国际/企业账号，禁用账号只查不领，并刷新权威余额。

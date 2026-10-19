@@ -10,9 +10,10 @@ import (
 	"encoding/json"
 	"log"
 	"time"
+	"unicode/utf8"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
 )
 
 // RunStreakBonusNow 对所有可用账号执行连登兑换 + 抽奖（幂等：locked/无次数自动跳过）。
@@ -100,14 +101,22 @@ func (s *Scheduler) streakBonusAccount(a *auth.Auth) {
 	}
 }
 
-// compactJSON 裁剪奖品载荷（日志单行可读）。
+// compactJSON 裁剪奖品载荷（日志单行可读）。按字节截到 220 后退回到字符边界，
+// 不把中文奖品名切成半个字。
 func compactJSON(raw json.RawMessage) string {
 	s := string(raw)
-	if len(s) > 220 {
-		return s[:220] + "…"
+	if len(s) <= 220 {
+		return s
 	}
-	return s
+	cut := 220
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
+
+// streakNow 供测试固定时钟（默认 time.Now）：补签日期与“昨天”的判定基准。
+var streakNow = time.Now
 
 // makeupYesterday 昨日漏签且有补签卡时自动补签（保住连登连续天数）。
 // 无卡 / 无漏签 / 查询失败均静默（不影响主流程）。
@@ -120,7 +129,7 @@ func (s *Scheduler) makeupYesterday(a *auth.Auth) {
 	if err != nil || full.MakeupCards.Balance <= 0 {
 		return
 	}
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	yesterday := streakNow().AddDate(0, 0, -1).Format("2006-01-02")
 	if err := s.cfg.Upstream.UseMakeupCard(a, yesterday); err != nil {
 		log.Printf("streak-bonus %s: 补签 %s 失败: %v", logfmt.Label(a.UID, a.Nickname), yesterday, err)
 		return

@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -110,7 +111,7 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 	return remain, used, size
 }
 
-func fetchUserResource(af *authFile) (remain, used, size int64, packs int, err error) {
+func fetchUserResource(af *authFile, client *http.Client) (remain, used, size int64, packs int, err error) {
 	now := time.Now()
 	body, _ := json.Marshal(map[string]any{
 		"PageNumber":               1,
@@ -143,7 +144,6 @@ func fetchUserResource(af *authFile) (remain, used, size int64, packs int, err e
 	if af.Auth.Domain != "" {
 		req.Header.Set("X-Domain", af.Auth.Domain)
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, 0, 0, 0, err
@@ -191,8 +191,18 @@ func fetchUserResource(af *authFile) (remain, used, size int64, packs int, err e
 	return remain, used, size, packs, nil
 }
 
+// exitFunc 供测试替换（默认 os.Exit；测试换成 panic 以进程内捕获退出码）。
+var exitFunc = os.Exit
+
 func main() {
-	pretty := len(os.Args) > 1 && os.Args[1] == "-pretty"
+	exitFunc(run(os.Args[1:], os.Stdout, &http.Client{Timeout: 20 * time.Second}))
+}
+
+// accountGap 账号之间的请求间隔（避免瞬时打满计量接口），测试可调 0。
+var accountGap = 200 * time.Millisecond
+
+func run(args []string, stdout io.Writer, client *http.Client) int {
+	pretty := len(args) > 0 && args[0] == "-pretty"
 	authDir := "./auths"
 	if v := os.Getenv("WB2A_AUTH_DIR"); v != "" {
 		authDir = v
@@ -213,7 +223,7 @@ func main() {
 			accounts = append(accounts, res)
 			continue
 		}
-		remain, used, size, packs, err := fetchUserResource(&af)
+		remain, used, size, packs, err := fetchUserResource(&af, client)
 		if err != nil {
 			res.Error = err.Error()
 		} else {
@@ -224,7 +234,7 @@ func main() {
 			res.OK = true
 		}
 		accounts = append(accounts, res)
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(accountGap)
 	}
 
 	var totalRemain, totalUsed, totalSize int64
@@ -257,15 +267,16 @@ func main() {
 		"accounts": accounts,
 	}
 	if pretty {
-		printPretty(accounts, totalRemain, totalUsed, totalSize, okCount)
-		return
+		printPretty(accounts, totalRemain, totalUsed, totalSize, okCount, stdout)
+		return 0
 	}
 	raw, _ := json.Marshal(out)
-	fmt.Println(string(raw))
+	fmt.Fprintln(stdout, string(raw))
+	return 0
 }
 
 // printPretty 人类可读日报：四行汇总，无账号明细。
-func printPretty(accounts []accountResult, totalRemain, totalUsed, totalSize int64, okCount int) {
+func printPretty(accounts []accountResult, totalRemain, totalUsed, totalSize int64, okCount int, out io.Writer) {
 	withBalance := 0
 	var failed []string
 	for _, a := range accounts {
@@ -284,11 +295,11 @@ func printPretty(accounts []accountResult, totalRemain, totalUsed, totalSize int
 	if totalSize > 0 {
 		pct = totalRemain * 100 / totalSize
 	}
-	fmt.Printf("📊 WorkBuddy 积分日报\n")
-	fmt.Printf("账号: %d/%d\n", withBalance, len(accounts))
-	fmt.Printf("总计: %d/%d\n", totalRemain, totalSize)
-	fmt.Printf("剩余: %d%%\n", pct)
+	fmt.Fprintf(out, "📊 WorkBuddy 积分日报\n")
+	fmt.Fprintf(out, "账号: %d/%d\n", withBalance, len(accounts))
+	fmt.Fprintf(out, "总计: %d/%d\n", totalRemain, totalSize)
+	fmt.Fprintf(out, "剩余: %d%%\n", pct)
 	for _, f := range failed {
-		fmt.Printf("⚠️ %s\n", f)
+		fmt.Fprintf(out, "⚠️ %s\n", f)
 	}
 }

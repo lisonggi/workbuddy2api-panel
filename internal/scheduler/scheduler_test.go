@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 func TestNextFire(t *testing.T) {
@@ -673,7 +673,6 @@ func TestPausedVsDisabledTaskParticipation(t *testing.T) {
 		t.Errorf("checkin calls=%d want 2（正常 + 暂停参与；禁用跳过）", got)
 	}
 }
-
 
 // TestPausedStillTravels 暂停号照常跑旅行：旅行是纯 RPC（状态/派出/领奖 +
 // 领养前置上报），不发模型对话，与「让位防风控」不冲突——唯一被跳过的

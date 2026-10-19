@@ -135,6 +135,8 @@ export interface Model {
   vendor?: string
   tags?: string[] | null
   is_default?: boolean
+  /** 只有池里企业号自己的目录里有，请求只派给这些企业号 */
+  enterprise_only?: boolean
   promo_factor?: number
   promo_credits?: string | number
   promo_label?: string

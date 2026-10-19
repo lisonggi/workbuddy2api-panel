@@ -25,14 +25,14 @@
 
 1. 改完代码，按上表定好新版本号，改 `cmd/server/main.go` 的 `appVersion`。
 2. 在 `docs/CHANGELOG.md` 顶部加这一版的条目（格式见下节），日期写推送当天。
-3. 提交并推送到 `main`。`go test` 会核对 `appVersion` 与更新日志最新一版一致，对不上 CI 直接失败。
+3. 提交并推送到 `main`。CI 依次跑 `gofmt` 检查、`go vet`、`golangci-lint` 和 `go test`（命令见[从源码构建](deployment.md#从源码构建)），任何一步失败都不打标签、不建 Release、不推镜像；`go test` 还会核对 `appVersion` 与更新日志最新一版一致。
 
 推送后 CI 自动完成：
 
 | 工作流 | 做什么 |
 |---|---|
 | go-binaries | 五平台构建；打 `vx.y.z` 标签，建标题为 `vx.y.z` 的 Release，说明取更新日志里这一版的内容，附带版本号的包和 `checksums.txt`，并标为 Latest。同时照常覆盖「最新构建」Release |
-| docker-ghcr | 镜像照常推 `latest`、`main`、`sha-xxxxxxx`，另加 `x.y.z`、`x.y`、`x` 三个标签 |
+| docker-ghcr | 由 go-binaries 在检查通过后调用。镜像照常推 `latest`、`main`、`sha-xxxxxxx`，另加 `x.y.z`、`x.y`、`x` 三个标签 |
 
 CI 以 `vx.y.z` 标签是否已经存在来判断这次推送有没有升版本号。版本号没变的推送只更新「最新构建」和 `latest` 镜像，不碰已发布版本的 Release 和镜像标签。如果某次发版中途失败、标签没打上，下一次推送会补发。
 

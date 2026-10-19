@@ -23,16 +23,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/changelog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/httpauth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/selfupdate"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/changelog"
+	"github.com/yreidev/workbuddy2api-panel/internal/httpauth"
+	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
+	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/reqlog"
+	"github.com/yreidev/workbuddy2api-panel/internal/scheduler"
+	"github.com/yreidev/workbuddy2api-panel/internal/selfupdate"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/usage"
 )
 
 // Config 面板依赖（main 装配注入）。
@@ -184,7 +184,9 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
-	p.mux.HandleFunc("POST /panel/api/import/cockpit", p.withAuth(p.importCockpit))
+	p.mux.HandleFunc("POST /panel/api/import", p.withAuth(p.importAccounts))
+	p.mux.HandleFunc("POST /panel/api/import/cockpit", p.withAuth(p.importAccounts)) // 旧路径，外部脚本可能还在用
+	p.mux.HandleFunc("POST /panel/api/accounts/export", p.withAuth(p.accountsExport))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/revive", p.withAuth(p.accountRevive))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/disable", p.withAuth(p.accountDisable))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/pause", p.withAuth(p.accountPause))
@@ -352,8 +354,9 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 
 	// CN 域：有可用 CN 账号才查（此前无条件 Pool.Pick()+FetchModels——选中 global
 	// 账号时打 CN 端点必然失败，混合池表现为偶发 502，纯 global 池必炸）。
-	if uids := p.cfg.Pool.AvailableUIDsForRealm("cn"); len(uids) > 0 {
-		if acct := p.cfg.Pool.AuthByUID(uids[0]); acct != nil {
+	// 优先用个人号拉：域目录要个人号视角，企业号的名单各自单独记。
+	if uid := p.cfg.Pool.CatalogUIDForRealm("cn"); uid != "" {
+		if acct := p.cfg.Pool.AuthByUID(uid); acct != nil {
 			infos, err := p.cfg.Upstream.FetchModels(acct)
 			if err != nil {
 				fetchErrs = append(fetchErrs, "cn: "+err.Error())
@@ -363,6 +366,13 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+	// 企业专属模型：只有池里企业号自己的目录里有，请求只派给这些企业号。
+	for _, mi := range p.cfg.Upstream.EnterpriseOnlyModels("cn") {
+		entry := panelModelEntry("cn", mi, mi.Efforts, mi.DefaultEffort, p.cfg.Upstream.HTTP)
+		entry["enterprise_only"] = true
+		entry["is_default"] = false // 企业目录的默认模型不是池子的默认，免得出现两个默认（与 /v1/models 一致）
+		out = append(out, entry)
 	}
 
 	// global 域：路由开关开且有可用 global 账号才查（独立目录端点，FetchGlobalModelInfos；

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // CompensationStatus 对齐官网用量管理页 compensation-status 的返回字段。

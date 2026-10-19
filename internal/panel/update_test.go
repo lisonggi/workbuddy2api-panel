@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/changelog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/selfupdate"
+	"github.com/yreidev/workbuddy2api-panel/internal/changelog"
+	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
+	"github.com/yreidev/workbuddy2api-panel/internal/selfupdate"
 )
 
 const localReleases = `## [1.1.0] - 2026-10-25

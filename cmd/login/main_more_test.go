@@ -1,0 +1,70 @@
+package main
+
+// main_more_test.go 补齐 doJSON 的传输错误、--realm 缺值、runURL 上游失败与 main 入口。
+
+import (
+	"errors"
+	"net/http"
+	"os"
+	"strings"
+	"testing"
+)
+
+// doJSON：client.Do 返回错误时原样返回。
+func TestDoJSONTransportError(t *testing.T) {
+	client := &http.Client{Transport: loginRT(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial boom")
+	})}
+	_, status, err := doJSON(client, http.MethodGet, "https://x.test/p", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "dial boom") || status != 0 {
+		t.Fatalf("err=%v status=%d", err, status)
+	}
+}
+
+// --realm 缺少取值：fatal，提示 requires a value。
+func TestRunRealmMissingValue(t *testing.T) {
+	_, errb, fatal, code := runLogin(t, []string{"--realm"}, strings.NewReader(""),
+		&http.Client{Transport: loginFakeClient(t)})
+	if !fatal || code != 1 || !strings.Contains(errb, "requires a value") {
+		t.Fatalf("fatal=%v code=%d stderr=%q", fatal, code, errb)
+	}
+}
+
+// url 子命令：请求 state 端点失败（传输层）走 fatal。
+func TestRunURLTransportError(t *testing.T) {
+	useStateFile(t)
+	client := &http.Client{Transport: loginRT(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial boom")
+	})}
+	_, errb, fatal, _ := runLogin(t, []string{"url"}, strings.NewReader(""), client)
+	if !fatal || !strings.Contains(errb, "auth state failed") || !strings.Contains(errb, "dial boom") {
+		t.Fatalf("fatal=%v stderr=%q", fatal, errb)
+	}
+}
+
+// main：没有子命令时走 fatal（退出码 1），覆盖入口本身。
+func TestLoginMainEntry(t *testing.T) {
+	stubExit(t)
+	oldArgs := os.Args
+	os.Args = []string{"login"}
+	t.Cleanup(func() { os.Args = oldArgs })
+
+	code := -1
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				p, ok := r.(exitPanic)
+				if !ok {
+					panic(r)
+				}
+				code = p.code
+				return
+			}
+			t.Fatal("main 应调用 exitFunc")
+		}()
+		main()
+	}()
+	if code != 1 {
+		t.Fatalf("退出码 = %d want 1", code)
+	}
+}

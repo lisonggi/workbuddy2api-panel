@@ -17,16 +17,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/httpauth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/httpauth"
+	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/prompt"
+	"github.com/yreidev/workbuddy2api-panel/internal/reqlog"
+	"github.com/yreidev/workbuddy2api-panel/internal/session"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/usage"
 )
 
 // Config handler 依赖。
@@ -119,6 +119,8 @@ type Handler struct {
 	// wafIP WAF IP 级拦截状态机（fail-fast，wafip.go）：短窗多号 WAF 403 →
 	// 激活期轮转遇 WAF 403 直接终止（不放大请求量）。进程内状态、重启清零。
 	wafIP wafIPGate
+	// turns 客户端没给会话 id 时的对话轮 ID 分配（session/turns.go）。进程内状态、重启清零。
+	turns *session.TurnIDs
 }
 
 // NewHandler 构建 handler。
@@ -135,7 +137,7 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.PromptMode == "" {
 		cfg.PromptMode = "custom" // 缺省 custom：网关自有提示词
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), turns: session.NewTurnIDs()}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
@@ -381,7 +383,7 @@ func applyModelInfoFields(entry map[string]any, mi upstream.ModelInfo) map[strin
 // 纯动态：动态拉取失败/无号 → 该域空列表，无静态兜底。
 func (h *Handler) modelList() []map[string]any {
 	out := make([]map[string]any, 0)
-	for _, mi := range h.fetchDynamicModels() {
+	cnEntry := func(mi upstream.ModelInfo) map[string]any {
 		entry := map[string]any{
 			"id":       "cn:" + mi.ID,
 			"object":   "model",
@@ -408,7 +410,20 @@ func (h *Handler) modelList() []map[string]any {
 				entry["reasoning_default_effort"] = def
 			}
 		}
-		out = append(out, entry)
+		return entry
+	}
+	for _, mi := range h.fetchDynamicModels() {
+		out = append(out, cnEntry(mi))
+	}
+	// 企业专属模型：域目录（个人号视角）里没有、池里某个企业号自己的目录里有，
+	// 请求只会派给目录里有它的企业号（见 upstream/account_catalog.go）。
+	if h.cfg.Upstream != nil {
+		for _, mi := range h.cfg.Upstream.EnterpriseOnlyModels("cn") {
+			entry := cnEntry(mi)
+			entry["enterprise_only"] = true
+			delete(entry, "is_default")
+			out = append(out, entry)
+		}
 	}
 	// global 模型名单：仅 GlobalEnabled=true 时列出（逃生门）。
 	// 名单 = 纯动态探测结果（fetchGlobalModels，失败/无号 → 空）。
@@ -501,9 +516,9 @@ func (h *Handler) fetchGlobalModels() ([]string, *auth.Auth) {
 	return h.cfg.Upstream.FetchGlobalModels(acct), acct
 }
 
-// fetchDynamicModels 从第一个可用 CN 账号拉模型列表（含 contextWindow/maxTokens），
-// 缓存 10min。
-// 选号与 /panel/api/models 完全同口径（AvailableUIDsForRealm("cn") 首个 + AuthByUID），
+// fetchDynamicModels 从第一个可用 CN 个人号（没有个人号才用企业号）拉模型列表
+// （含 contextWindow/maxTokens），缓存 10min。
+// 选号与 /panel/api/models 完全同口径（CatalogUIDForRealm("cn") + AuthByUID），
 // 而非 Pool.Pick()：Pick 无 realm 过滤，混合池里可能选中 global 号去打 CN 端点，
 // 表现为偶发失败/面板与 /v1/models 两套目录（PR #38 报告并给出的选号修复）。
 // 缓存 + 5min 负缓存按既有语义**保留**（#38 原案整体删除缓存被拒）：公开端点逐请求
@@ -524,11 +539,12 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 	}
 	dynamicModelsCache.RUnlock()
 
-	uids := h.cfg.Pool.AvailableUIDsForRealm("cn")
-	if len(uids) == 0 {
+	// 优先用个人号拉：域目录要个人号视角，企业号的名单各自单独记。
+	uid := h.cfg.Pool.CatalogUIDForRealm("cn")
+	if uid == "" {
 		return nil
 	}
-	acct := h.cfg.Pool.AuthByUID(uids[0])
+	acct := h.cfg.Pool.AuthByUID(uid)
 	if acct == nil {
 		return nil
 	}
@@ -561,6 +577,10 @@ func cachedModelsSnapshot() []upstream.ModelInfo {
 	}
 	return dynamicModelsCache.ids
 }
+
+// acquireInFlight 占一个在途名额。包级变量（默认行为与 (*pool.Pool).Acquire
+// 完全一致）供测试注入「名额被并发抢走」的确定路径。
+var acquireInFlight = (*pool.Pool).Acquire
 
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 客户端 IP 提取（按请求传递到 ChatStream，不透传时 upstream 侧忽略）；
@@ -628,7 +648,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if h.cfg.Session != nil && sessKey != "" {
 		// 按模型解析：绑定号在**当前模型**被 6004 限额时视为不可用 → 重新分配，
 		// 而不是钉在限额号上反复失败（"限额后换不动号"的正解）。
-		if uid, ok := h.cfg.Session.ResolveForModel(sessKey, peek.Model); ok {
+		// 域用上面已定好的 realm（跨域合池时为 ""）：粘性候选若自己按模型名再判一次，
+		// 不带前缀的名字一律算国内版，合池时会话永远只绑国内版号，国际版号轮不到。
+		if uid, ok := h.cfg.Session.ResolveForModel(sessKey, bareModel, realm); ok {
 			stickyUID = uid
 		}
 	}
@@ -639,7 +661,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 清空重生成），故不再限 sessKey=="" 才计算；sessKey 由下方派生处以复合键方式
 	// 入键（防不同会话同轮文本互撞）。
 	// 必须在下方 prompt.Rewrite 之前取——改写会动 messages 内容，之后取会让键漂移。
-	turnKey := session.TurnKey(body)
+	turn := session.ParseTurn(body)
+	turnKey := turn.Key
 
 	// gateway_hint 判定所需的请求形态（image_url part）：在改写前取（与 turnKey
 	// 同理）。11133「模型不支持图片」指向的前提。
@@ -776,28 +799,39 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 碎片化（此前网关一个都不发，上游按 HTTP 请求逐条记账，同一对话几十上百个
 	// RequestID）。
 	//   - conversationID：body 提取（透传客户端原值，缺省空串——不伪造）；
-	//   - conversationRequestID：入站 X-Conversation-Request-ID 透传优先，否则按
-	//     粘性 key 进程内稳定生成；粘性 key 也空时走轮级兜底（TurnKey/TurnRequestID），
-	//     无 user 消息时退化成本请求级随机——轮转内捕获一次即共享；
+	//   - conversationRequestID：入站 X-Conversation-Request-ID 透传优先，否则按对话轮：
+	//     客户端给了会话 id 时由会话 id + 轮级键派生，没给时开轮新生成、轮内凭工具调用 id
+	//     找回（session/turns.go）；建不出轮级键时退化成会话级或本请求级随机——
+	//     轮转内捕获一次即共享；
 	//   - messageID 在 ChatHeaders 内每条消息生成（消息级独立，无需外部可见）。
-	// ConversationID passes the client dialog id through. Clients that have none
-	// (Anthropic / Claude Code traffic) fall back to the session key, otherwise
-	// the upstream prompt_cache_key degrades into one constant per account and
-	// every client on that account ends up sharing a single, constantly evicted
-	// prefix-cache slot.
+	//   - cacheKeySeed：prompt_cache_key 的会话源。客户端没给 conversation_id 时
+	//     （Anthropic / Claude Code 流量）回退到会话键，否则 prompt_cache_key 退化成
+	//     每账号一个常量，同号所有客户端挤同一个前缀缓存槽、互相覆盖。
+	//
+	// 会话键只进 prompt_cache_key，不进 X-Conversation-ID：派生键只由 system + 首条
+	// user 决定，两段不相干的对话开头相同（如都没有 system、首句都是「你好」）就会
+	// 撞成同一个值。前缀缓存按内容逐字匹配，撞键不会带出别人的内容；X-Conversation-ID
+	// 则会让上游把两段对话当成同一个会话。
 	convID := session.ResolveConversationID(body)
-	if convID == "" {
-		convID = sessKey
+	cacheKeySeed := convID
+	if cacheKeySeed == "" {
+		cacheKeySeed = sessKey
 	}
-	chatMeta := upstream.ChatMeta{ConversationID: convID}
+	chatMeta := upstream.ChatMeta{ConversationID: convID, CacheKeySeed: cacheKeySeed}
+	// rememberTurn 开轮请求成功转出回复后，记下回复里的工具调用 id，轮内后续请求凭它找回本轮 ID。
+	rememberTurn := false
 	if v := r.Header.Get("X-Conversation-Request-ID"); v != "" {
 		chatMeta.ConversationRequestID = v
-	} else if turnKey != "" && sessKey != "" {
-		// 轮级复合键：sessKey 入键防跨会话同轮文本互撞（#170 统一轮级）。
-		chatMeta.ConversationRequestID = session.TurnRequestID(sessKey + ":" + turnKey)
+	} else if turnKey != "" && convID == "" {
+		// 客户端没给会话 id：会话键是派生的（或为空），到某一轮为止逐字相同的两段对话
+		// 轮级键也相同，不能再从内容派生。开轮请求每次新生成，轮内后续请求凭工具调用 id
+		// 找回（见 session/turns.go）。
+		chatMeta.ConversationRequestID = h.turns.ForRequest(sessKey, turn)
+		rememberTurn = turn.Opening
 	} else if turnKey != "" {
-		// 无会话键客户端：纯轮级键（既有兜底语义不变，存量会话键值零漂移）。
-		chatMeta.ConversationRequestID = session.TurnRequestID(turnKey)
+		// 客户端给了会话 id（此时 sessKey 就是它）：轮级复合键，sessKey 入键防跨会话
+		// 同轮文本互撞（#170 统一轮级）。
+		chatMeta.ConversationRequestID = session.TurnRequestID(sessKey + ":" + turnKey)
 	} else if sessKey != "" {
 		// 残留空态兜底（无 user 消息/无可签名内容）：会话级聚合，好于请求级随机。
 		chatMeta.ConversationRequestID = session.RequestIDForKey(sessKey)
@@ -844,7 +878,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		tried[acct.UID] = true
 
 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
-		if !h.cfg.Pool.Acquire(acct.UID) {
+		if !acquireInFlight(h.cfg.Pool, acct.UID) {
 			// 若被抢的正是粘性号，立即解绑并回落普通轮换，避免下一轮仍撞同一个
 			// 满载粘性号再浪费一次 PickByUID 往返（语义与 fail()/PickByUID-nil 的解绑一致）。
 			if stickyUID != "" && acct.UID == stickyUID {
@@ -1049,10 +1083,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 第二个参数为 true = 名单为空时启用弱判定——tools 声明在链路上丢失是
 			// 实测最常见的泄漏成因，只做严格判定等于对主场景不设防。
 			repair := upstream.NewMarkupRepair(declaredTools, true)
+			var replyCallIDs []string
 			sErr := upstream.StreamHint(w, stats, upstream.FrameHintFunc(func() upstream.HintContext {
 				return h.hintContext(bareModel, reqHasImage)
 			}), upstream.WithErrorFrameObserver(func(payload string) { errFrame = payload }),
-				upstream.WithMarkupRepair(repair))
+				upstream.WithMarkupRepair(repair),
+				upstream.WithToolCallIDObserver(func(id string) { replyCallIDs = append(replyCallIDs, id) }))
+			if rememberTurn {
+				h.turns.Remember(sessKey, turn, chatMeta.ConversationRequestID, replyCallIDs)
+			}
 			switch {
 			case upstream.IsEmptyStreamError(sErr):
 				// 上游 200 但空流（0 有效帧）：StreamHint 已写 error 帧 + [DONE]
@@ -1156,6 +1195,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		} else if m := mrepair.Seen(); m > 0 {
 			log.Printf("WARN: [server] non-stream model=%s: saw %d native tool call block(s) but repaired none (tool names known=%d)",
 				bareModel, m, len(declaredTools))
+		}
+		if rememberTurn {
+			h.turns.Remember(sessKey, turn, chatMeta.ConversationRequestID, upstream.ResponseToolCallIDs(resp))
 		}
 		credit, total, hasCredit := usageCreditTotal(resp)
 		if usage, ok := resp["usage"].(map[string]any); ok {

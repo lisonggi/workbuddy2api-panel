@@ -22,7 +22,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // globalWebUA 国际版 web 端 UA（注册完善页走 web 指纹，非桌面端 CLI 指纹）。
@@ -221,7 +221,7 @@ func (c *Client) GlobalCompleteRegistration(a *auth.Auth) (activated bool, err e
 		return false, fmt.Errorf("submit region: %w", err)
 	}
 	// 重新激活验证。
-	activated, needsRegion, msg, err = c.GlobalRegisterStatus(a)
+	activated, _, msg, err = c.GlobalRegisterStatus(a)
 	if err != nil {
 		return false, err
 	}

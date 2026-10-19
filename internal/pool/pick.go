@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
 )
 
 // Pick 单一选号入口（无请求级轮换、无 realm 过滤，模型感知缺省账号级）。
@@ -49,7 +49,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	realmOK := func(e *entry) bool { return realm == "" || e.a.Realm() == realm }
 	healthyOf := func(e *entry) bool { return realmOK(e) && e.healthy(now) }
 	if reqModel != "" {
-		healthyOf = func(e *entry) bool { return realmOK(e) && e.healthyForModel(now, reqModel) }
+		healthyOf = func(e *entry) bool { return realmOK(e) && p.servableFor(e, now, reqModel) }
 	}
 	// floorBlocked 积分保底拦截判定（实现在 floorBlockedForRealmModel，与粘性路径共用）：
 	// 触底 + 收费（本地实测台账 或 上游目录倍率）即拦；免费/未知倍率不受限。
@@ -234,7 +234,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	return e.a
 }
 
-// floorBlockedForModel 积分保底拦截判定（pick 普通轮换与 PickByUIDForModel 粘性
+// floorBlockedForRealmModel 积分保底拦截判定（pick 普通轮换与 PickByUIDForModel 粘性
 // 路径的单一事实来源）：floor>0 且账号触底（credits < floor）且该模型**收费**
 // 时为真。
 //
@@ -257,13 +257,9 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 // 余额用本地插值口径（签到权威值 - 每笔 usage.credit 实扣，见 NoteModelCost）：
 // 只会偏低不会偏高（官方对账延迟方向安全），正是保底需要的安全方向。
 // 调用方必须已持有 p.mu（读 e.credits / e.modelCost / p.modelRateOf）。
-func (p *Pool) floorBlockedForModel(e *entry, model string, now time.Time) bool {
-	return p.floorBlockedForRealmModel(e, model, "", now)
-}
-
-// floorBlockedForRealmModel 同上，但带 realm 上下文（倍率按 (realm, 模型) 分桶，
-// 同名模型在 CN / global 两域倍率可不同）。realm 为空（跨域合池选号）时按账号自己的域查：
-// 同一个模型名，国内版号要看国内版的倍率，国际版号看国际版的。
+//
+// 倍率按 (realm, 模型) 分桶，同名模型在 CN / global 两域倍率可不同。realm 为空（跨域合池选号）时
+// 按账号自己的域查：同一个模型名，国内版号要看国内版的倍率，国际版号看国际版的。
 func (p *Pool) floorBlockedForRealmModel(e *entry, model, realm string, now time.Time) bool {
 	if realm == "" {
 		realm = e.a.Realm()

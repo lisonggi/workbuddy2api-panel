@@ -162,6 +162,9 @@ func (u *Upstash) closeOnceGuard() {
 	}
 }
 
+// closeWaitTimeout 关停时等待在途写的上限；测试调短以便覆盖超时兜底。
+var closeWaitTimeout = 10 * time.Second
+
 // Close 等待已提交的异步写全部执行完毕，再关底层 redis 连接；幂等。
 // 之后新提交的写直接丢弃（goWrite 的 done 检查）。停机路径在 pool.Close() 后调用：
 // pool 的最后一次 Flush→SaveState 已提交，本方法保证它写完才返回。
@@ -177,7 +180,7 @@ func (u *Upstash) Close() error {
 	go func() { u.wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(closeWaitTimeout):
 		// 兜底超时（单写上限 5s，10s 富余）：卡死的写不应阻塞进程退出。
 		log.Printf("[redisstore] WARN: Close 等待在途写超时，放弃（镜像可能未写完）")
 	}

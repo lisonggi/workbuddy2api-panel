@@ -21,12 +21,13 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 // classifyTrial 归一化 ClaimTrial 结果（纯函数，供 main 循环与测试直接断言）：
@@ -59,19 +60,25 @@ type trialRow struct {
 	detail string
 }
 
+// exitFunc 供测试替换（默认 os.Exit；测试换成 panic 以进程内捕获退出码）。
+var exitFunc = os.Exit
+
 func main() {
+	exitFunc(run(os.Args[1:], os.Stdout, os.Stderr, upstream.New()))
+}
+
+func run(args []string, stdout, stderr io.Writer, up *upstream.Client) int {
 	authDir := "auths"
-	if len(os.Args) > 1 {
-		authDir = os.Args[1]
+	if len(args) > 0 {
+		authDir = args[0]
 	}
 	files, err := filepath.Glob(filepath.Join(authDir, "workbuddy-*.json"))
 	if err != nil || len(files) == 0 {
-		fmt.Fprintf(os.Stderr, "no auth files in %s\n", authDir)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "no auth files in %s\n", authDir)
+		return 1
 	}
 	sort.Strings(files)
 
-	up := upstream.New()
 	// trial 是 global 专属端点：必须开启 global realm 路由，否则 upstream.New() 的
 	// GlobalEnabled 零值 false 会把请求路由到 CN base（codebuddy.cn）而必然失败。
 	up.GlobalEnabled = true
@@ -105,10 +112,10 @@ func main() {
 	}
 
 	var okN, alreadyN, notAppN, failN int
-	fmt.Printf("uid                                  | nick        | status  | detail\n")
-	fmt.Printf("-------------------------------------+-------------+---------+------------------------------\n")
+	fmt.Fprintf(stdout, "uid                                  | nick        | status  | detail\n")
+	fmt.Fprintf(stdout, "-------------------------------------+-------------+---------+------------------------------\n")
 	for _, r := range rows {
-		fmt.Printf("%-36s | %-11s | %-7s | %s\n",
+		fmt.Fprintf(stdout, "%-36s | %-11s | %-7s | %s\n",
 			trunc(r.uid, 36), trunc(r.nick, 11), r.status, r.detail)
 		switch r.status {
 		case trialOK:
@@ -121,8 +128,9 @@ func main() {
 			failN++
 		}
 	}
-	fmt.Printf("\ntotal=%d ok=%d already=%d na=%d fail=%d\n",
+	fmt.Fprintf(stdout, "\ntotal=%d ok=%d already=%d na=%d fail=%d\n",
 		len(rows), okN, alreadyN, notAppN, failN)
+	return 0
 }
 
 func trunc(s string, n int) string {

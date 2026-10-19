@@ -43,6 +43,7 @@ WorkBuddy2API 是一个自托管网关：把你的多个 WorkBuddy 账号接成�
 - 🌏 **国内版 + 国际版同池管理**
   - 模型名加 `cn:` / `global:` 前缀指定走哪一版。
   - 也可打开跨域负载均衡，让两边的账号一起分担。
+  - 企业号按自己的模型目录接请求，企业开通的模型（比如 Claude）也能用。
 - 🎯 **积分任务全自动**
   - 每天自动签到、活跃上报、token 保活、连登兑换与抽奖。
   - 官方 18 个成长任务里 **17 个一键完成**，新账号约 **+1950 积分**。
@@ -164,6 +165,9 @@ flowchart LR
 
 - **[linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)**：本仓库的直接上游。Web 管理面板、积分任务体系、请求指标等大量能力都来自这里，本仓库持续同步它的后端更新。
 - **[Sliverkiss](https://github.com/Sliverkiss)**：原始项目 workbuddy2api 的作者，奠定了网关、账号池调度、错误分类与提示词体系（原仓库已删除）。
+- **同类项目**：
+  - [corrinehu/dsh-workbuddy-connect](https://github.com/corrinehu/dsh-workbuddy-connect)：企业号拉模型目录必须带齐企业身份的实测（issue #123），企业版模型的支持据此实现。
+  - [caigee-cmd/cli2api](https://github.com/caigee-cmd/cli2api)：每个账号各拉一份模型目录、按目录选号的做法，以及企业号的对话请求头。
 - **上游的每一位贡献者**：
 
   <a href="https://github.com/linguo2625469/workbuddy2api-panel/graphs/contributors"><img src="https://contrib.rocks/image?repo=linguo2625469/workbuddy2api-panel" alt="linguo2625469/workbuddy2api-panel 的贡献者"></a>

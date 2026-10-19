@@ -1,35 +1,15 @@
 name: docker-ghcr
 
-# 镜像（只构建 linux/amd64）自动构建并发布到 ghcr.io：
+# 镜像（只构建 linux/amd64）构建并发布到 ghcr.io。不单独触发，由 go-binaries 在 gofmt / go vet /
+# golangci-lint / go test 都通过后调用，检查没过的提交不出镜像；触发条件与并发组都跟随 go-binaries：
 #   - push 到 main / 手动触发 → 构建并推送
-#   - PR 触碰构建相关文件 → 仅构建验证，不推送
+#   - PR → 仅构建验证，不推送
 # 镜像标签：每次推送都有 latest + main + sha-xxxxxxx；这次推送升了版本号（见 docs/releasing.md）时
 # 再加 1.2.3 / 1.2 / 1（预发布版本只加 1.2.3-rc.1 这一个）
-on:
-  push:
-    branches: [main]
-  pull_request:
-    paths:
-      - "Dockerfile"
-      - ".dockerignore"
-      - "go.mod"
-      - "go.sum"
-      - "*.go"
-      - "docs/CHANGELOG.md"
-      - "cmd/**"
-      - "internal/**"
-      - "scripts/**"
-      - "*.sh"
-      - "config.example.json"
-      - "web/**"
-      - ".github/workflows/docker-ghcr.yml"
-  workflow_dispatch:
-
-# 并发组：PR 取消过时构建；main 上的推送按顺序构建。
 # 只构建 amd64：部署机都是 x64；arm64 要在 QEMU 里模拟编译，曾占整次构建的大部分时间（约 5 分钟）。
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# 这里不设并发组：被调用的工作流里 github.workflow 是调用方的名字，和调用方同组会互相卡住。
+on:
+  workflow_call:
 
 env:
   REGISTRY: ghcr.io

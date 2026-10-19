@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
 )
 
 func (p *Pool) Disable(uid, reason string) {
@@ -358,7 +358,7 @@ func (p *Pool) AvailableUIDsForModel(model string) []string {
 	now := time.Now()
 	uids := make([]string, 0, len(p.byUID))
 	for uid, e := range p.byUID {
-		if !e.healthyForModel(now, model) {
+		if !p.servableFor(e, now, model) {
 			continue
 		}
 		if p.inFlightFull(e) {
@@ -382,7 +382,7 @@ func (p *Pool) PickByUIDForModel(uid, model string) *auth.Auth {
 		return nil
 	}
 	now := time.Now()
-	if !e.healthyForModel(now, model) {
+	if !p.servableFor(e, now, model) {
 		return nil
 	}
 	// 积分保底（粘性路径）：与 pick 的 floorBlocked 同判据——触底 + 收费即拦

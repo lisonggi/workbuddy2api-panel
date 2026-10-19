@@ -29,6 +29,11 @@ describe('models', () => {
     expect(f({ q: 'OPENAI' })).toEqual(['global:gpt-5'])
   })
 
+  it('企业专属模型能按「企业专属」搜到', () => {
+    const withEnterprise: Model[] = [...list, { id: 'cn:claude-sonnet', name: 'Claude Sonnet', enterprise_only: true }]
+    expect(filterModels(withEnterprise, { ...EMPTY_MODEL_FILTER, q: '企业专属' }).map((m) => m.id)).toEqual(['cn:claude-sonnet'])
+  })
+
   it('条件查询：域 / 能力 / 档位 / 价格 / 关键词（空格分词 AND）', () => {
     expect(ids({ realm: 'cn' })).toEqual(['cn:glm-5.2', 'cn:hy3', 'cn:auto'])
     expect(ids({ caps: ['tools'] })).toEqual(['cn:glm-5.2', 'cn:hy3', 'cn:auto'])

@@ -4,14 +4,16 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 type row struct {
@@ -24,18 +26,24 @@ type row struct {
 	hasQuota bool
 }
 
+// exitFunc 供测试替换（默认 os.Exit；测试换成 panic 以进程内捕获退出码）。
+var exitFunc = os.Exit
+
 func main() {
+	exitFunc(run(os.Args[1:], os.Stdout, os.Stderr, upstream.New()))
+}
+
+func run(args []string, stdout, stderr io.Writer, up *upstream.Client) int {
 	dir := "auths"
-	if len(os.Args) > 1 {
-		dir = os.Args[1]
+	if len(args) > 0 {
+		dir = args[0]
 	}
 	files, err := filepath.Glob(filepath.Join(dir, "workbuddy-*.json"))
 	if err != nil || len(files) == 0 {
-		fmt.Fprintf(os.Stderr, "no auth files in %s\n", dir)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "no auth files in %s\n", dir)
+		return 1
 	}
 	sort.Strings(files)
-	up := upstream.New()
 
 	var rows []row
 	okN, alreadyN, failN := 0, 0, 0
@@ -58,8 +66,8 @@ func main() {
 		a.FilePath = f
 		r.uid, r.nick = a.UID, a.Nickname
 
-		// refresh 过期 token
-		if a.NeedsRefresh(2 * 3600) {
+		// 2 小时内过期的 token 先刷新
+		if a.NeedsRefresh(2 * time.Hour) {
 			if err := up.RefreshToken(a); err != nil {
 				if ue, ok := err.(*upstream.Error); ok && ue.Kind == upstream.ErrSessionDead {
 					r.status = "AUTH_INVALID"
@@ -82,17 +90,15 @@ func main() {
 		case err == nil:
 			r.status = "OK"
 			okN++
-		default:
+		case isAlready(err.Error()):
 			// DailyCheckin 已签到返回 code!=0 错误
-			if isAlready(err.Error()) {
-				r.status = "ALREADY"
-				r.detail = short(err.Error())
-				alreadyN++
-			} else {
-				r.status = "FAIL"
-				r.detail = short(err.Error())
-				failN++
-			}
+			r.status = "ALREADY"
+			r.detail = short(err.Error())
+			alreadyN++
+		default:
+			r.status = "FAIL"
+			r.detail = short(err.Error())
+			failN++
 		}
 		// 顺手查余额
 		if remain, _, qerr := up.UserResource(a); qerr == nil {
@@ -102,17 +108,18 @@ func main() {
 	}
 
 	// 报告
-	fmt.Printf("uid                                  | nick        | status       | remain | detail\n")
-	fmt.Printf("-------------------------------------+-------------+--------------+--------+------------------------------\n")
+	fmt.Fprintf(stdout, "uid                                  | nick        | status       | remain | detail\n")
+	fmt.Fprintf(stdout, "-------------------------------------+-------------+--------------+--------+------------------------------\n")
 	for _, r := range rows {
 		remain := "-"
 		if r.hasQuota {
 			remain = fmt.Sprintf("%d", r.remain)
 		}
-		fmt.Printf("%-36s | %-11s | %-12s | %-6s | %s\n",
+		fmt.Fprintf(stdout, "%-36s | %-11s | %-12s | %-6s | %s\n",
 			trunc(r.uid, 36), trunc(r.nick, 11), r.status, remain, r.detail)
 	}
-	fmt.Printf("\ntotal=%d ok=%d already=%d fail=%d\n", len(rows), okN, alreadyN, failN)
+	fmt.Fprintf(stdout, "\ntotal=%d ok=%d already=%d fail=%d\n", len(rows), okN, alreadyN, failN)
+	return 0
 }
 
 // 已签判定：code 非 0 且含 "已签到"/"already"/"checkin" 等字样

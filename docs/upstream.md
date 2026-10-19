@@ -12,6 +12,19 @@
 
 上游也用 `vx.y.z` 打标签，和本仓库的发版标签会撞名，所以本地拉上游时不带标签：`git config remote.upstream.tagOpt --no-tags`。本仓库的标签只以 origin 上的为准。
 
+Go 模块路径从 2026-10-19 起是 `github.com/yreidev/workbuddy2api-panel`（此前沿用上游的 `github.com/linguo2625469/workbuddy2api-panel`）。上游代码仍按旧路径导入，合并时先不提交，换完导入路径、编译通过再提交：
+
+```bash
+git fetch upstream
+git merge --no-ff --no-commit upstream/main
+# 冲突的 import 块保留本仓库的路径；上游新增或改动的文件用下面这条换过来
+git grep -lz 'github.com/linguo2625469/workbuddy2api-panel' -- '*.go' \
+  | xargs -0 -r sed -i 's#github.com/linguo2625469/workbuddy2api-panel#github.com/yreidev/workbuddy2api-panel#g'
+gofmt -l ./cmd ./internal   # 换路径可能改变 import 排序
+go build ./... && go test ./...
+git commit
+```
+
 ## 相对原始项目新增的能力
 
 | 能力 | 说明 |

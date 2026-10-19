@@ -1,4 +1,4 @@
-// 添加账号：浏览器 OAuth 登录（免重启热加载进池）或导入 cockpit tools 导出的 JSON。
+// 添加账号：浏览器 OAuth 登录（免重启热加载进池）或导入 JSON（账号池导出的凭证 / cockpit tools 导出的账号）。
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUpRightFromSquare, Copy } from '@gravity-ui/icons'
 import {
@@ -154,7 +154,7 @@ function ImportPanel() {
     const fd = new FormData()
     fd.append('file', file)
     try {
-      setResult(await upload<ImportResp>('import/cockpit', fd))
+      setResult(await upload<ImportResp>('import', fd))
       void qc.invalidateQueries({ queryKey: qk.overview })
     } catch (e) {
       setError('导入失败：' + errorMessage(e))
@@ -167,7 +167,7 @@ function ImportPanel() {
   const errors = result?.errors ?? []
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm text-muted">选择 cockpit tools 导出的 JSON 文件，批量导入账号。文件需为账号数组格式。</p>
+      <p className="text-sm text-muted">选择账号池「导出凭证」得到的 JSON 文件（单个或批量都行），或 cockpit tools 导出的账号数组。网关导出的文件会原样保留企业版、国际版等信息；cockpit tools 的文件没有这些，按域名判断国内版 / 国际版。</p>
       <input ref={input} type="file" accept=".json,application/json" hidden onChange={(e) => void onFile(e.target.files?.[0])} />
       <div>
         <BusyButton variant="secondary" busy={busy} onPress={() => input.current?.click()}>选择 JSON 文件</BusyButton>

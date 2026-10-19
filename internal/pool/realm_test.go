@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // realmPool 构造一个含 cn/global 账号的池，并确保 globalEnabled 开关开启（缺省）。
@@ -150,5 +150,78 @@ func TestPickExcludingForRealmTried(t *testing.T) {
 	}
 	if realmOf(a) != "cn" {
 		t.Fatalf("picked non-cn %s", a.UID)
+	}
+}
+
+// TestModelServesFilter 按目录的选号过滤在各条选号路径上都生效：企业专属模型只派给企业号
+// （普通选号、粘性候选、粘性号校验、可用列表），ModelBlocked 不把接不了的号算作「能服务」。
+// 拉域目录用的号优先个人号；EnterpriseUIDs 只列没禁用的企业号。
+func TestModelServesFilter(t *testing.T) {
+	withNoPickGap(t)
+	p := New("")
+	p.Add(&auth.Auth{UID: "a-ent", EnterpriseID: "ent-1", Domain: "www.codebuddy.cn"})
+	p.Add(&auth.Auth{UID: "b-per", Domain: "www.codebuddy.cn"})
+	p.SetModelServes(func(uid, realm string, enterprise bool, model string) bool {
+		return model != "claude-x" || enterprise
+	})
+
+	if a := p.PickExcludingForRealm(nil, "claude-x", "cn"); a == nil || a.UID != "a-ent" {
+		t.Fatalf("企业专属模型应选到企业号，got %v", a)
+	}
+	if a := p.PickExcludingForRealm(map[string]bool{"a-ent": true}, "claude-x", "cn"); a != nil {
+		t.Fatalf("企业号试过后不应退到个人号，got %s", a.UID)
+	}
+	if got := p.WeightedAvailableUIDsForModelRealm("claude-x", "cn"); !reflect.DeepEqual(got, []string{"a-ent"}) {
+		t.Errorf("粘性候选=%v want [a-ent]", got)
+	}
+	if got := p.AvailableUIDsForModel("claude-x"); !reflect.DeepEqual(got, []string{"a-ent"}) {
+		t.Errorf("AvailableUIDsForModel=%v want [a-ent]", got)
+	}
+	if a := p.PickByUIDForModel("b-per", "claude-x"); a != nil {
+		t.Error("绑在个人号上的会话请求企业专属模型时，粘性号应判为不可用")
+	}
+	if got := p.WeightedAvailableUIDsForModelRealm("shared", "cn"); !reflect.DeepEqual(got, []string{"a-ent", "b-per"}) {
+		t.Errorf("普通模型两个号都可选，got %v", got)
+	}
+
+	p.BlockModelBackoff("a-ent", "claude-x", "11102 model not found")
+	if st := p.ModelBlocked("claude-x"); !st.Blocked || st.Count != 1 {
+		t.Errorf("唯一能接的企业号被模型级冷却时应判为模型阻塞，got %+v", st)
+	}
+
+	if uid := p.CatalogUIDForRealm("cn"); uid != "b-per" {
+		t.Errorf("拉域目录应优先个人号，got %q", uid)
+	}
+	if got := p.EnterpriseUIDs("cn"); !reflect.DeepEqual(got, []string{"a-ent"}) {
+		t.Errorf("EnterpriseUIDs=%v", got)
+	}
+	p.Disable("a-ent", "test")
+	if got := p.EnterpriseUIDs("cn"); len(got) != 0 {
+		t.Errorf("禁用的企业号不列出，got %v", got)
+	}
+}
+
+// TestCatalogUIDForRealm 拉域目录优先用个人号（企业号的名单各自单独记）；只有企业号时退回企业号；
+// 该域没有可用账号时为空。
+func TestCatalogUIDForRealm(t *testing.T) {
+	withNoPickGap(t)
+	p := New("")
+	if got := p.CatalogUIDForRealm("cn"); got != "" {
+		t.Fatalf("空池应返回空串，got %q", got)
+	}
+	p.Add(&auth.Auth{UID: "a-ent", EnterpriseID: "ent-1", Domain: "www.codebuddy.cn"})
+	if got := p.CatalogUIDForRealm("cn"); got != "a-ent" {
+		t.Fatalf("只有企业号时用企业号，got %q", got)
+	}
+	p.Add(&auth.Auth{UID: "b-per", Domain: "www.codebuddy.cn"})
+	if got := p.CatalogUIDForRealm("cn"); got != "b-per" {
+		t.Fatalf("有个人号时优先个人号，got %q", got)
+	}
+	p.Disable("b-per", "test")
+	if got := p.CatalogUIDForRealm("cn"); got != "a-ent" {
+		t.Fatalf("个人号不可用时退回企业号，got %q", got)
+	}
+	if got := p.CatalogUIDForRealm("global"); got != "" {
+		t.Fatalf("没有国际版号时应为空，got %q", got)
 	}
 }

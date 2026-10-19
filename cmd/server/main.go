@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,25 +19,26 @@ import (
 	"syscall"
 	"time"
 
-	wb2api "github.com/linguo2625469/workbuddy2api-panel"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/panel"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/selfupdate"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/server"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	wb2api "github.com/yreidev/workbuddy2api-panel"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/panel"
+	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/redisstore"
+	"github.com/yreidev/workbuddy2api-panel/internal/reqlog"
+	"github.com/yreidev/workbuddy2api-panel/internal/scheduler"
+	"github.com/yreidev/workbuddy2api-panel/internal/selfupdate"
+	"github.com/yreidev/workbuddy2api-panel/internal/server"
+	"github.com/yreidev/workbuddy2api-panel/internal/session"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/usage"
 )
 
 // appVersion 网关版本，按语义化版本独立编号（不带 v）：有使用者看得到的改动就在推送前升版本号，
 // 并在 docs/CHANGELOG.md 顶部写好这一版的条目（测试会核对两者一致）；推送到 main 后 CI 自动打
 // vX.Y.Z 标签、建 Release、给镜像打版本标签。规则见 docs/releasing.md。
-const appVersion = "1.0.0"
+const appVersion = "1.1.0"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -52,53 +54,82 @@ func stateSibling(stateFile, name string) string {
 	return filepath.Join(dir, name)
 }
 
-func main() {
-	// 面板一键更新：run 优雅停机返回后原地换成自带程序（它再决定是否切到数据目录里的新版），
-	// 放在 run 之外，让 run 里的 defer（池状态落盘、用量与请求日志收尾）先跑完。
-	if upd, restart := run(); restart {
-		log.Printf("重启中……")
-		if err := upd.Reexec(); err != nil {
-			log.Fatalf("重启失败：%v", err)
-		}
-	}
+// 测试可替换的进程级入口：默认值就是原来的调用，行为不变。
+var (
+	exitFunc      = os.Exit
+	launchUpdater = selfupdate.Launch
+	notifyContext = signal.NotifyContext
+	newUpstream   = upstream.New
+	reexec        = (*selfupdate.Updater).Reexec
+)
+
+// fatalf 打印后以 1 退出（等价 log.Fatalf；退出函数换成变量便于测试）。
+func fatalf(format string, args ...any) {
+	log.Printf(format, args...)
+	exitFunc(1)
 }
 
-func run() (upd *selfupdate.Updater, restart bool) {
+func main() {
 	cfgPath := flag.String("config", "config.json", "配置文件路径（默认当前目录 config.json；不存在时自动生成推荐配置）")
 	showVersion := flag.Bool("version", false, "打印版本号后退出（一键更新用它试运行新程序）")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(appVersion)
-		os.Exit(0)
+		exitFunc(0)
+		return
 	}
+	cfg, err := loadOrInitConfig(*cfgPath)
+	if err != nil {
+		fatalf("load config: %v", err)
+	}
+	// 数据目录里有面板装好的新版就 exec 过去（不返回）：放在读取账号、恢复状态之前，什么都还没动。
+	upd := launchUpdater(filepath.Dir(cfg.StateFile), appVersion)
+	sigCtx, stop := notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	restart, err := run(sigCtx, cfg, *cfgPath, upd, newUpstream(), nil)
+	stop()
+	if err != nil {
+		fatalf("%v", err)
+	}
+	// 面板一键更新：run 优雅停机返回后原地换成自带程序（它再决定是否切到数据目录里的新版），
+	// 放在 run 之外，让 run 里的 defer（池状态落盘、用量与请求日志收尾）先跑完。
+	if restart {
+		log.Printf("重启中……")
+		if err := reexec(upd); err != nil {
+			fatalf("重启失败：%v", err)
+		}
+	}
+}
 
-	cfg, err := Load(*cfgPath)
+// loadOrInitConfig 读取配置；文件不存在时先落一份推荐配置（含随机 api_key）再读，
+// 生成失败（目录只读等）退回纯默认 + env，不阻塞启动。错误交给 main 打印。
+func loadOrInitConfig(path string) (*Config, error) {
+	cfg, err := Load(path)
 	if err != nil {
 		// errors.Is 才能看穿 Load 里 fmt.Errorf("%w") 的包装；os.IsNotExist 不行。
 		if errors.Is(err, fs.ErrNotExist) {
 			// 首次运行：目录下没有配置 → 自动落一份推荐配置（含随机 api_key）再加载。
 			// 双击 exe / 裸跑 docker 即开，无需先手工复制样例。
-			if key, werr := WriteDefault(*cfgPath); werr == nil {
-				log.Printf("config %s 不存在，已生成推荐配置（api_key=%s，记录在该文件里，可自行修改）", *cfgPath, key)
-				cfg, err = Load(*cfgPath)
+			if key, werr := WriteDefault(path); werr == nil {
+				log.Printf("config %s 不存在，已生成推荐配置（api_key=%s，记录在该文件里，可自行修改）", path, key)
+				cfg, err = Load(path)
 			}
 			if err != nil {
 				// 生成失败（目录只读等）：退回纯默认 + env（旧行为兜底），不阻塞启动。
-				log.Printf("config %s not found (auto-generate failed), using defaults+env: %v", *cfgPath, err)
+				log.Printf("config %s not found (auto-generate failed), using defaults+env: %v", path, err)
 				cfg, err = Load("")
 			}
 		}
 		if err != nil {
-			log.Fatalf("load config: %v", err)
+			return nil, err
 		}
 	}
+	return cfg, nil
+}
 
-	// 数据目录里有面板装好的新版就 exec 过去（不返回）：放在读取账号、恢复状态之前，什么都还没动。
-	upd = selfupdate.Launch(filepath.Dir(cfg.StateFile), appVersion)
-
+func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updater, up *upstream.Client, ln net.Listener) (restart bool, err error) {
 	auths, err := auth.LoadDir(cfg.AuthDir)
 	if err != nil {
-		log.Fatalf("load auths: %v", err)
+		return false, fmt.Errorf("load auths: %w", err)
 	}
 	log.Printf("loaded %d account(s) from %s", len(auths), cfg.AuthDir)
 
@@ -135,15 +166,7 @@ func run() (upd *selfupdate.Updater, restart bool) {
 		redisMode = "upstash"
 	}
 	if cfg.SessionSticky.Enabled {
-		sessRouter = session.New(session.Config{
-			TTL:        cfg.SessionTTL,
-			GCInterval: cfg.SessionGCInterval,
-			Store:      store,
-			Available:  p.AvailableUIDs,
-			// realm 感知闭包：带前缀模型名按 realm 过滤可用账号（跨 realm 不泄漏）；
-			// 裸名走 cn（现状零回归）。闭包内部 resolveModel 剥前缀，再按 realm 过滤。
-			AvailableForModel: realmAwareAvailableForModel(p),
-		})
+		sessRouter = session.New(sessionConfig(cfg.SessionTTL, cfg.SessionGCInterval, store, p))
 		sessRouter.LoadFromStore() // 启动时从 Redis 恢复粘性（读操作仅此处）
 		sessRouter.StartGC()
 		defer sessRouter.StopGC()
@@ -155,13 +178,7 @@ func run() (upd *selfupdate.Updater, restart bool) {
 		return 0
 	}
 
-	up := upstream.New()
-
-	// 积分保底的「收费」兜底判据：接上游模型目录的积分倍率表。本地实测台账无观测
-	// 时用它判收费——否则「没学过」恒等于「放行」，高价新模型会把触底号一笔打穿
-	// （kimi-k3-1 实案：全池无观测 → 保底全放行 → 两笔打穿并硬冷却到次日 04:00）。
-	// 位于 up 装配之后：倍率表由探测下发，闭包每次调用读实时快照。
-	p.SetModelRateOf(func(realm, model string) string { return up.ModelRate(realm, model) })
+	wireModelCatalog(p, up) // 位于 up 装配之后：倍率表与目录由探测下发，选号时读实时快照
 
 	// 短 RPC 总时长上限（refresh/checkin/balance/FetchModels），语义不变。
 	up.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -308,12 +325,12 @@ func run() (upd *selfupdate.Updater, restart bool) {
 		// 模型上限探测数据（scripts/probe_max_tokens.py --panel-out 写入）：
 		// 与 state 文件同目录，缺省 data/output_probes.json。
 		ProbeFile:  stateSibling(cfg.StateFile, "output_probes.json"),
-		ConfigPath: *cfgPath,
+		ConfigPath: cfgPath,
 		LoadConfig: func() (any, error) {
-			return Load(*cfgPath)
+			return Load(cfgPath)
 		},
 		SaveConfig: func(raw []byte) ([]string, error) {
-			return saveConfig(raw, *cfgPath, live, p, up, sch)
+			return saveConfig(raw, cfgPath, live, p, up, sch)
 		},
 	})
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
@@ -343,10 +360,16 @@ func run() (upd *selfupdate.Updater, restart bool) {
 		GlobalEnabled: cfg.Global.Enabled,
 	})
 
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// 先占端口再起后台任务和停机协程：端口被占时直接返回，不先跑调度、不打停机日志。
+	if ln == nil {
+		ln, err = net.Listen("tcp", cfg.Listen)
+		if err != nil {
+			return false, fmt.Errorf("http: %w", err)
+		}
+	}
+
 	// 面板一键更新 / 退回走和停止信号同一条优雅停机路径，停完由 main 原地重启。
-	ctx, requestRestart := context.WithCancel(sigCtx)
+	ctx, requestRestart := context.WithCancel(ctx)
 	defer requestRestart()
 	var restarting atomic.Bool
 	upd.Restart = func() {
@@ -364,6 +387,7 @@ func run() (upd *selfupdate.Updater, restart bool) {
 	// 模型归零；倍率表当时尚未建立）。
 	// 异步执行：不阻塞监听启动；失败仅记日志（下一轮懒触发或本轮重试仍可补上）。
 	go warmModelRates(ctx, up, p)
+	go refreshEnterpriseCatalogs(ctx, up, p)
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
@@ -410,8 +434,8 @@ func run() (upd *selfupdate.Updater, restart bool) {
 	defer stable.Stop()
 
 	log.Printf("workbuddy2api listening on %s (api_key=%v)，管理面板 http://127.0.0.1%s/panel/", cfg.Listen, cfg.APIKey != "", panelListenPath(cfg.Listen))
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("http: %v", err)
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		return false, fmt.Errorf("http: %w", err)
 	}
 	// Shutdown 一开始 ListenAndServe 就会返回 ErrServerClosed，此时在途请求还没结束：
 	// 必须等 Shutdown 返回再退出 main，否则进程立刻结束，等待时间形同虚设，
@@ -420,10 +444,10 @@ func run() (upd *selfupdate.Updater, restart bool) {
 	// 能走完优雅停机说明这一版能正常运行：没跑满 30 秒就被正常停掉（如重建容器）不算启动失败
 	upd.MarkStable()
 	if restarting.Load() {
-		return upd, true
+		return true, nil
 	}
 	log.Printf("bye")
-	return upd, false
+	return false, nil
 }
 
 // defaultShutdownGrace 优雅停机默认最长等待（未设置 WB2A_SHUTDOWN_TIMEOUT 时，与历史行为一致）。
@@ -459,9 +483,9 @@ func warmModelRates(ctx context.Context, up *upstream.Client, p *pool.Pool) {
 	if ctx.Err() != nil {
 		return
 	}
-	// CN：有可用 CN 账号才拉（与面板 models 同口径，避免无谓上游调用）。
-	if uids := p.AvailableUIDsForRealm("cn"); len(uids) > 0 {
-		if a := p.AuthByUID(uids[0]); a != nil {
+	// CN：有可用 CN 账号才拉（与面板 models 同口径，避免无谓上游调用）；优先用个人号。
+	if uid := p.CatalogUIDForRealm("cn"); uid != "" {
+		if a := p.AuthByUID(uid); a != nil {
 			if _, err := up.FetchModels(a); err != nil {
 				log.Printf("WARN: [upstream] warm model rates (cn): %v", err)
 			} else {
@@ -485,6 +509,52 @@ func warmModelRates(ctx context.Context, up *upstream.Client, p *pool.Pool) {
 	}
 }
 
+// 企业号目录的刷新节奏：每 enterpriseCatalogTick 检查一次，目录缺失或超过
+// enterpriseCatalogMaxAge 的号重拉。新加的企业号最迟一个 tick 内拉到目录；拉到之前它照常接请求。
+// tick 是变量，测试调短以验证第二轮刷新。
+var enterpriseCatalogTick = 5 * time.Minute
+
+const enterpriseCatalogMaxAge = 30 * time.Minute
+
+// refreshEnterpriseCatalogs 定时给国内版企业号各拉一份自己的模型目录（启动时先跑一轮），
+// 并清掉已移除、已禁用账号的目录。单号失败只记 WARN，保留它上次的目录。
+func refreshEnterpriseCatalogs(ctx context.Context, up *upstream.Client, p *pool.Pool) {
+	t := time.NewTicker(enterpriseCatalogTick)
+	defer t.Stop()
+	for {
+		refreshEnterpriseCatalogsOnce(ctx, up, p, time.Now())
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func refreshEnterpriseCatalogsOnce(ctx context.Context, up *upstream.Client, p *pool.Pool, now time.Time) {
+	uids := p.EnterpriseUIDs("cn")
+	keep := make(map[string]bool, len(uids))
+	for _, uid := range uids {
+		keep[uid] = true
+		if ctx.Err() != nil {
+			return
+		}
+		if at, ok := up.AccountCatalogFetched(uid); ok && now.Sub(at) < enterpriseCatalogMaxAge {
+			continue
+		}
+		a := p.AuthByUID(uid)
+		if a == nil {
+			continue
+		}
+		if infos, err := up.FetchAccountCatalog(a); err != nil {
+			log.Printf("WARN: [upstream] enterprise catalog %s: %v", logfmt.Label(a.UID, a.Nickname), err)
+		} else {
+			log.Printf("[upstream] enterprise catalog %s: %d models", logfmt.Label(a.UID, a.Nickname), len(infos))
+		}
+	}
+	up.PruneAccountCatalogs(keep)
+}
+
 // panelListenPath 从 listen 地址提取 ":port" 形式，用于启动日志拼面板 URL
 // （":7863" 或 "0.0.0.0:7863" → ":7863"；异常输入原样返回）。
 func panelListenPath(listen string) string {
@@ -495,6 +565,9 @@ func panelListenPath(listen string) string {
 	}
 	return listen
 }
+
+// renameConfig 是 saveConfig 落盘用的 rename；测试换成返回 EBUSY 的假函数，模拟单文件 bind mount。
+var renameConfig = os.Rename
 
 // saveConfig 面板保存配置：校验 → 落盘 → 热应用 → 返回需重启的字段列表。
 //
@@ -539,7 +612,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	if err := os.WriteFile(tmp, out, 0o600); err != nil {
 		return nil, fmt.Errorf("write config: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := renameConfig(tmp, path); err != nil {
 		// A single-file Docker bind mount cannot be renamed over its mount
 		// target (Linux returns EBUSY / "device or resource busy"). Keep the
 		// atomic path for regular files, but update the mounted file in place
@@ -552,11 +625,11 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 			_ = os.Remove(tmp)
 			return nil, fmt.Errorf("replace config (bind mount fallback): %w", openErr)
 		}
-		_, writeErr := f.Write(out)
+		_, writeErr := configFileWrite(f, out)
 		if writeErr == nil {
 			writeErr = f.Sync()
 		}
-		closeErr := f.Close()
+		closeErr := configFileClose(f)
 		// 写失败时保留 tmp（挂载文件已被 O_TRUNC 破坏，tmp 里是完整新内容，
 		// 可手工恢复）；写成功才清理。
 		if writeErr != nil {

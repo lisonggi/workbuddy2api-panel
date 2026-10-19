@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/prompt"
+	"github.com/yreidev/workbuddy2api-panel/internal/redisstore"
+	"github.com/yreidev/workbuddy2api-panel/internal/session"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/usage"
 )
 
 // TestMain 默认关闭聊天表格日志（chatLogEnabled=false），消除 go test 期间的 stdout 噪音。
@@ -841,7 +841,20 @@ func TestChatHTTP4xxClientDoesNotPenalize(t *testing.T) {
 }
 
 func TestModelsEndpoint(t *testing.T) {
-	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New()})
+	// 模型目录是包级缓存：前后都清空，不读别的用例留下的目录，也不让空缓存去连真实上游
+	resetModels := func() {
+		dynamicModelsCache.Lock()
+		dynamicModelsCache.ids = nil
+		dynamicModelsCache.fetched = time.Time{}
+		dynamicModelsCache.lastFail = time.Time{}
+		dynamicModelsCache.Unlock()
+	}
+	resetModels()
+	t.Cleanup(resetModels)
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		return 200, `{"code":0,"data":{"models":[{"id":"glm-5.2"},{"id":"glm-5.1"},{"id":"deepseek-v3.2"},{"id":"kimi-k2"},{"id":"hunyuan-t1"}],"agents":[{"name":"cli","models":["glm-5.2","glm-5.1","deepseek-v3.2","kimi-k2","hunyuan-t1"]}]}}`, false
+	})
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1561,10 +1574,8 @@ func TestCustomModeFingerprintSanitizePreserved(t *testing.T) {
 	if !strings.Contains(out, customSys) {
 		t.Errorf("out body should contain custom system prompt: %s", out)
 	}
-	if strings.Contains(out, "official CLI for Claude.") && strings.Contains(out, "You are Claude Code, Anthropic's") {
-		// 旧 system 原文（含句点）不应以 system 角色出现；但 sanitize 把它改写为
-		// "...official CLI tool for Claude."，所以原文 fingerprint 串应消失。
-	}
+	// 旧 system 原文（含句点）不应以 system 角色出现；sanitize 把它改写为
+	// "...official CLI tool for Claude."，所以原文 fingerprint 串应消失。
 	// 原始指纹串（逐字精确匹配）在出站 body 中应被改写：
 	// "official CLI for Claude." → "official CLI tool for Claude."
 	// "Main branch (" → "Default branch ("
@@ -1864,5 +1875,63 @@ func TestChatMarkupRepairStrictModeRejectsUndeclaredTool(t *testing.T) {
 	msg := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
 	if _, ok := msg["tool_calls"]; ok {
 		t.Fatalf("未声明的工具名不得转换: %#v", msg["tool_calls"])
+	}
+}
+
+// TestChatSessionKeyNotSentAsConversationID 客户端没给 conversation_id 时，会话键
+// 只做 prompt_cache_key 的会话源，不写进 X-Conversation-ID：派生键只看 system +
+// 首条 user，开头相同的两段不相干对话会撞成同一个值，发成头会让上游当成同一个会话。
+func TestChatSessionKeyNotSentAsConversationID(t *testing.T) {
+	var mu sync.Mutex
+	var convIDs, cacheKeys []string
+	up := &upstream.Client{
+		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if strings.Contains(r.URL.Path, "/chat/completions") {
+				raw, _ := io.ReadAll(r.Body)
+				var obj struct {
+					PromptCacheKey string `json:"prompt_cache_key"`
+				}
+				_ = json.Unmarshal(raw, &obj)
+				mu.Lock()
+				convIDs = append(convIDs, r.Header.Get("X-Conversation-ID"))
+				cacheKeys = append(cacheKeys, obj.PromptCacheKey)
+				mu.Unlock()
+			}
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(sseOK)),
+			}, nil
+		})},
+		ChatBaseCN:    "https://fake.example",
+		BillingBaseCN: "https://fake.example",
+	}
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at-1", ExpiresAt: 9999999999})
+	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
+	for _, body := range []string{
+		`{"model":"glm-5.2","messages":[{"role":"user","content":"你好"}]}`,
+		`{"model":"glm-5.2","messages":[{"role":"user","content":"写一首诗"}]}`,
+		`{"model":"glm-5.2","messages":[{"role":"user","content":"你好"}],"metadata":{"conversation_id":"conv-client"}}`,
+	} {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(convIDs) != 3 {
+		t.Fatalf("want 3 chat calls, got %d", len(convIDs))
+	}
+	if convIDs[0] != "" || convIDs[1] != "" {
+		t.Fatalf("会话键不得写进 X-Conversation-ID: got %q / %q", convIDs[0], convIDs[1])
+	}
+	if convIDs[2] != "conv-client" {
+		t.Fatalf("客户端的 conversation_id 应原样透传: got %q", convIDs[2])
+	}
+	if cacheKeys[0] == "" || cacheKeys[0] == cacheKeys[1] {
+		t.Fatalf("prompt_cache_key 应按会话键区分不同对话: got %q / %q", cacheKeys[0], cacheKeys[1])
 	}
 }

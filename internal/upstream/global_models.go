@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // GlobalModelNames 国际版（global realm）历史静态名单（PLAN §7.2 附录 21 名）。
@@ -200,6 +200,8 @@ func (c *Client) probeGlobalModels(a *auth.Auth) (names []string, infos []ModelI
 				outInfos = append(outInfos, mi)
 			}
 			sort.Strings(ids) // map 迭代序随机，排序保输出稳定
+			// 下游 extractEfforts 按 infos 的顺序产出名单，infos 也得排序。
+			sort.Slice(outInfos, func(i, j int) bool { return outInfos[i].ID < outInfos[j].ID })
 			ch <- probeResult{names: ids, infos: outInfos}
 		}()
 		return ch
@@ -248,6 +250,9 @@ func (c *Client) probeGlobalModels(a *auth.Auth) (names []string, infos []ModelI
 		// /v3 失败降级：不拖累企业端点结果（降级仅企业端点 + warn）。
 		log.Printf("WARN: [upstream] global models: v3/config probe failed (degraded to enterprise endpoint): %v", v3.err)
 		names, infos, efforts, defaults = extractEfforts(enterprise.infos)
+		if len(names) == 0 {
+			names = enterprise.names // 窄表（只有名字、infos 为 nil）：沿用名单，与两路都成功时一致
+		}
 		return names, infos, efforts, defaults, nil
 	}
 	if enterprise.err != nil {
@@ -516,7 +521,7 @@ func parseGlobalModelNames(raw []byte) (names []string, infos []ModelInfo, effor
 				}
 				efforts[id] = m.Reasoning.SupportedEfforts
 			}
-			if d := m.Reasoning.DefaultEffort; d != "" {
+			if d := mi.DefaultEffort; d != "" { // 与条目同口径：defaultEffort 新键优先、effort 老键兜底
 				if defaults == nil {
 					defaults = make(map[string]string)
 				}

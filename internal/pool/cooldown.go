@@ -335,6 +335,9 @@ func (p *Pool) ModelBlocked(model string) ModelBlockStatus {
 		if e.disabled || e.paused {
 			continue // 禁用/暂停号不参与：它们的不可用与模型无关
 		}
+		if !p.servesModel(e, model) {
+			continue // 按目录本就接不了这个模型（如企业专属模型之于个人号）：不算「能服务」
+		}
 		if !e.modelCooled(now, model) {
 			// 还有账号能服务这个模型 → 不是模型级阻塞。
 			return ModelBlockStatus{}

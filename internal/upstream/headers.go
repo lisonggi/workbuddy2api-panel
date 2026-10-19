@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/session"
 )
 
 const (
@@ -64,11 +64,6 @@ func (c *Client) defaultWorkBuddyUAFor(a *auth.Auth) string {
 		platform = "WorkBuddy AI"
 	}
 	return "WorkBuddy/" + c.clientVersion() + " " + platform + "/" + c.clientVersion() + " CLI/" + c.cliVersion()
-}
-
-// defaultWorkBuddyUA 返回 CN 形态的默认 UA（默认账号形态即 CN，零回归兼容既有调用/测试）。
-func (c *Client) defaultWorkBuddyUA() string {
-	return c.defaultWorkBuddyUAFor(nil)
 }
 
 // userAgent 返回当前出站 UA（客户端出站路径：chat/refresh/FetchModels）。
@@ -186,6 +181,7 @@ func (c *Client) injectCodeBuddyRequest(req *http.Request) {
 // messageID（消息级，每条独立）由 ChatHeaders 内部生成，无需外部可见。
 type ChatMeta struct {
 	ConversationID        string // X-Conversation-ID：body 提取的入站值，空则不发（透传优先，不伪造）
+	CacheKeySeed          string // prompt_cache_key 的会话哈希源（可含网关会话键，不发头）；空则用 ConversationID
 	ConversationRequestID string // X-Conversation-Request-ID / X-Root-Request-ID：聚合主键，必发
 	TraceID               string // X-Trace-ID：入站透传值，空则回落 conversationRequestID
 }
@@ -214,7 +210,7 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	// 安全红线：绝不在 chat 请求里携带 X-Refresh-Token。
 	// 企业与域头按 realm 分发：CN 走既有分支（EnterpriseID/Domain 原样透传，缺省 X-No-*）；
 	// global 账号由 injectGlobalChatHeaders 统一覆写为国际客户端形态
-	// （X-No-Enterprise-Id=1 声明无企业 + X-Domain=www.workbuddy.ai 声明国际版域），
+	// （企业号带企业 ID、个人号 X-No-Enterprise-Id=1，X-Domain=www.workbuddy.ai 声明国际版域），
 	// 且不回退 X-Domain 到登录会话原值——对齐 intl 项目出站头。
 	if a != nil && !a.IsGlobal() {
 		if a.EnterpriseID != "" {
@@ -240,17 +236,24 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	c.injectConversationHeaders(req, meta)
 }
 
-// injectGlobalChatHeaders global 账号（无企业 ID）的 chat 专属声明头，对齐 intl 项目
+// injectGlobalChatHeaders global 账号的 chat 专属声明头，对齐 intl 项目
 // （ANALYSIS-global-chat-solutions.md）：
-//   - X-No-Enterprise-Id: 1  个人账号无企业 ID，显式声明（避免上游按缺省/可疑判定）
-//   - X-Domain: www.workbuddy.ai  显式声明国际版域（与 Origin/Referer 同域）
+//   - 个人号 X-No-Enterprise-Id: 1  显式声明无企业 ID（避免上游按缺省/可疑判定）；
+//     企业号 X-Enterprise-Id: <企业 ID>——此前一律声明「无企业」，企业号会被当成个人号，
+//     用不了企业开通的模型和额度。企业号带企业 ID 与 cli2api、dsh-workbuddy-connect 的
+//     对话头一致，国际版企业号本仓库未实测；
+//   - X-Domain: www.workbuddy.ai  显式声明国际版域（与 Origin/Referer 同域）。
 //
 // 仅 global realm 注入；CN 账号走既有 X-No-Department-Info 等分支，零回归。
 func (c *Client) injectGlobalChatHeaders(req *http.Request, a *auth.Auth) {
 	if a == nil || !a.IsGlobal() {
 		return
 	}
-	req.Header.Set("X-No-Enterprise-Id", "1")
+	if a.IsEnterprise() {
+		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+	} else {
+		req.Header.Set("X-No-Enterprise-Id", "1")
+	}
 	req.Header.Set("X-Domain", "www.workbuddy.ai")
 }
 
@@ -304,7 +307,7 @@ func validTraceID(s string) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
-		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') && (ch < 'A' || ch > 'F') {
 			return false
 		}
 	}

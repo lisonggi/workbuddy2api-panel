@@ -29,11 +29,12 @@ import (
 // hourlyKeep 小时桶的保留时长；超出后折叠为日桶。
 const hourlyKeep = 90 * 24 * time.Hour
 
-// flushInterval 防抖落盘间隔。
-const flushInterval = 30 * time.Second
+// flushInterval 防抖落盘间隔（var 供测试缩短后台 ticker）。
+var flushInterval = 30 * time.Second
 
-// maxBuckets 桶数硬上限。超过时立即触发一次折叠，避免异常流量把内存/文件撑爆。
-const maxBuckets = 400_000
+// maxBuckets 桶数硬上限。超过时立即触发一次折叠，避免异常流量把内存/文件撑爆
+// （var 供测试降低阈值以覆盖折叠触发分支）。
+var maxBuckets = 400_000
 
 // hourLayout / dayLayout 分片键的时间格式（本地时区，与用户直觉一致）。
 const (
@@ -149,13 +150,13 @@ type Delta struct {
 	HasCredit        bool
 	ModelRate        string
 	// CacheHitTokens / CacheMissTokens 前缀缓存命中/未命中观测（issue #92）。
-	HasCacheTokens   bool
-	CacheHitTokens   int64
-	CacheMissTokens  int64
-	LatencyMs        int64
-	HasLatency       bool
-	TokensPerSecond  float64
-	HasTPS           bool
+	HasCacheTokens  bool
+	CacheHitTokens  int64
+	CacheMissTokens int64
+	LatencyMs       int64
+	HasLatency      bool
+	TokensPerSecond float64
+	HasTPS          bool
 }
 
 // Add 记录一次请求尝试。

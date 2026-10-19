@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // 查询与领取遵循官网协议，未开放/已领不请求领奖，奖励以官方响应为准。

@@ -1,0 +1,42 @@
+// 凭证导出：账号表多选后的操作（已选 N 个 / 导出凭证 / 取消选择）、勾选框，以及详情抽屉里的单个导出按钮。
+// 宽屏操作放在搜索框旁；窄屏卡片列表很长，操作改放底部吸附条（同配置页的保存条），滚到哪都看得到。
+import type { ReactNode } from 'react'
+import { Button, Checkbox } from '@heroui/react'
+import { useExportCredentials } from './useExportCredentials'
+
+/** 详情抽屉里导出单个账号 */
+export function ExportOneButton({ uid }: { uid: string }) {
+  const { busy, run } = useExportCredentials()
+  return <Button size="sm" variant="ghost" isPending={busy} onPress={() => void run([uid])}>导出凭证</Button>
+}
+
+export function SelectionCheckbox({ label, isSelected, isIndeterminate, onChange, children }: {
+  label: string
+  isSelected: boolean
+  isIndeterminate?: boolean
+  onChange: (v: boolean) => void
+  children?: ReactNode
+}) {
+  return (
+    <Checkbox aria-label={children ? undefined : label} isSelected={isSelected} isIndeterminate={isIndeterminate} onChange={onChange}>
+      <Checkbox.Content>
+        <Checkbox.Control>
+          <Checkbox.Indicator />
+        </Checkbox.Control>
+        {children}
+      </Checkbox.Content>
+    </Checkbox>
+  )
+}
+
+/** 已选并且在当前筛选结果里的 uid 的操作 */
+export function ExportActions({ selected, onClear }: { selected: string[]; onClear: () => void }) {
+  const { busy, run } = useExportCredentials()
+  return (
+    <>
+      <span className="text-sm text-muted">已选 {selected.length} 个</span>
+      <Button size="sm" variant="secondary" isPending={busy} onPress={() => void run(selected)}>导出凭证</Button>
+      <Button size="sm" variant="tertiary" onPress={onClear}>取消选择</Button>
+    </>
+  )
+}

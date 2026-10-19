@@ -44,12 +44,15 @@ func ResolveConversationID(body []byte) string {
 	return strOrEmpty(obj["conversationId"])
 }
 
+// cryptoRandRead 供测试替换（默认 crypto/rand.Read），用于覆盖熵源故障回退。
+var cryptoRandRead = cryptorand.Read
+
 // NewMessageID 生成消息级 ID：32 位 hex（UUID v4 去横线的长度形态），对齐官方
 // X-Request-ID / X-Conversation-Message-ID。crypto/rand 失败（理论上不可能）时回落
 // math/rand/v2 双 uint64 拼 32 hex——恒 32 hex、恒合法，可安全用作 B3 TraceId。
 func NewMessageID() string {
 	b := make([]byte, 16)
-	if _, err := cryptorand.Read(b); err == nil {
+	if _, err := cryptoRandRead(b); err == nil {
 		return hex.EncodeToString(b)
 	}
 	// 熵源故障的极端兜底：仍保证 32 hex（fallbackID 不 panic、不空串）。
@@ -78,6 +81,26 @@ func RequestIDForKey(key string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
+// turnMessage ParseTurn 只需要的消息字段。tool_calls 逐条留原文，各家客户端的字段类型
+// 不一（arguments 有字符串也有对象），整体按结构解析会让整个 body 解析失败。
+type turnMessage struct {
+	Role      string            `json:"role"`
+	Content   json.RawMessage   `json:"content"`
+	ToolCalls []json.RawMessage `json:"tool_calls"`
+}
+
+// Turn 一个请求在对话轮里的位置，供分配 X-Conversation-Request-ID（见 turns.go）。
+type Turn struct {
+	// Key 轮级键（规则见 TurnKey）；"" 表示建不出轮级键。
+	Key string
+	// Opening 开轮请求：最后一条 user 消息之后没有别的消息，即用户刚发出这一句。
+	Opening bool
+	// CallIDs 轮内后续请求：最后一条 user 消息之后第一条消息里的工具调用 id。
+	CallIDs []string
+	// reply 轮内后续请求：最后一条 user 消息之后第一条消息的摘要，找不回开轮 ID 时派生用。
+	reply string
+}
+
 // TurnKey 派生「对话轮级」聚合键：body 里**最后一条** role=="user" 消息的
 // 「序号 + 文本」。
 //
@@ -93,20 +116,30 @@ func RequestIDForKey(key string) string {
 // 的「对话轮」语义。序号一并入键：两次不同轮里内容相同的提问（"继续"）不会被并成
 // 一轮。
 //
+// 这条 user 消息之前若还有历史（system/developer 之外的消息），再拼上历史摘要
+// （见 historyDigest）：客户端没给会话 id 时会话键只由系统提示词 + 首条用户消息决定，
+// 开头相同、中途走向不同的两段对话在同一位置问同一句话（"继续"）会撞成同一轮。
+// 历史在一轮之内恒定（轮内只在末尾追加 assistant/tool），不影响轮内同键。
+// 没有历史的首轮键形态不变。到某一轮为止逐字相同的两段对话（最常见的是首轮）键仍然相同，
+// 客户端没给会话 id 时由 turns.go 另行区分。
+//
 // 无 body / 无 messages / 无 user 消息 / 该消息无文本 → ""（调用方回落请求级随机
 // ID，不伪造聚合键）。
 func TurnKey(body []byte) string {
+	return ParseTurn(body).Key
+}
+
+// ParseTurn 解析请求所在的对话轮：轮级键（TurnKey）、是不是开轮请求，以及轮内后续请求
+// 里这一轮第一条回复的工具调用 id 与摘要。建不出轮级键时返回零值。
+func ParseTurn(body []byte) Turn {
 	if len(body) == 0 {
-		return ""
+		return Turn{}
 	}
 	var obj struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
+		Messages []turnMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return ""
+		return Turn{}
 	}
 	for i := len(obj.Messages) - 1; i >= 0; i-- {
 		if obj.Messages[i].Role != "user" {
@@ -116,11 +149,63 @@ func TurnKey(body []byte) string {
 		if sig == "" {
 			// 最后一条 user 消息没有可签名内容（空/null/空 parts）→ 本轮不建立聚合键。
 			// 不继续往前找：整轮内该消息位置恒定，往前找反而会让键随 step 漂移。
-			return ""
+			return Turn{}
 		}
-		return fmt.Sprintf("u%d:%s", i, sig)
+		t := Turn{Key: fmt.Sprintf("u%d:%s", i, sig)}
+		if h := historyDigest(obj.Messages[:i]); h != "" {
+			t.Key = fmt.Sprintf("u%d:%s\x00%s", i, h, sig)
+		}
+		rest := obj.Messages[i+1:]
+		if len(rest) == 0 {
+			t.Opening = true
+			return t
+		}
+		t.CallIDs, t.reply = replySignature(rest[0])
+		return t
 	}
-	return ""
+	return Turn{}
+}
+
+// replySignature 取这一轮第一条回复的工具调用 id 和摘要（角色 + 文本 + 每个工具调用的原文）。
+// 摘要在一轮之内恒定：轮内只在它后面追加消息。
+func replySignature(m turnMessage) (callIDs []string, digest string) {
+	h := sha256.New()
+	h.Write([]byte(m.Role))
+	h.Write([]byte{0})
+	h.Write([]byte(contentText(m.Content)))
+	for _, raw := range m.ToolCalls {
+		h.Write([]byte{0})
+		h.Write(raw)
+		var tc struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &tc) == nil && tc.ID != "" {
+			callIDs = append(callIDs, tc.ID)
+		}
+	}
+	return callIDs, hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+// historyDigest 末条 user 消息之前的历史摘要：逐条取「角色 + 文本」入哈希，返回前 8 字节 hex。
+// 跳过 system/developer（派生的会话键已含系统提示词）；只取文本不取图片 part 的原文摘要，
+// 图片 URL 逐轮重签不会让键漂移。没有可入键的历史返回 ""。
+func historyDigest(msgs []turnMessage) string {
+	h := sha256.New()
+	n := 0
+	for _, m := range msgs {
+		if m.Role == "system" || m.Role == "developer" {
+			continue
+		}
+		n++
+		h.Write([]byte(m.Role))
+		h.Write([]byte{0})
+		h.Write([]byte(contentText(m.Content)))
+		h.Write([]byte{0})
+	}
+	if n == 0 {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
 // contentText 取消息 content 的文本：字符串形态直接返回；数组形态（多模态 parts）

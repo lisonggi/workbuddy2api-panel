@@ -1,7 +1,8 @@
 name: go-binaries
 
-# 可运行二进制构建/发布：
+# 可运行二进制与镜像的构建/发布：
 #   - 先构建面板前端（web/ → internal/panel/dist，含类型检查 / ESLint / 单元测试），产物供后续任务 go:embed
+#   - test 跑 gofmt / go vet / golangci-lint / go test；二进制、Release 和镜像（docker-ghcr.yml）都排在它之后，检查没过不发布
 #   - PR        → 测试 + 五平台编译验证（产物仅存 artifact，不发布）
 #   - push main → 同上 + 覆盖固定的「最新构建」Release（tag latest 跟随 main 移动）；
 #                 这次推送升了版本号（appVersion 对应的 vX.Y.Z 标签还不存在）时，再打标签、建正式 Release
@@ -20,7 +21,12 @@ on:
       - "docs/CHANGELOG.md"
       - "config.example.json"
       - "web/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "scripts/**"
+      - "*.sh"
       - ".github/workflows/go-binaries.yml"
+      - ".github/workflows/docker-ghcr.yml"
   workflow_dispatch:
 
 concurrency:
@@ -64,8 +70,30 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # 格式：有文件没按 gofmt 排版就失败，列出文件名（本地 gofmt -w 改好再推）
+      - name: gofmt
+        run: |
+          unformatted=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
+          if [ -n "$unformatted" ]; then
+            echo "::error::这些文件没有按 gofmt 排版，请运行 gofmt -w 后再提交"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      # 静态检查：只开 vet、staticcheck、unused、ineffassign，配置见 .golangci.yml
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
       # 前端产物已就位：面板包的 TestBuiltDistIsServable 会真实校验页面引用的每个资源
       - run: go test ./...
+
+  # 镜像：检查通过后才构建推送（PR 只构建不推送），见 docker-ghcr.yml
+  image:
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-ghcr.yml
 
   build:
     needs: [web, test]

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 var flushInterval = 5 * time.Second
@@ -208,7 +208,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 				if e.modelCost == nil {
 					e.modelCost = map[string]modelCostEntry{}
 				}
-				e.modelCost[m] = modelCostEntry{CostPer1k: mc.CostPer1k, LastSeen: mc.LastSeen, Samples: mc.Samples}
+				e.modelCost[m] = modelCostEntry(mc)
 			}
 		}
 		p.byUID[uid] = e
@@ -336,7 +336,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 				if s.ModelCosts == nil {
 					s.ModelCosts = map[string]stateModelCost{}
 				}
-				s.ModelCosts[m] = stateModelCost{CostPer1k: mc.CostPer1k, LastSeen: mc.LastSeen, Samples: mc.Samples}
+				s.ModelCosts[m] = stateModelCost(mc)
 			}
 		}
 		sf.Accounts[uid] = s

@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/changelog"
+	"github.com/yreidev/workbuddy2api-panel/internal/changelog"
 )
 
 const (
@@ -74,6 +74,9 @@ func (u *Updater) install(version string) {
 	u.restart()
 }
 
+// archiveSeek 供测试替换（默认 *os.File.Seek），用于覆盖解压前回卷失败。
+var archiveSeek = (*os.File).Seek
+
 // stage 把 version 装进数据目录并写好 current.json。
 func (u *Updater) stage(ctx context.Context, version string) error {
 	asset := AssetName(version, runtime.GOOS, runtime.GOARCH)
@@ -110,7 +113,7 @@ func (u *Updater) stage(ctx context.Context, version string) error {
 	}
 
 	u.setPhase(PhaseVerifying)
-	if _, err := arc.Seek(0, io.SeekStart); err != nil {
+	if _, err := archiveSeek(arc, 0, io.SeekStart); err != nil {
 		return err
 	}
 	tmp, sum, err := extractBinary(arc, u.dir)
@@ -140,7 +143,7 @@ func (u *Updater) fetch(ctx context.Context, version, url string, w io.Writer, l
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("Release v%s 里还没有 %s，CI 可能还在构建，过几分钟再试", version, path.Base(url))
+		return fmt.Errorf("Release v%s 里还没有 %s，CI 可能还在构建，过几分钟再试", version, path.Base(url)) //nolint:staticcheck // 面板原样显示这句，Release 是 GitHub 页面上的叫法
 	case resp.StatusCode != http.StatusOK:
 		return fmt.Errorf("下载 %s 失败：HTTP %d", path.Base(url), resp.StatusCode)
 	case resp.ContentLength > limit:
@@ -151,7 +154,7 @@ func (u *Updater) fetch(ctx context.Context, version, url string, w io.Writer, l
 		u.total = resp.ContentLength
 		u.mu.Unlock()
 	}
-	var dst io.Writer = w
+	dst := w
 	if progress {
 		dst = progressWriter{w: w, u: u}
 	}

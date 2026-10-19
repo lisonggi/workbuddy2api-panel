@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/changelog"
+	"github.com/yreidev/workbuddy2api-panel/internal/changelog"
 )
 
 const (
@@ -123,6 +123,9 @@ func Launch(dataDir, version string) *Updater {
 	return u
 }
 
+// osExecutable 供测试替换（默认 os.Executable）。
+var osExecutable = os.Executable
+
 func newUpdater(dataDir, version string) *Updater {
 	dir := filepath.Join(dataDir, "bin")
 	if abs, err := filepath.Abs(dir); err == nil {
@@ -133,7 +136,7 @@ func newUpdater(dataDir, version string) *Updater {
 		dir = real
 	}
 	u := &Updater{version: version, dir: dir, baseVersion: version, phase: PhaseIdle}
-	exe, err := os.Executable()
+	exe, err := osExecutable()
 	if err == nil {
 		if real, rerr := filepath.EvalSymlinks(exe); rerr == nil {
 			exe = real
@@ -351,6 +354,13 @@ func readManifest(dir string) (Manifest, error) {
 	return m, nil
 }
 
+// 测试可替换：清单写盘各步骤失败。默认值就是原来的直接调用，行为不变。
+var (
+	manifestWrite = (*os.File).Write
+	manifestSync  = (*os.File).Sync
+	manifestClose = (*os.File).Close
+)
+
 // writeManifest 先写临时文件再改名，断电也不会留下半截文件。
 func writeManifest(dir string, m Manifest) error {
 	b, err := json.MarshalIndent(m, "", "  ")
@@ -362,15 +372,15 @@ func writeManifest(dir string, m Manifest) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(append(b, '\n')); err != nil {
+	if _, err := manifestWrite(tmp, append(b, '\n')); err != nil {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := manifestSync(tmp); err != nil {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	if err := manifestClose(tmp); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), filepath.Join(dir, manifestName))

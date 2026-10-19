@@ -1,7 +1,7 @@
-// 账号池：统计（点一下按状态筛选）+ 积分到期提醒 + 搜索 + 账号表（可排序，点行看详情）+ 批量任务 + 模型锁池。窄屏把表格换成卡片列表。
+// 账号池：统计（点一下按状态筛选）+ 积分到期提醒 + 搜索 + 账号表（可排序，点行看详情，可多选导出凭证）+ 批量任务 + 模型锁池。窄屏把表格换成卡片列表。
 import { useMemo, useState } from 'react'
 import {
-  Button, Card, SearchField, Table, ToggleButton, ToggleButtonGroup, useMediaQuery, type SortDescriptor,
+  Button, Card, Checkbox, SearchField, Table, ToggleButton, ToggleButtonGroup, useMediaQuery, type Selection, type SortDescriptor,
 } from '@heroui/react'
 import { accountHealth, filterAccounts, poolCredits, sortAccounts, type AccountSortKey, type StatusFilter } from '../../lib/accounts'
 import { post } from '../../lib/api'
@@ -15,6 +15,7 @@ import { AccountButtons } from './AccountButtons'
 import { AccountName, CreditsCell, StatusCell, UsageChips } from './AccountCells'
 import { AccountDrawer } from './AccountDrawer'
 import { ExpiryReminder } from './ExpiryReminder'
+import { ExportActions, SelectionCheckbox } from './ExportBar'
 import { ModelLocks } from './ModelLocks'
 import { TasksModal } from './TasksModal'
 import { useAccountActions } from './useAccountActions'
@@ -52,6 +53,19 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
     () => sortAccounts(filterAccounts(accounts, fetchedAt, status, q), (sort?.column as AccountSortKey) ?? null, sort?.direction === 'descending'),
     [accounts, fetchedAt, status, q, sort],
   )
+  // 多选只算当前筛选结果里的号：表头全选（'all'）= 当前筛选和搜索出来的全部；筛掉的号即使勾过也不导出
+  const [selection, setSelection] = useState<Selection>(new Set())
+  const selected = useMemo(
+    () => (selection === 'all' ? rows : rows.filter((a) => selection.has(a.uid))).map((a) => a.uid),
+    [selection, rows],
+  )
+  const toggle = (uid: string, on: boolean) => {
+    const next = new Set(selection === 'all' ? rows.map((a) => a.uid) : selection)
+    if (on) next.add(uid)
+    else next.delete(uid)
+    setSelection(next)
+  }
+  const clearSelection = () => setSelection(new Set())
   const byUid = (uid: string | null) => accounts.find((a) => a.uid === uid) ?? null
   const detailAcct = byUid(detail)
   const tasksAcct = byUid(tasksOf)
@@ -99,19 +113,36 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
         actions={<BatchButtons />}
         contentClassName="flex flex-col gap-3"
       >
-        <SearchField aria-label="搜索账号" value={q} onChange={setQ} className="w-full sm:w-72">
-          <SearchField.Group>
-            <SearchField.SearchIcon />
-            <SearchField.Input placeholder="搜索昵称或 UID" />
-            <SearchField.ClearButton />
-          </SearchField.Group>
-        </SearchField>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SearchField aria-label="搜索账号" value={q} onChange={setQ} className="w-full sm:w-72">
+            <SearchField.Group>
+              <SearchField.SearchIcon />
+              <SearchField.Input placeholder="搜索昵称或 UID" />
+              <SearchField.ClearButton />
+            </SearchField.Group>
+          </SearchField>
+          {isDesktop ? (
+            selected.length > 0 && <div className="flex items-center gap-3"><ExportActions selected={selected} onClear={clearSelection} /></div>
+          ) : (
+            // 窄屏卡片没有表头复选框，在这里给「全选」
+            rows.length > 0 && (
+              <SelectionCheckbox
+                label="全选"
+                isSelected={selected.length === rows.length}
+                isIndeterminate={selected.length > 0 && selected.length < rows.length}
+                onChange={(v) => setSelection(v ? new Set(rows.map((a) => a.uid)) : new Set())}
+              >
+                <span className="text-sm">全选</span>
+              </SelectionCheckbox>
+            )
+          )}
+        </div>
         {accounts.length === 0 ? (
           <Empty title="账号池是空的">点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号。</Empty>
         ) : rows.length === 0 ? (
           <Empty title="没有符合条件的账号" action={<Button size="sm" variant="secondary" onPress={() => { setQ(''); setStatus('all') }}>清除筛选</Button>} />
         ) : isDesktop ? (
-          <AccountTable rows={rows} fetchedAt={fetchedAt} now={now} poolMax={poolMax} sort={sort} onSort={setSort} busy={busy} run={run} onOpen={setDetail} />
+          <AccountTable rows={rows} fetchedAt={fetchedAt} now={now} poolMax={poolMax} sort={sort} onSort={setSort} selection={selection} onSelect={setSelection} busy={busy} run={run} onOpen={setDetail} />
         ) : (
           <div className="flex flex-col gap-3">
             {rows.map((a) => {
@@ -119,7 +150,10 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
               return (
                 <Card key={a.uid} variant="secondary" className="gap-3 p-4">
                   <div className="flex items-start justify-between gap-2">
-                    <AccountName a={a} />
+                    <div className="flex min-w-0 items-start gap-2">
+                      <SelectionCheckbox label={'选择 ' + (a.nickname || a.uid)} isSelected={selected.includes(a.uid)} onChange={(v) => toggle(a.uid, v)} />
+                      <AccountName a={a} />
+                    </div>
                     <Button size="sm" variant="tertiary" onPress={() => setDetail(a.uid)}>详情</Button>
                   </div>
                   <StatusCell a={a} health={health} now={now} />
@@ -136,6 +170,11 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
                 </Card>
               )
             })}
+            {selected.length > 0 && (
+              <Card className="sticky bottom-3 z-30 flex-row flex-wrap items-center gap-3 p-3 shadow-lg">
+                <ExportActions selected={selected} onClear={clearSelection} />
+              </Card>
+            )}
           </div>
         )}
       </Panel>
@@ -156,13 +195,25 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
   )
 }
 
-function AccountTable({ rows, fetchedAt, now, poolMax, sort, onSort, busy, run, onOpen }: {
+const SelectBox = ({ label }: { label: string }) => (
+  <Checkbox aria-label={label} slot="selection" variant="secondary">
+    <Checkbox.Content>
+      <Checkbox.Control>
+        <Checkbox.Indicator />
+      </Checkbox.Control>
+    </Checkbox.Content>
+  </Checkbox>
+)
+
+function AccountTable({ rows, fetchedAt, now, poolMax, sort, onSort, selection, onSelect, busy, run, onOpen }: {
   rows: Account[]
   fetchedAt: number
   now: number
   poolMax: number
   sort: SortDescriptor | undefined
   onSort: (s: SortDescriptor) => void
+  selection: Selection
+  onSelect: (s: Selection) => void
   busy: string | null
   run: ReturnType<typeof useAccountActions>['run']
   onOpen: (uid: string) => void
@@ -180,9 +231,13 @@ function AccountTable({ rows, fetchedAt, now, poolMax, sort, onSort, busy, run, 
           className="min-w-[1140px]"
           sortDescriptor={sort}
           onSortChange={onSort}
+          selectionMode="multiple"
+          selectedKeys={selection}
+          onSelectionChange={onSelect}
           onRowAction={(key) => onOpen(String(key))}
         >
           <Table.Header>
+            <Table.Column id="select" className="pe-0"><SelectBox label="全选" /></Table.Column>
             <Table.Column id="name" isRowHeader allowsSorting className="whitespace-nowrap">
               {({ sortDirection }) => <Table.SortableColumnHeader sortDirection={sortDirection}>账号</Table.SortableColumnHeader>}
             </Table.Column>
@@ -198,6 +253,7 @@ function AccountTable({ rows, fetchedAt, now, poolMax, sort, onSort, busy, run, 
               const health = accountHealth(a, fetchedAt)
               return (
                 <Table.Row key={a.uid} id={a.uid} className="cursor-pointer">
+                  <Table.Cell className="pe-0"><SelectBox label={'选择 ' + (a.nickname || a.uid)} /></Table.Cell>
                   <Table.Cell><div className="max-w-40"><AccountName a={a} /></div></Table.Cell>
                   <Table.Cell><StatusCell a={a} health={health} now={now} /></Table.Cell>
                   <Table.Cell><CreditsCell a={a} poolMax={poolMax} now={now} /></Table.Cell>

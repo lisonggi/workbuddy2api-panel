@@ -425,7 +425,7 @@ func RepairAggregatedResponse(resp map[string]any, allowed map[string]bool, allo
 		if !ok {
 			continue
 		}
-		if tcs, ok := msg["tool_calls"].([]any); ok && len(tcs) > 0 {
+		if len(messageToolCalls(msg)) > 0 {
 			continue
 		}
 		if fr, _ := c["finish_reason"].(string); fr != "stop" {
@@ -445,6 +445,41 @@ func RepairAggregatedResponse(resp map[string]any, allowed map[string]bool, allo
 		c["finish_reason"] = "tool_calls"
 	}
 	return r
+}
+
+// messageToolCalls 取 message.tool_calls。Aggregate 产出的是 []map[string]any，
+// 标记修复写回的和从 JSON 解析出来的是 []any，两种都认；不认识的形态返回 nil。
+func messageToolCalls(msg map[string]any) []map[string]any {
+	switch tcs := msg["tool_calls"].(type) {
+	case []map[string]any:
+		return tcs
+	case []any:
+		out := make([]map[string]any, 0, len(tcs))
+		for _, tci := range tcs {
+			if tc, ok := tci.(map[string]any); ok {
+				out = append(out, tc)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// ResponseToolCallIDs 非流式响应里 choices[].message.tool_calls[].id（含标记修复还原出的调用），
+// 供调用方记下这次回复里有哪些工具调用（见 session/turns.go）。
+func ResponseToolCallIDs(resp map[string]any) []string {
+	var ids []string
+	choices, _ := resp["choices"].([]any)
+	for _, ci := range choices {
+		c, _ := ci.(map[string]any)
+		msg, _ := c["message"].(map[string]any)
+		for _, tc := range messageToolCalls(msg) {
+			if id, _ := tc["id"].(string); id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
 }
 
 // markupMessageToolCalls 把还原出来的调用转成**非流式** message.tool_calls 数组。

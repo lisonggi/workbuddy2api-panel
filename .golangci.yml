@@ -1,0 +1,15 @@
+# golangci-lint 配置（v2 格式）。先只开 vet、staticcheck、unused、ineffassign 四项；
+# errcheck 噪音太大（多是 resp.Body.Close 这类收尾），暂不开。CI 见 .github/workflows/go-binaries.yml。
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+  exclusions:
+    paths:
+      # 前端依赖里带的第三方 Go 代码（flatted），不是本仓库的
+      - web/node_modules

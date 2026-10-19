@@ -14,9 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
+	"github.com/yreidev/workbuddy2api-panel/internal/session"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 func TestCrossRealmFor(t *testing.T) {
@@ -224,6 +225,61 @@ func TestChatCrossRealmHotToggle(t *testing.T) {
 	live.Store(livecfg.Snapshot{CrossRealm: true})
 	if got := send(); got != "global.fake" {
 		t.Fatalf("热打开后 got %q want global.fake", got)
+	}
+}
+
+// TestChatCrossRealmSticky 会话粘性按跨域口径分配：合池时会话能绑到国际版号，开关关闭时不会粘到国际版号。
+// 国内版号积分更高，不走粘性的普通选号会挑它，所以打到国际版只能是粘性分配的结果。
+// 粘性路由的接法与 main.go 一致（AvailableForModel 用 pool.WeightedAvailableUIDsForModelRealm）。
+func TestChatCrossRealmSticky(t *testing.T) {
+	auth.SetGlobalEnabled(true)
+	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
+	cases := []struct {
+		name  string
+		on    bool
+		bound map[string]string // 请求前已有的会话绑定
+		want  string
+	}{
+		{"合池：已绑国际版号的会话继续用它", true, map[string]string{"conv-1": "g1"}, "global.fake"},
+		{"合池：新会话可以分到还没绑会话的国际版号", true, map[string]string{"conv-other": "cn1"}, "global.fake"},
+		{"开关关闭：绑在国际版号上的会话改回国内版", false, map[string]string{"conv-1": "g1"}, "cn.fake"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cn := &auth.Auth{UID: "cn1", AccessToken: "at-cn", ExpiresAt: 9999999999, Domain: "www.codebuddy.cn"}
+			gl := &auth.Auth{UID: "g1", AccessToken: "at-global", ExpiresAt: 9999999999, Domain: "www.workbuddy.ai"}
+			p := testPoolWith(cn, gl)
+			p.SetCredits("cn1", 1000, 0)
+			p.SetCredits("g1", 100, 0)
+			fake := &crossRealmUpstream{}
+			up := fake.client(t, []string{"m-both"}, []string{"m-both"})
+			_, _ = up.FetchModels(cn)
+			_, _ = up.FetchModels(gl)
+			sess := session.New(session.Config{
+				TTL:               time.Minute,
+				Available:         p.AvailableUIDs,
+				AvailableForModel: p.WeightedAvailableUIDsForModelRealm,
+			})
+			for key, uid := range c.bound {
+				sess.Bind(key, uid)
+			}
+			h := NewHandler(Config{
+				Pool: p, Upstream: up, Session: sess, GlobalEnabled: true,
+				Live: livecfg.New(livecfg.Snapshot{CrossRealm: c.on}),
+			})
+			// 同一会话连发两次：第二次走绑定快路径，仍应留在同一域
+			for i := 0; i < 2; i++ {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
+					`{"model":"m-both","messages":[{"role":"user","content":"hi"}],"stream":true,"metadata":{"conversation_id":"conv-1"}}`)))
+				if rec.Code != 200 {
+					t.Fatalf("第 %d 次 code=%d body=%s", i+1, rec.Code, rec.Body)
+				}
+				if got := fake.lastChat(); got != c.want {
+					t.Fatalf("第 %d 次 chat 打到 %q want %q", i+1, got, c.want)
+				}
+			}
+		})
 	}
 }
 

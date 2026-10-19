@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // InNightWindow 当前是否处于夜猫子计数窗口（23:00–08:00 本地时区）。
@@ -40,6 +40,9 @@ func (c *Client) BlackcatNeed(a *auth.Auth) (int64, error) {
 	return 0, nil
 }
 
+// nightChatGap RunNightChats 相邻两次对话之间的间隔。
+var nightChatGap = 4 * time.Second
+
 // RunNightChats 夜猫子：发 need 次 glm-5.2 真实对话（读干流）并上报事件链。
 // 返回成功次数。对话内容极短（1+1），消耗可忽略。
 func (c *Client) RunNightChats(a *auth.Auth, need int) (int64, error) {
@@ -63,7 +66,7 @@ func (c *Client) RunNightChats(a *auth.Auth, need int) (int64, error) {
 			return ok, fmt.Errorf("第 %d 次上报失败: %w", i+1, err)
 		}
 		ok++
-		time.Sleep(4 * time.Second)
+		time.Sleep(nightChatGap)
 	}
 	return ok, nil
 }

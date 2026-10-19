@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	auth2 "github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	auth2 "github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // 上游常量：CN → copilot.tencent.com（Origin 为 codebuddy.cn）；global → www.workbuddy.ai
@@ -115,8 +115,8 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 	return env.Data, resp.StatusCode, nil
 }
 
-func fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "login: "+format+"\n", args...)
+func fatal(w io.Writer, format string, args ...any) {
+	fmt.Fprintf(w, "login: "+format+"\n", args...)
 	exitFunc(1)
 }
 
@@ -205,22 +205,22 @@ func validateRealmMatch(stateRealm, cliRealm string) error {
 // runURL 执行 url 子命令：向 upstreamBase 的 state 端点 POST 取授权 URL，
 // state 落盘（带 realm），stdout 打印 authURL。out 接 stdout；stateFile 为落盘路径
 // （可注入临时文件便于测试）。空 realm 视为缺省（调用方已归一）。
-func runURL(base, origin, realm, statePath string, client *http.Client, out io.Writer) {
+func runURL(base, origin, realm, statePath string, client *http.Client, out, errOut io.Writer) {
 	headers := commonHeaders(origin)
 	data, _, err := doJSON(client, http.MethodPost, base+"/v2/plugin/auth/state?platform=CLI", headers, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		fatal("auth state failed: %v", err)
+		fatal(errOut, "auth state failed: %v", err)
 	}
 	var st struct {
 		State   string `json:"state"`
 		AuthURL string `json:"authUrl"`
 	}
 	if err := json.Unmarshal(data, &st); err != nil || st.State == "" || st.AuthURL == "" {
-		fatal("auth state: missing state or authUrl")
+		fatal(errOut, "auth state: missing state or authUrl")
 	}
 	raw, _ := json.Marshal(loginState{State: st.State, Realm: realm})
 	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
-		fatal("write state: %v", err)
+		fatal(errOut, "write state: %v", err)
 	}
 	fmt.Fprintln(out, st.AuthURL)
 }
@@ -228,18 +228,18 @@ func runURL(base, origin, realm, statePath string, client *http.Client, out io.W
 // runPoll 执行 poll 子命令：读 state 文件（realm 校验），向 upstreamBase 的 token 端点
 // GET 一次，成功再 GET login/account（带 Bearer），stdout 打印完整 token+account JSON。
 // statePath 可注入临时文件便于测试。
-func runPoll(base, origin, realm, statePath string, client *http.Client, out io.Writer) {
+func runPoll(base, origin, realm, statePath string, client *http.Client, out, errOut io.Writer) {
 	raw, err := os.ReadFile(statePath)
 	if err != nil {
-		fatal("read state: %v (先跑 login url)", err)
+		fatal(errOut, "read state: %v (先跑 login url)", err)
 	}
 	var ls loginState
 	if err := json.Unmarshal(raw, &ls); err != nil {
-		fatal("parse state: %v", err)
+		fatal(errOut, "parse state: %v", err)
 	}
 	// 防混域：state 落盘 realm 与命令行 --realm 不一致则拒绝（url 与 poll 必须同域）
 	if err := validateRealmMatch(ls.Realm, realm); err != nil {
-		fatal("%v", err)
+		fatal(errOut, "%v", err)
 	}
 	headers := commonHeaders(origin)
 	// handlePollLogin (oauth.go:108-162)：auth/token 是权威登录状态端点，
@@ -247,9 +247,9 @@ func runPoll(base, origin, realm, statePath string, client *http.Client, out io.
 	tokRaw, status, errTok := doJSON(client, http.MethodGet, base+"/v2/plugin/auth/token?state="+ls.State, headers, nil)
 	if errTok != nil {
 		if status == 0 || status >= 500 {
-			fatal("token endpoint error: %v", errTok)
+			fatal(errOut, "token endpoint error: %v", errTok)
 		}
-		fatal("登录未完成（waiting for login）。请确认已在浏览器完成登录再按 y")
+		fatal(errOut, "登录未完成（waiting for login）。请确认已在浏览器完成登录再按 y")
 	}
 	var tok struct {
 		AccessToken  string `json:"accessToken"`
@@ -258,7 +258,7 @@ func runPoll(base, origin, realm, statePath string, client *http.Client, out io.
 		Domain       string `json:"domain"`
 	}
 	if err := json.Unmarshal(tokRaw, &tok); err != nil || tok.AccessToken == "" {
-		fatal("登录未完成（waiting for login）。请确认已在浏览器完成登录再按 y")
+		fatal(errOut, "登录未完成（waiting for login）。请确认已在浏览器完成登录再按 y")
 	}
 	// login/account 拿 uid/nickname（带 Bearer）
 	var acct struct {
@@ -304,33 +304,39 @@ func buildLoginOutput(tok struct {
 }
 
 func main() {
-	realm, rest, err := parseRealmArgs(os.Args[1:])
-	if err != nil {
-		fatal("%v (usage: login [--realm=cn|global] <url|poll|realm>)", err)
-	}
-	if len(rest) < 1 {
-		fatal("usage: login [--realm=cn|global] <url|poll>")
-	}
 	// 每个流程独立 cookie jar（oauth.go:22-29：多账号登录互不串会话）
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Timeout: 30 * time.Second, Jar: jar}
+	run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, client)
+}
+
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer, client *http.Client) {
+	realm, rest, err := parseRealmArgs(args)
+	if err != nil {
+		fatal(stderr, "%v (usage: login [--realm=cn|global] <url|poll|realm>)", err)
+		return
+	}
+	if len(rest) < 1 {
+		fatal(stderr, "usage: login [--realm=cn|global] <url|poll>")
+		return
+	}
 
 	base, origin := realmConfig(realm)
 
 	switch rest[0] {
 	case "url":
-		runURL(base, origin, realm, stateFile, client, os.Stdout)
+		runURL(base, origin, realm, stateFile, client, stdout, stderr)
 
 	case "poll":
-		runPoll(base, origin, realm, stateFile, client, os.Stdout)
+		runPoll(base, origin, realm, stateFile, client, stdout, stderr)
 
 	case "realm":
 		// 交互式选域（login.sh 无 --realm 传参且 stdin 为 tty 时调用）。
 		// 提示打到 stderr，stdout 只输出归一化 realm，供 $( ) 捕获。
-		realm := promptRealm(os.Stdin, os.Stderr)
-		fmt.Println(realm)
+		r := promptRealm(stdin, stderr)
+		fmt.Fprintln(stdout, r)
 
 	default:
-		fatal("unknown subcommand %q (want url|poll|realm)", rest[0])
+		fatal(stderr, "unknown subcommand %q (want url|poll|realm)", rest[0])
 	}
 }

@@ -33,7 +33,7 @@ export function hasCapability(m: Model, c: Capability): boolean {
 }
 
 function searchText(m: Model): string {
-  return [m.id, m.name, m.vendor, m.description, (m.tags || []).join(' ')].filter(Boolean).join(' ').toLowerCase()
+  return [m.id, m.name, m.vendor, m.description, (m.tags || []).join(' '), m.enterprise_only ? '企业专属' : ''].filter(Boolean).join(' ').toLowerCase()
 }
 
 export function matchModel(m: Model, f: ModelFilter): boolean {

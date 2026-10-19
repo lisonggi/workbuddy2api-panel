@@ -1,0 +1,73 @@
+package livecfg
+
+import (
+	"sync"
+	"testing"
+	"time"
+)
+
+// TestNewAndLoad New 后 Load 拿到同一快照。
+func TestNewAndLoad(t *testing.T) {
+	want := Snapshot{
+		APIKey:               "k1",
+		SoftCooldown:         90 * time.Second,
+		SanitizeFingerprints: true,
+		RecordClientInfo:     true,
+		CrossRealm:           true,
+		UpdateCheck:          true,
+	}
+	h := New(want)
+	if got := h.Load(); got != want {
+		t.Errorf("Load = %+v，应为 %+v", got, want)
+	}
+}
+
+// TestStoreReplacesSnapshot Store 后 Load 拿到新值，旧快照整体被替换。
+func TestStoreReplacesSnapshot(t *testing.T) {
+	h := New(Snapshot{APIKey: "old", SoftCooldown: time.Minute})
+	h.Store(Snapshot{APIKey: "new", CrossRealm: true})
+	got := h.Load()
+	if got.APIKey != "new" || !got.CrossRealm || got.SoftCooldown != 0 {
+		t.Errorf("Store 后 = %+v", got)
+	}
+}
+
+// TestNilAndZeroHolderLoad nil Holder 与未 Store 的零值 Holder 都返回零值快照，不 panic。
+func TestNilAndZeroHolderLoad(t *testing.T) {
+	var nilHolder *Holder
+	if got := nilHolder.Load(); got != (Snapshot{}) {
+		t.Errorf("nil Holder = %+v，应为零值", got)
+	}
+	var zero Holder
+	if got := zero.Load(); got != (Snapshot{}) {
+		t.Errorf("零值 Holder = %+v，应为零值", got)
+	}
+}
+
+// TestConcurrentLoadStore 并发读写在 -race 下无数据竞争，读到的永远是完整快照。
+func TestConcurrentLoadStore(t *testing.T) {
+	h := New(Snapshot{APIKey: "v0"})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				h.Store(Snapshot{APIKey: "v", SoftCooldown: time.Duration(i*100 + j)})
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				if s := h.Load(); s.APIKey != "v0" && s.APIKey != "v" {
+					t.Errorf("读到不完整快照: %+v", s)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if got := h.Load(); got.APIKey != "v" {
+		t.Errorf("最终快照 = %+v", got)
+	}
+}

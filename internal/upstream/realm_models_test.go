@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // TestRealmHasModel 各域模型目录按拉取账号所在域分开记：国内版目录只进 cn，国际版探测只进 global；

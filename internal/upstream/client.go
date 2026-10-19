@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
 )
 
 // ErrKind 错误分类，pool 据此决定冷却时长。
@@ -632,6 +632,10 @@ type Client struct {
 	// realmModels 各域模型目录里出现过的模型名（跨域选号判断「这个域有没有这个模型」）。
 	// 与 modelRates 同口径整体替换，但不要求有可解析倍率；某域从未成功拉到目录时没有该键。
 	realmModels map[string]map[string]bool
+	// accountCatalogs 企业号各自的模型目录（按 uid），见 account_catalog.go。独立的锁，
+	// 不与 effortsMu 嵌套持有。
+	accountMu       sync.RWMutex
+	accountCatalogs map[string]accountCatalog
 
 	// globalModels 缓存 global 模型名目录探测结果（成功 ∩ 静态 overlay；
 	// 1h TTL + 5min 负缓存），见 global_models.go。按实例持有，测试新建 Client 即隔离。
@@ -738,17 +742,12 @@ func (c *Client) globalOn(a *auth.Auth) bool {
 	return c.GlobalEnabled && a != nil && a.Realm() == "global"
 }
 
-// 路径常量：CN 与 global 共用的 chat 出站路径（/v2 单路径）。
-const chatCompletionsPath = "/v2/chat/completions"
-
-// chatPaths 返回按 realm 的 chat 路径候选序列：
-// global → [/v2]（#119 固定单路径：/console 挂腾讯云 WAF body 内容规则，反引号
+// chatCompletionsPath 是 CN 与 global 共用的 chat 出站路径（/v2 单路径）。
+// global 自 #119 固定走 /v2：/console 挂腾讯云 WAF body 内容规则，反引号
 // printf/whoami 等命令执行特征确定性 403；/v2 同 base 不挂该规则，实测等价端点。
 // 已知取舍：若上游未来关闭 /v2，global chat 整体不可用——届时应重新启用 /console
-// 路径，此注释即"坏了再说"的锚点）；cn → [/v2]（单元素，现状）。
-func (c *Client) chatPaths(a *auth.Auth) []string {
-	return []string{chatCompletionsPath}
-}
+// 路径，此注释即"坏了再说"的锚点。
+const chatCompletionsPath = "/v2/chat/completions"
 
 // billing 域端点路径（billingBase + path）。balance/checkin 与 report（report.go）同域，
 // 统一走 billingJSON 发请求。
@@ -1022,65 +1021,64 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	prepared := c.prepareBody(body, a.Realm(), a.UID, meta.ConversationID)
+	cacheKeySeed := meta.CacheKeySeed
+	if cacheKeySeed == "" {
+		cacheKeySeed = meta.ConversationID
+	}
+	prepared := c.prepareBody(body, a.Realm(), a.UID, cacheKeySeed)
 	if c.globalOn(a) {
 		prepared = ensureConsoleSystem(prepared)
 	}
-	// reqCtx 的 cancel 在每个出口显式调用（Do 失败 / ≥400 / 成功分支移交 monitorBody），
-	// 循环本身各分支必 return——无循环尾兜底代码（此前外层 var cancel 从未赋值 +
-	// 尾部不可达 cancel() 是潜伏 nil-panic，已删；chatPaths 恒非空由构造保证）。
-	for _, path := range c.chatPaths(a) {
-		endpoint := c.chatBase(a) + path
-		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(prepared))
-		if err != nil {
-			return nil, 0, nil, err
-		}
-		c.ChatHeaders(req, a, clientIP, meta)
-		// 从调用方 ctx 派生：保留取消传播（父 ctx 取消 → 本 ctx 取消），
-		// 同时 monitorBody.Close 仍能独立 cancel 本分支（空闲掐流）。
-		reqCtx, cancel := context.WithCancel(ctx)
-		req = req.WithContext(reqCtx)
-		resp, err := c.chatHTTP().Do(req)
-		if err != nil {
-			cancel()
-			log.Printf("ERR: [upstream] chat_stream acct=%s: transport error: %v", logfmt.Label(a.UID, a.Nickname), err)
-			// 传输层失败 → 清空共享连接池的空闲连接（连接层加固）：失败连接可能仍
-			// 留在空闲池里，下一个请求会继续捡到它——仅靠 IdleConnTimeout 等过期
-			// 不够，主动清池才断根。
-			roundTripCloseIdle(c.chatHTTP().Transport)
-			return nil, 0, nil, err
-		}
-		if resp.StatusCode >= 400 {
-			raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			resp.Body.Close()
-			cancel()
-			// body 读失败（掐流/截断）→ 传输层错误：半截 raw 不交回调用方进 Classify，
-			// 否则 handler 侧 applyErrorPolicy 会按误判分类罚号。
-			if rerr != nil {
-				log.Printf("ERR: [upstream] chat_stream acct=%s: read body: %v", logfmt.Label(a.UID, a.Nickname), rerr)
-				return nil, 0, nil, fmt.Errorf("read body: %w", rerr)
-			}
-			kind := Classify(resp.StatusCode, string(raw))
-			log.Printf("WARN: [upstream] chat_stream acct=%s: upstream %d %s body=%s",
-				logfmt.Label(a.UID, a.Nickname), resp.StatusCode, kind, truncate(string(raw), 200))
-			// ≥400 直接返回（#119 后 global 单路径 /v2，chat 层无 fallback 链）。
-			// 分类一次、随 Kind 信封返回（含 Retry-After 头解析）：
-			// ErrNone 是防御分支（≥400 不应产生 None），返回原文让 handler 兜底。
-			if kind == ErrNone {
-				return nil, resp.StatusCode, raw, nil
-			}
-			ue := &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
-			if d, ok := ParseRetryAfter(resp.Header); ok {
-				ue.RetryAfter = d
-			}
-			return nil, resp.StatusCode, raw, ue
-		}
-		// 成功分支：cancel 所有权交给 monitorBody（其 Close 会 cancel）；
-		// IdleTimeout<=0 时 monitorBody 原样返回底流、无人调 cancel——可接受：
-		// 取消传播由 http.Transport 在 body Close / 父 ctx 取消时处理，连接正常清理。
-		return monitorBody(resp.Body, c.IdleTimeout, cancel), resp.StatusCode, nil, nil
+	// reqCtx 的 cancel 在每个出口显式调用（Do 失败 / ≥400 / 成功分支移交 monitorBody）。
+	endpoint := c.chatBase(a) + chatCompletionsPath
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(prepared))
+	if err != nil {
+		return nil, 0, nil, err
 	}
-	panic("unreachable: chatPaths is never empty") // for range 空集时编译器仍要求兜底 return；chatPaths 恒非空（构造保证），永不触达
+	c.ChatHeaders(req, a, clientIP, meta)
+	// 从调用方 ctx 派生：保留取消传播（父 ctx 取消 → 本 ctx 取消），
+	// 同时 monitorBody.Close 仍能独立 cancel 本分支（空闲掐流）。
+	reqCtx, cancel := context.WithCancel(ctx)
+	req = req.WithContext(reqCtx)
+	resp, err := c.chatHTTP().Do(req)
+	if err != nil {
+		cancel()
+		log.Printf("ERR: [upstream] chat_stream acct=%s: transport error: %v", logfmt.Label(a.UID, a.Nickname), err)
+		// 传输层失败 → 清空共享连接池的空闲连接（连接层加固）：失败连接可能仍
+		// 留在空闲池里，下一个请求会继续捡到它——仅靠 IdleConnTimeout 等过期
+		// 不够，主动清池才断根。
+		roundTripCloseIdle(c.chatHTTP().Transport)
+		return nil, 0, nil, err
+	}
+	if resp.StatusCode >= 400 {
+		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		cancel()
+		// body 读失败（掐流/截断）→ 传输层错误：半截 raw 不交回调用方进 Classify，
+		// 否则 handler 侧 applyErrorPolicy 会按误判分类罚号。
+		if rerr != nil {
+			log.Printf("ERR: [upstream] chat_stream acct=%s: read body: %v", logfmt.Label(a.UID, a.Nickname), rerr)
+			return nil, 0, nil, fmt.Errorf("read body: %w", rerr)
+		}
+		kind := Classify(resp.StatusCode, string(raw))
+		log.Printf("WARN: [upstream] chat_stream acct=%s: upstream %d %s body=%s",
+			logfmt.Label(a.UID, a.Nickname), resp.StatusCode, kind, truncate(string(raw), 200))
+		// ≥400 直接返回（#119 后 global 单路径 /v2，chat 层无 fallback 链）。
+		// 分类一次、随 Kind 信封返回（含 Retry-After 头解析）：
+		// ErrNone 是防御分支（≥400 不应产生 None），返回原文让 handler 兜底。
+		if kind == ErrNone {
+			return nil, resp.StatusCode, raw, nil
+		}
+		ue := &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
+		if d, ok := ParseRetryAfter(resp.Header); ok {
+			ue.RetryAfter = d
+		}
+		return nil, resp.StatusCode, raw, ue
+	}
+	// 成功分支：cancel 所有权交给 monitorBody（其 Close 会 cancel）；
+	// IdleTimeout<=0 时 monitorBody 原样返回底流、无人调 cancel——可接受：
+	// 取消传播由 http.Transport 在 body Close / 父 ctx 取消时处理，连接正常清理。
+	return monitorBody(resp.Body, c.IdleTimeout, cancel), resp.StatusCode, nil, nil
 }
 
 // ModelInfo 动态模型信息（含 maxInputTokens/maxOutputTokens + 上游模型对象全字段）。
@@ -1239,6 +1237,41 @@ const codeBuddyCLIUA = "CLI/2.63.2 CodeBuddy/2.63.2"
 // /v3 失败（400/网络错/解析失败）不拖累企业端点结果——降级为仅企业端点，warn 日志；
 // 反之亦然（两路独立容错）。
 func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
+	out, err := c.probeCatalog(a)
+	if err != nil {
+		return nil, err
+	}
+	// 企业号的名单因企业而异，顺带记一份它自己的目录（个人号不记）。
+	c.storeAccountCatalog(a, out)
+	c.storeModelRates(a.Realm(), out)
+	ids := make([]string, 0, len(out))
+	for _, mi := range out {
+		ids = append(ids, mi.ID)
+	}
+	c.storeRealmModels(a.Realm(), ids)
+	// 刷新 effort 能力缓存（供请求体降级；无 supportedEfforts 的模型不入桶）。
+	// 空桶时跳过写：避免「某探测无档位数据」清掉既有桶。
+	cache := make(map[string][]string, len(out))
+	defCache := make(map[string]string, len(out))
+	for _, mi := range out {
+		if len(mi.Efforts) > 0 {
+			cache[mi.ID] = mi.Efforts
+		}
+		if mi.DefaultEffort != "" {
+			defCache[mi.ID] = mi.DefaultEffort
+		}
+	}
+	if len(cache) == 0 && len(defCache) == 0 {
+		return out, nil
+	}
+	// 按探测账号的 realm 写入对应桶：CN 探测只进 cn 桶，global 同模型名不被污染（C-2）。
+	c.storeEfforts(a.Realm(), cache, defCache)
+	return out, nil
+}
+
+// probeCatalog 并发探测 /v3/config 与企业端点并合并成一份目录，不写任何缓存
+// （FetchModels 写域缓存，FetchAccountCatalog 只写企业号自己的目录）。
+func (c *Client) probeCatalog(a *auth.Auth) ([]ModelInfo, error) {
 	type probeResult struct {
 		infos []ModelInfo
 		err   error
@@ -1269,29 +1302,6 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	if len(out) == 0 {
 		return nil, fmt.Errorf("models api returned empty list")
 	}
-	c.storeModelRates(a.Realm(), out)
-	ids := make([]string, 0, len(out))
-	for _, mi := range out {
-		ids = append(ids, mi.ID)
-	}
-	c.storeRealmModels(a.Realm(), ids)
-	// 刷新 effort 能力缓存（供请求体降级；无 supportedEfforts 的模型不入桶）。
-	// 空桶时跳过写：避免「某探测无档位数据」清掉既有桶。
-	cache := make(map[string][]string, len(out))
-	defCache := make(map[string]string, len(out))
-	for _, mi := range out {
-		if len(mi.Efforts) > 0 {
-			cache[mi.ID] = mi.Efforts
-		}
-		if mi.DefaultEffort != "" {
-			defCache[mi.ID] = mi.DefaultEffort
-		}
-	}
-	if len(cache) == 0 && len(defCache) == 0 {
-		return out, nil
-	}
-	// 按探测账号的 realm 写入对应桶：CN 探测只进 cn 桶，global 同模型名不被污染（C-2）。
-	c.storeEfforts(a.Realm(), cache, defCache)
 	return out, nil
 }
 
@@ -1334,6 +1344,7 @@ func (c *Client) fetchEnterpriseModels(a *auth.Auth) ([]ModelInfo, error) {
 	c.CommonHeaders(req, a) // 复用共享请求头（Origin/Referer/UA/Accept/Content-Type）
 	// AccessToken 加锁快照（见 auth.AccessTokenValue：keepalive 刷新在 a.mu 内改写）。
 	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
+	injectCatalogIdentity(req, a)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -1649,15 +1660,25 @@ func (c *Client) storeRealmModels(realm string, ids []string) {
 	c.realmModels[realmKey(realm)] = set
 }
 
-// RealmHasModel 报告该域最近一次成功拉到的模型目录里有没有这个模型。
+// RealmHasModel 报告该域最近一次成功拉到的模型目录里有没有这个模型；该域企业号
+// 自己目录里的模型（企业专属）也算。
 // 目录从未拉到（启动预热失败、该域没有账号）时返回 false——宁可不往那个域分流。
 func (c *Client) RealmHasModel(realm, model string) bool {
 	if c == nil || model == "" {
 		return false
 	}
+	if has, _ := c.realmCatalogHas(realm, model); has {
+		return true
+	}
+	return c.accountCatalogsHave(realm, model)
+}
+
+// realmCatalogHas 域目录里有没有这个模型；known 报告该域目录是否拉到过。
+func (c *Client) realmCatalogHas(realm, model string) (has, known bool) {
 	c.effortsMu.RLock()
 	defer c.effortsMu.RUnlock()
-	return c.realmModels[realmKey(realm)][model]
+	set, known := c.realmModels[realmKey(realm)]
+	return set[model], known
 }
 
 // ModelRate 返回最近成功刷新的指定域模型生效倍率；未知返回空串。
@@ -1711,6 +1732,7 @@ func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]Mode
 	}
 	req.Header.Set("X-Domain", v3ConfigDomain(a, c.chatBase(a)))
 	req.Header.Set("X-Product", "SaaS")
+	injectCatalogIdentity(req, a)
 	if ua == "" {
 		ua = codeBuddyIDEUA
 	}

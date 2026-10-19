@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
 )
 
 // Auth 是归一化后的账号凭证（来源可以是插件 OAuth 嵌套形或手写扁平形）。
@@ -173,7 +173,8 @@ func BackfillRealmFor(a *Auth, realm string) (bool, error) {
 	if a == nil {
 		return false, fmt.Errorf("nil auth")
 	}
-	switch strings.TrimSpace(realm) {
+	realm = strings.TrimSpace(realm)
+	switch realm {
 	case "cn", "global":
 	default:
 		return false, fmt.Errorf("realm must be cn/global, got %q", realm)
@@ -303,18 +304,16 @@ func Parse(raw []byte) (*Auth, error) {
 	return &a, nil
 }
 
-// SaveAtomic 以嵌套形原子写回 FilePath（tmp + rename），保持嵌套形（插件可读）格式。
-// 全程持 a.mu：防止与 RefreshToken 修改 token 字段并发，杜绝写回半更新。
-// 防御：accessToken 为空时拒绝写回，避免误用空凭证覆盖有效文件。
-func (a *Auth) SaveAtomic() error {
+// Document 返回凭证的嵌套形文档，与 SaveAtomic 写进 auth 文件的内容一致（面板导出用，
+// Parse 原样读回）。加锁读取：keepalive 刷新会在 a.mu 内改写 token 字段。
+func (a *Auth) Document() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if strings.TrimSpace(a.AccessToken) == "" {
-		return fmt.Errorf("save refused: empty accessToken (uid=%s)", a.UID)
-	}
-	if a.FilePath == "" {
-		return fmt.Errorf("no FilePath set")
-	}
+	return a.documentLocked()
+}
+
+// documentLocked Document 的无锁实现，仅限已持 a.mu 的调用方。
+func (a *Auth) documentLocked() map[string]any {
 	doc := map[string]any{
 		"auth": map[string]any{
 			"accessToken":  a.AccessToken,
@@ -334,7 +333,22 @@ func (a *Auth) SaveAtomic() error {
 	if a.DeviceToken != "" {
 		doc["device_token"] = a.DeviceToken
 	}
-	raw, err := json.MarshalIndent(doc, "", "  ")
+	return doc
+}
+
+// SaveAtomic 以嵌套形原子写回 FilePath（tmp + rename），保持嵌套形（插件可读）格式。
+// 全程持 a.mu：防止与 RefreshToken 修改 token 字段并发，杜绝写回半更新。
+// 防御：accessToken 为空时拒绝写回，避免误用空凭证覆盖有效文件。
+func (a *Auth) SaveAtomic() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if strings.TrimSpace(a.AccessToken) == "" {
+		return fmt.Errorf("save refused: empty accessToken (uid=%s)", a.UID)
+	}
+	if a.FilePath == "" {
+		return fmt.Errorf("no FilePath set")
+	}
+	raw, err := json.MarshalIndent(a.documentLocked(), "", "  ")
 	if err != nil {
 		return err
 	}

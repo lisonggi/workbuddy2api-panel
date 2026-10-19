@@ -19,13 +19,13 @@
 
 | 视图 | 能做什么 |
 |---|---|
-| **账号池** | 统计卡：总数 / 可用 / 冷却 / 禁用 / 暂停，点一下即按状态筛选；另有积分合计与粘性会话数。<br>积分到期提醒：打开就列出每个账号最早一批要过期的积分，以及到期前日均至少要用掉多少（本地快照，不查上游）；点「检查」逐账号向上游查询，看到全部到期批次。<br>账号表：状态与冷却倒计时、被限额的模型及解封时间、积分量条与最早到期、成功 / 失败 / 在途、用量与速率。<br>单号操作：签到、余额、任务、解冻、暂停选号、禁用、移除。<br>批量操作：全部签到、旅行巡检、活跃上报、全部保活。<br>模型锁池：哪些模型被上游按模型限额、还剩几个号可用、多久后解锁。 |
-| **账号详情**（点账号行） | 模型限额台账、每个模型的实测单价、最早到期批次、连败与熔断计数、最近一次请求的模型与耗时 |
-| **添加账号** | 浏览器内完成国内版 / 国际版 OAuth 登录，凭证落盘并热加载进池，不用重启；国际版会自动完成注册地区、激活与试用额度领取。也可导入 cockpit tools 导出的 JSON |
+| **账号池** | 统计卡：总数 / 可用 / 冷却 / 禁用 / 暂停，点一下即按状态筛选；另有积分合计与粘性会话数。<br>积分到期提醒：打开就列出每个账号最早一批要过期的积分，以及到期前日均至少要用掉多少（本地快照，不查上游）；点「检查」逐账号向上游查询，看到全部到期批次。<br>账号表：状态与冷却倒计时、被限额的模型及解封时间、积分量条与最早到期、成功 / 失败 / 在途、用量与速率。<br>单号操作：签到、余额、任务、解冻、暂停选号、禁用、移除。<br>批量操作：全部签到、旅行巡检、活跃上报、全部保活。<br>导出凭证：勾选账号（表头勾选框 = 当前筛选结果全选，手机端在搜索框旁「全选」）后点「导出凭证」，下载一个 JSON 文件；单个账号在详情里导出。<br>模型锁池：哪些模型被上游按模型限额、还剩几个号可用、多久后解锁。 |
+| **账号详情**（点账号行） | 模型限额台账、每个模型的实测单价、最早到期批次、连败与熔断计数、最近一次请求的模型与耗时；可单独导出这个号的凭证 |
+| **添加账号** | 浏览器内完成国内版 / 国际版 OAuth 登录，凭证落盘并热加载进池，不用重启；国际版会自动完成注册地区、激活与试用额度领取。也可导入 JSON：账号池导出的凭证（单个或批量），或 cockpit tools 导出的账号 |
 | **用量** | 请求数、token 构成、失败率、平均延迟与吐字速率；按小时的 token 时序图；按账号 / 模型 / 域的用量明细；积分扣除历史（每百万 token 积分、前缀缓存命中率） |
 | **积分构成** | 积分到期分布（按剩余天数、按账号着色）、账号对比、单账号逐包明细 |
 | **任务中心** | 扫描全部账号的成长任务待办，排队一键执行，实时显示进度；积分补偿查询与领取；券码查询 |
-| **模型与档位** | 每个模型的积分倍率（含限时优惠）、默认思考档、支持的档位、上下文长度与最大输出；可叠加[实测输出上限](deployment.md#探测模型真实输出上限)。支持关键词、域、能力、档位、价格筛选和多种排序，数据一次拉全后在浏览器里筛 |
+| **模型与档位** | 每个模型的积分倍率（含限时优惠）、默认思考档、支持的档位、上下文长度与最大输出；只有企业号能用的模型标「企业专属」；可叠加[实测输出上限](deployment.md#探测模型真实输出上限)。支持关键词、域、能力、档位、价格筛选和多种排序，数据一次拉全后在浏览器里筛 |
 | **配置** | 在线编辑配置，分服务 / 定时任务 / 账号池与流量治理 / 上游与高级四组；底部保存条显示改了几项，需要重启的字段有标记，时长与时点当场校验 |
 | **运行日志** | 请求记录：成功率、平均耗时、每条请求的模型 / 账号 / 来源 IP / User-Agent / token 与缓存命中 / 积分 / 请求 ID，可按条件和时间范围从归档里查。<br>服务日志：最近 500 行，按任务 / 对话 / 系统频道、级别和关键字筛选 |
 
@@ -98,10 +98,10 @@ IP 属于个人信息，所以由 `logging.request_client_info` 控制，默认�
 | 分组 | 端点 |
 |---|---|
 | 只读 | `GET overview` · `version`（`since` = 上次看过的版本，返回之后到当前版本的更新日志，`none` 表示没看过、只返回当前这一版；更新检查开着时另有远端最新版本和比本机新的各版本条目；`self_update` 是一键更新的状态与进度）· `usage`（`hours` 或 `from`/`to`）· `packages` · `models` · `model_probes` · `logs` · `request_metrics` · `request_logs`（`limit` / `outcome` / `account` / `model` / `client_ip` / `user_agent` / `from` / `to`）· `config` · `tasks/queue` · `school/vouchers` |
-| 账号运维 | `POST accounts/{uid}/checkin` · `balance` · `revive` · `pause` · `resume` · `disable` · `remove`<br>`POST checkin_all` · `travel_all` · `activity_all` · `keepalive_all` · `balance_all` |
+| 账号运维 | `POST accounts/{uid}/checkin` · `balance` · `revive` · `pause` · `resume` · `disable` · `remove`<br>`POST checkin_all` · `travel_all` · `activity_all` · `keepalive_all` · `balance_all`<br>`POST accounts/export`（`{"uids":[…]}`，返回 `{"accounts":[…]}`，每项与 `auths/workbuddy-<uid>.json` 同形；有 uid 不在池里时整单 404） |
 | 任务 | `GET accounts/{uid}/tasks`<br>`POST accounts/{uid}/tasks/accept` · `accept_all` · `claim` · `auto` · `auto_all`<br>`POST tasks/scan_all` · `tasks/run_queue` |
 | 积分补偿 | `GET compensation`（逐账号查询官方状态，含已禁用账号，带 `disabled` 标记）<br>`POST accounts/{uid}/compensation/claim` · `POST compensation/claim_all`（先查状态再领取，已禁用账号只查不领；批量结果逐账号返回） |
-| 添加账号 | `POST login/start` · `GET login/poll` · `GET login/regions` · `POST import/cockpit` |
+| 添加账号 | `POST login/start` · `GET login/poll` · `GET login/regions` · `POST import`（multipart 字段 `file`；网关凭证与 cockpit tools 格式逐项自动识别，单个对象或数组都行；旧路径 `import/cockpit` 仍可用） |
 | 写入 | `POST config`（校验 → 落盘 → 热应用，返回需重启的字段）· `POST usage/save`（立即把内存里的用量落盘） |
 | 更新 | `POST version/check`（立即检查更新，返回同 `version`；30 秒内重复调用直接返回上次结果）<br>`POST update`（`{"version":"x.y.z"}`，必须是检查到的、比本机新的版本；在后台下载校验后重启，进度看 `version` 返回的 `self_update`）<br>`POST update/rollback`（删掉面板安装的版本；正在运行它时重启回程序自带的版本） |
 

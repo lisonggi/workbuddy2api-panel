@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 // Config 调度器依赖。
@@ -356,11 +356,14 @@ func (s *Scheduler) waitSlot(ctx context.Context, next time.Time, step time.Dura
 	}
 }
 
+// schedNow 供测试替换（默认 time.Now）：Run 用它计算下一次唤醒时刻。
+var schedNow = time.Now
+
 // Run 主循环，阻塞直到 ctx 取消。
 // Reconfigure 触发 rearmSchedule 时提前唤醒重算（新时点/开关立即生效）。
 func (s *Scheduler) Run(ctx context.Context) {
 	for {
-		next, kinds := s.nextWake(time.Now())
+		next, kinds := s.nextWake(schedNow())
 		if next.IsZero() {
 			// 四类任务全部禁用：不空转，等重排通知（在线改配置重新启用）或退出信号。
 			select {

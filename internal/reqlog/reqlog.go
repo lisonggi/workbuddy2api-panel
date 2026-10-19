@@ -29,10 +29,19 @@ const (
 	archiveFileGlob = "requests-*.jsonl"
 )
 
+// 测试可替换：随机数失败回退、归档刷盘周期与写缓冲、文件 Stat。
+// 默认值就是原来的直接调用/常量，行为不变。
+var (
+	randRead        = rand.Read
+	archiveTick     = time.Second
+	newArchiveBuf   = bufio.NewWriterSize
+	statArchiveFile = (*os.File).Stat
+)
+
 // NewRequestID 生成不含用户信息的本地请求 ID。
 func NewRequestID() string {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err == nil {
+	if _, err := randRead(b[:]); err == nil {
 		return fmt.Sprintf("req-%x", b[:])
 	}
 	return fmt.Sprintf("req-%d", time.Now().UnixNano())
@@ -80,10 +89,10 @@ type Event struct {
 	HasCredit        bool      `json:"credit_known"`
 	// CacheHitTokens / CacheMissTokens 上游前缀缓存命中/未命中 token（issue #92）。
 	// 上游未回该维度时两者皆零值省略；hit=0 + miss>0 即整段未命中。
-	CacheHitTokens  int64 `json:"cache_hit_tokens,omitempty"`
-	CacheMissTokens int64 `json:"cache_miss_tokens,omitempty"`
-	ClientIP         string    `json:"client_ip,omitempty"`
-	UserAgent        string    `json:"user_agent,omitempty"`
+	CacheHitTokens  int64  `json:"cache_hit_tokens,omitempty"`
+	CacheMissTokens int64  `json:"cache_miss_tokens,omitempty"`
+	ClientIP        string `json:"client_ip,omitempty"`
+	UserAgent       string `json:"user_agent,omitempty"`
 }
 
 // Filter 用于从归档中筛选最近记录。字符串字段一律「包含」匹配（大小写不敏感），
@@ -308,7 +317,7 @@ func (w *archiveWriter) enqueue(e Event) {
 
 func (w *archiveWriter) run() {
 	defer close(w.done)
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(archiveTick)
 	defer ticker.Stop()
 	for {
 		select {
@@ -382,13 +391,13 @@ func (w *archiveWriter) openFile(now time.Time, rotate bool) error {
 	if err != nil {
 		return err
 	}
-	info, err := f.Stat()
+	info, err := statArchiveFile(f)
 	if err != nil {
 		_ = f.Close()
 		return err
 	}
 	w.file = f
-	w.buf = bufio.NewWriterSize(f, 64<<10)
+	w.buf = newArchiveBuf(f, 64<<10)
 	w.path = path
 	w.day = day
 	w.size = info.Size()

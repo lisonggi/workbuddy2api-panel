@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	wb2api "github.com/linguo2625469/workbuddy2api-panel"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/changelog"
+	wb2api "github.com/yreidev/workbuddy2api-panel"
+	"github.com/yreidev/workbuddy2api-panel/internal/changelog"
 )
 
 // 版本号和更新日志要一起改：appVersion 是完整的语义化版本号，并且就是更新日志里最新的那一版

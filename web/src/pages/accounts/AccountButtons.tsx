@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Button } from '@heroui/react'
 import { isFrozen, type Health } from '../../lib/accounts'
 import type { Account } from '../../lib/types'
@@ -8,11 +9,13 @@ import type { AccountAction } from './useAccountActions'
  * 没禁用的号都给「禁用」。企业版没有个人成长体系（签到上游 400、成长任务 403），
  * 不给「签到」「任务」，「余额」改叫「额度」（刷新分配给这个号的企业额度）。
  */
-export function AccountButtons({ a, health, busy, run, nowrap }: {
+export function AccountButtons({ a, health, busy, run, nowrap, extra }: {
   a: Account
   health: Health
   /** 表格里一行放下，不折行（卡片和抽屉里允许折行） */
   nowrap?: boolean
+  /** 额外按钮（如抽屉里的「导出凭证」），放在「移除」之前，让危险操作留在最后 */
+  extra?: ReactNode
   busy: string | null
   run: (a: Account, action: AccountAction) => void
 }) {
@@ -39,6 +42,7 @@ export function AccountButtons({ a, health, busy, run, nowrap }: {
         // Button 不收 title，悬停说明挂在外层
         : <span className="contents" title={a.enterprise ? '退出选号，但照常保活 / 刷新额度' : '退出选号，但照常签到 / 活跃上报 / 保活 / 刷新余额'}>{btn('pause', '暂停选号')}</span>}
       {!a.disabled && btn('disable', '禁用')}
+      {extra}
       {btn('remove', '移除', { className: 'text-danger' })}
     </div>
   )

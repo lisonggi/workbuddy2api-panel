@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
+	"github.com/yreidev/workbuddy2api-panel/internal/redisstore"
 )
 
 // entry 单条会话绑定。
@@ -34,13 +34,15 @@ type Config struct {
 	GCInterval time.Duration
 	Store      redisstore.Store
 	Available  func() []string
-	// AvailableForModel 按请求模型返回"在该模型上可用"的账号（healthy 且未占满在途，
-	// 且未被该模型限流/限额）。nil 时回落 Available（无模型维度，行为与引入前一致）。
+	// AvailableForModel 按请求的裸模型名与域返回"在该模型上可用"的账号（healthy 且未占满在途，
+	// 且未被该模型限流/限额）；realm 为 "" 表示两域合池（跨域负载均衡）。
+	// nil 时回落 Available（无模型维度，行为与引入前一致）。
 	//
 	// 为什么粘性需要模型维度：绑定只记 uid，而同一个会话可能换模型。账号被 6004
 	// 模型级限额后对**其他模型**仍可用（issue #31 豁免），此时若只按账号级可用性
 	// 校验，会话会被钉在这个号上反复失败——正是"限额后换不动号"的观感来源。
-	AvailableForModel func(model string) []string
+	// 域由调用方（handler）按前缀与跨域开关定好再传入，这里不再自己解析模型名。
+	AvailableForModel func(model, realm string) []string
 }
 
 // Router 会话粘性路由器。
@@ -49,6 +51,7 @@ type Router struct {
 	entries map[string]entry
 	cfg     Config
 	stop    chan struct{}
+	done    chan struct{} // GC goroutine 退出时关闭，StopGC 等它
 }
 
 // New 构建路由器。若 cfg.Store 为 nil 则用 Noop（纯内存）；cfg.Available 为 nil 视为空池。
@@ -80,11 +83,12 @@ func (r *Router) StartGC() {
 		r.mu.Unlock()
 		return
 	}
-	stop := make(chan struct{})
-	r.stop = stop
+	stop, done := make(chan struct{}), make(chan struct{})
+	r.stop, r.done = stop, done
 	r.mu.Unlock()
 
 	go func() {
+		defer close(done)
 		t := time.NewTicker(r.cfg.GCInterval)
 		defer t.Stop()
 		for {
@@ -98,14 +102,19 @@ func (r *Router) StartGC() {
 	}()
 }
 
-// StopGC 停止后台 GC（幂等）。
+// StopGC 停止后台 GC（幂等），等 GC goroutine 退出才返回，返回后不会再清理。
+// select 在 stop 和 ticker 同时就绪时随机选，只关 stop 不等的话还可能再跑一轮 gcOnce。
+// 要放开锁再等：gcOnce 自己要拿 r.mu。
 func (r *Router) StopGC() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.stop != nil {
-		close(r.stop)
-		r.stop = nil
+	stop, done := r.stop, r.done
+	r.stop, r.done = nil, nil
+	r.mu.Unlock()
+	if stop == nil {
+		return
 	}
+	close(stop)
+	<-done
 }
 
 // LoadFromStore 启动时从 redisstore 恢复绑定（内存覆盖本地，读操作仅此处发生）。
@@ -132,21 +141,21 @@ func (r *Router) LoadFromStore() {
 }
 
 // Resolve 返回会话 key 应绑定的账号 uid，ok=false 表示当前无可用账号。
-// 无模型维度（等价于 ResolveForModel(key, "")），保留给不关心模型的调用方。
+// 无模型、无域维度（等价于 ResolveForModel(key, "", "")），保留给不关心模型的调用方。
 func (r *Router) Resolve(key string) (string, bool) {
-	return r.ResolveForModel(key, "")
+	return r.ResolveForModel(key, "", "")
 }
 
-// ResolveForModel 返回会话 key 在该模型上应绑定的账号 uid。
+// ResolveForModel 返回会话 key 在该模型（裸名）与域上应绑定的账号 uid；realm 为 "" 即两域合池。
 // 命中且账号在该模型可用 → 滚动 lastActive 并直接返回；否则（绑定号已冷却/占满/
 // 被该模型限流）走重新分配。
 //
 // 为什么必须带模型：绑定只记 uid，同一个会话可能换模型；账号被 6004 模型级限额后
 // 对其他模型仍可用（见 pool.healthyForModel 的 softRateModel 豁免）。若只按账号级
 // 可用性校验，会话会被钉在一个"对当前模型不可用"的号上反复失败。
-func (r *Router) ResolveForModel(key, model string) (string, bool) {
+func (r *Router) ResolveForModel(key, model, realm string) (string, bool) {
 	now := time.Now()
-	available := r.availableSet(model)
+	available := r.availableSet(model, realm)
 
 	// ── Fast path: RLock 快查 ──────────────────────────────
 	r.mu.RLock()
@@ -173,7 +182,7 @@ func (r *Router) ResolveForModel(key, model string) (string, bool) {
 		delete(r.entries, key) // 失效：清掉再分配
 	}
 
-	uids := r.availableSlice(model)
+	uids := r.availableSlice(model, realm)
 	if len(uids) == 0 {
 		return "", false
 	}
@@ -266,9 +275,9 @@ func (r *Router) gcOnce(now time.Time) int {
 	return len(expiredKeys)
 }
 
-// availableSet 把 AvailableForModel(model) 的有序列表转集合（快路径命中校验用）。
-func (r *Router) availableSet(model string) map[string]bool {
-	uids := r.availableSlice(model)
+// availableSet 把 AvailableForModel(model, realm) 的有序列表转集合（快路径命中校验用）。
+func (r *Router) availableSet(model, realm string) map[string]bool {
+	uids := r.availableSlice(model, realm)
 	set := make(map[string]bool, len(uids))
 	for _, u := range uids {
 		set[u] = true
@@ -277,9 +286,9 @@ func (r *Router) availableSet(model string) map[string]bool {
 }
 
 // availableSlice 安全调用 AvailableForModel；未注入时回落 Available（nil 视空池）。
-func (r *Router) availableSlice(model string) []string {
+func (r *Router) availableSlice(model, realm string) []string {
 	if r.cfg.AvailableForModel != nil {
-		return r.cfg.AvailableForModel(model)
+		return r.cfg.AvailableForModel(model, realm)
 	}
 	if r.cfg.Available == nil {
 		return nil

@@ -7,6 +7,7 @@ import { ago, dateTime, formatLatency, formatRate, formatTokenCount, fmtTok, tim
 import type { Account } from '../../lib/types'
 import { AccountButtons } from './AccountButtons'
 import { HealthChip, RealmChips } from './AccountCells'
+import { ExportOneButton } from './ExportBar'
 import type { AccountAction } from './useAccountActions'
 
 function Row({ label, children }: { label: ReactNode; children: ReactNode }) {
@@ -149,7 +150,7 @@ function Body({ a, health, now, busy, run }: {
         </Section>
       </Drawer.Body>
       <Drawer.Footer>
-        <AccountButtons a={a} health={health} busy={busy} run={run} />
+        <AccountButtons a={a} health={health} busy={busy} run={run} extra={<ExportOneButton uid={a.uid} />} />
       </Drawer.Footer>
     </>
   )

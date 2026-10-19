@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // 状态机迁移正交性测试：聚焦 transition.go 收敛出的「单一权威状态机」语义。
@@ -112,7 +112,8 @@ func TestTransitionSessionDeadDisableClearsCooling(t *testing.T) {
 		t.Fatal("precondition: 应处于软冷却")
 	}
 
-	if p.NoteSessionDead("u1") || p.NoteSessionDead("u1") || !p.NoteSessionDead("u1") {
+	first, second, third := p.NoteSessionDead("u1"), p.NoteSessionDead("u1"), p.NoteSessionDead("u1")
+	if first || second || !third {
 		t.Fatal("第 3 次 NoteSessionDead 应达阈值禁用")
 	}
 	st, _ := p.Status("u1")

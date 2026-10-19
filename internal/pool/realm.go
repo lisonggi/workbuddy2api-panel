@@ -10,6 +10,39 @@ import (
 // 3:1 是温和偏好，不是固定比例：账号组成变化会自然改变最终占比。
 const expiringVirtualSlots = 3
 
+// CatalogUIDForRealm 拉该域目录用的账号：可用账号里按 UID 排序第一个个人号，没有个人号时
+// 才用企业号。域目录要的是个人号视角——企业号的名单因企业而异，由它们各自的目录单独记
+// （upstream.FetchAccountCatalog）。该域没有可用账号返回 ""。
+func (p *Pool) CatalogUIDForRealm(realm string) string {
+	uids := p.AvailableUIDsForRealm(realm)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, uid := range uids {
+		if e := p.byUID[uid]; e != nil && !e.a.IsEnterprise() {
+			return uid
+		}
+	}
+	if len(uids) > 0 {
+		return uids[0]
+	}
+	return ""
+}
+
+// EnterpriseUIDs 该域没禁用的企业号（按 UID 排序），供定时刷新企业号各自的目录。
+func (p *Pool) EnterpriseUIDs(realm string) []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var uids []string
+	for uid, e := range p.byUID {
+		if e.disabled || !e.a.IsEnterprise() || (realm != "" && e.a.Realm() != realm) {
+			continue
+		}
+		uids = append(uids, uid)
+	}
+	sort.Strings(uids)
+	return uids
+}
+
 // AvailableUIDsForRealm 同 AvailableUIDs，但仅返回 Realm()==realm 的账号。
 // realm=="" 退化为 AvailableUIDs（现状语义）。
 func (p *Pool) AvailableUIDsForRealm(realm string) []string {
@@ -50,7 +83,7 @@ func (p *Pool) WeightedAvailableUIDsForModelRealm(model, realm string) []string 
 		if realm != "" && e.a.Realm() != realm {
 			continue
 		}
-		if !e.healthyForModel(now, model) {
+		if !p.servableFor(e, now, model) {
 			continue
 		}
 		if p.inFlightFull(e) {
@@ -86,7 +119,7 @@ func (p *Pool) AvailableUIDsForModelRealm(model, realm string) []string {
 		if realm != "" && e.a.Realm() != realm {
 			continue
 		}
-		if !e.healthyForModel(now, model) {
+		if !p.servableFor(e, now, model) {
 			continue
 		}
 		if p.inFlightFull(e) {

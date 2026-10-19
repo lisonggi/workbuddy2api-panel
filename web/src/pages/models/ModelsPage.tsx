@@ -84,7 +84,8 @@ function Efforts({ m }: { m: Model }) {
 }
 
 function ModelName({ m }: { m: Model }) {
-  const caps: [string, 'success' | 'warning'][] = []
+  const caps: [string, 'success' | 'warning' | 'accent'][] = []
+  if (m.enterprise_only) caps.push(['企业专属', 'accent'])
   if (m.is_default) caps.push(['默认', 'success'])
   if (m.supports_tool_call) caps.push(['工具', 'warning'])
   if (m.supports_images) caps.push(['视觉', 'warning'])

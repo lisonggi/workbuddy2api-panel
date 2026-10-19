@@ -32,9 +32,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 // autoAction 一个可自动化的任务动作。
@@ -325,6 +325,17 @@ var mpActionGap = 2 * time.Second
 // sleep gap + 0~10s 抖动；首条也等（上一轮残留进度被回滚后立即重报同样无效）。
 var mpChatEventGap = 45 * time.Second
 
+// mpChatEventJitter 叠加在 mpChatEventGap 上的随机抖动上限。
+var mpChatEventJitter = 10 * time.Second
+
+// randDuration 返回 [0, limit) 内的随机时长；limit<=0 时为 0。
+func randDuration(limit time.Duration) time.Duration {
+	if limit <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(limit)))
+}
+
 // runMPMiniChatTask growth 域小程序限定任务通用闭环：
 // mp 查询 → accept（带登记回读验证）→ mini chat 事件上报（withActivityId 决定
 // 是否带开学季 activityId：school_season 必带，Sequential_Tasks_1 不带——服务端按
@@ -367,7 +378,7 @@ func (p *Panel) runMPMiniChatTask(a *auth.Auth, code string, withActivityId bool
 	// 连发会被上游反作弊判无效（见 mpChatEventGap 注释），宁可慢不可白报。
 	need := target - t.Current
 	for i := int64(0); i < need; i++ {
-		time.Sleep(mpChatEventGap + time.Duration(rand.Int64N(int64(10*time.Second))))
+		time.Sleep(mpChatEventGap + randDuration(mpChatEventJitter))
 		conv := fmt.Sprintf("wb2api-mp-%d-%d", time.Now().UnixMilli(), i)
 		var ev map[string]any
 		if withActivityId {
@@ -883,8 +894,11 @@ func runLibraryRead(p *Panel, a *auth.Auth) (string, error) {
 // runBlackCat 完成 black_cat（夜猫子，夜间 23:00–08:00 计数）。
 // 判据 = 夜间窗口内 glm-5.2 真实对话 + chat 事件上报（WorkBuddy-Daily 实测口径）。
 // 窗口外不做（提示等排程）；网关 blackcat_hours（默认 23 点）排程会自动补足。
+// nightNow runBlackCat 判断夜间窗口用的时钟（测试里固定）。
+var nightNow = time.Now
+
 func runBlackCat(p *Panel, a *auth.Auth) (string, error) {
-	if !upstream.InNightWindow(time.Now()) {
+	if !upstream.InNightWindow(nightNow()) {
 		return "当前不在 23:00–08:00 计数窗口，行为不计分；网关会在每日 23 点自动补足", nil
 	}
 	need, err := p.cfg.Upstream.BlackcatNeed(a)
@@ -988,12 +1002,15 @@ func runExpertLighthouse(p *Panel, a *auth.Auth) (string, error) {
 // 事件 {action:"apply",source:"settings_close",id:<resourceKey>,...}（客户端在
 // 主题生效状态下离开设置页时上报）——早期"纯 API set 不计分"的结论不准确，
 // 真相是当时只调了 appearance/set 没发事件。组合：set API 留痕 + 事件上报。
+// appearanceGap 设置主题与上报皮肤生效事件之间的间隔。
+var appearanceGap = 2 * time.Second
+
 func runAppearance(p *Panel, a *auth.Auth) (string, error) {
 	const themeKey = "theme-tkmw7j" // 和平精英激战金秋（Hp_Appearance 判据主题）
 	if err := p.cfg.Upstream.SetAppearanceTheme(a, themeKey); err != nil {
 		return "", fmt.Errorf("设置主题: %w", err)
 	}
-	time.Sleep(2 * time.Second)
+	time.Sleep(appearanceGap)
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopEvent{
 		"eventCode": "appearance_skin_apply", "action": "apply", "source": "settings_close",
 		"id": themeKey, "vipLevel": 0, "series": "", "type": "unknown",
@@ -1006,6 +1023,9 @@ func runAppearance(p *Panel, a *auth.Auth) (string, error) {
 // runTemplateUse 完成 template_5（使用 5 个模板创建任务）。
 // 2026-09-12 三账号实测：agent_task_created_with_template + template_used 事件组
 // （JOIN chat 链）一次上报 5 组即 5/5 点亮。template_id 服务端不校验真实性。
+// templateUseGap 相邻两组模板事件之间的间隔。
+var templateUseGap = 300 * time.Millisecond
+
 func runTemplateUse(p *Panel, a *auth.Auth) (string, error) {
 	templates := [][2]string{{"1", "深度研究"}, {"2", "周报生成"}, {"3", "竞品分析"}, {"4", "活动策划"}, {"5", "代码评审"}}
 	for i, tp := range templates {
@@ -1016,7 +1036,7 @@ func runTemplateUse(p *Panel, a *auth.Auth) (string, error) {
 		if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 			return fmt.Sprintf("第 %d 组模板事件上报失败: %v", i+1, err), nil
 		}
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(templateUseGap)
 	}
 	return "已上报 template_used ×5", nil
 }
@@ -1048,7 +1068,7 @@ func runCreateCanvas(p *Panel, a *auth.Auth) (string, error) {
 }
 
 // expertSummonGap 专家召唤链的间隔（真实使用节奏，v11 实测 8s 成功率 100%）。
-const expertSummonGap = 6 * time.Second
+var expertSummonGap = 6 * time.Second
 
 // runExpertUse 完成 expert_5（使用 5 个平台专家）。
 // 2026-09-12 三账号实测公式：真实专家列表（id 必须真实存在）→ 召唤链
@@ -1233,6 +1253,9 @@ func (p *Panel) runAutoAll(a *auth.Auth) []map[string]any {
 	return out
 }
 
+// autoAllTimeout 一键完成的 HTTP 等待上限；超时后流水线仍在后台跑完。
+var autoAllTimeout = 5 * time.Minute
+
 // accountTaskAutoAll 一键完成该账号全部可自动任务。
 func (p *Panel) accountTaskAutoAll(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
@@ -1246,7 +1269,7 @@ func (p *Panel) accountTaskAutoAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 用 context 兜底超时（多项任务串联 + 每项含真实对话，可能耗时较长）。
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), autoAllTimeout)
 	defer cancel()
 	done := make(chan []map[string]any, 1)
 	go func() {

@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/changelog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/selfupdate"
+	"github.com/yreidev/workbuddy2api-panel/internal/changelog"
+	"github.com/yreidev/workbuddy2api-panel/internal/selfupdate"
 )
 
 const (
@@ -49,11 +49,14 @@ func (p *Panel) updateCheckEnabled() bool {
 	return p.cfg.Live != nil && p.cfg.Live.Load().UpdateCheck
 }
 
+// updateCheckTick 更新检查看开关的周期；测试调短以便断言到期即检查。
+var updateCheckTick = time.Minute
+
 // StartUpdateCheck 启动后台更新检查，ctx 结束时退出。每分钟看一次开关，开着且距上次尝试满 6 小时
 // 就读一次：启动后约一分钟读第一次，面板里刚打开开关也在一分钟内读到。
 func (p *Panel) StartUpdateCheck(ctx context.Context) {
 	go func() {
-		t := time.NewTicker(time.Minute)
+		t := time.NewTicker(updateCheckTick)
 		defer t.Stop()
 		for {
 			select {

@@ -33,7 +33,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 const (
@@ -489,22 +489,28 @@ func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string) (conversat
 				}
 				fmt.Printf("[dbg-rd %d] %q\n", n, dbg)
 			}
-			// 从上次搜索位置继续：SSE 里 `"id":"` 可能先出现在消息 id 等字段，
-			// 若不推进偏移，首个不匹配的 id 会让循环永远重复命中同一位置，
-			// 读满 1MB 后误报"未找到 requestId"。
-			if i := bytes.Index(buf[searchFrom:], []byte(`"id":"`)); i >= 0 {
+			// 从上次搜索位置继续，把已读到的每个 `"id":"` 都检查一遍：SSE 里它可能先
+			// 出现在消息 id 等字段，同一块数据里后面才是服务端 requestId。只看第一个
+			// 的话，整段响应一次读完时后面的 id 永远轮不到，误报"未找到 requestId"。
+			for {
+				i := bytes.Index(buf[searchFrom:], []byte(`"id":"`))
+				if i < 0 {
+					break
+				}
 				abs := searchFrom + i
 				rest := buf[abs+6:]
-				if end := bytes.IndexByte(rest, '"'); end > 0 {
-					id := string(rest[:end])
-					if os.Getenv("WB2A_DEBUG_CHAT") != "" {
-						fmt.Printf("[dbg-id] %q match=%v\n", id, idRegex.MatchString(id))
-					}
-					if idRegex.MatchString(id) {
-						return conversationID, id, nil
-					}
-					searchFrom = abs + 1
+				end := bytes.IndexByte(rest, '"')
+				if end < 0 {
+					break // 这个 id 还没读完整，等下一块
 				}
+				id := string(rest[:end])
+				if os.Getenv("WB2A_DEBUG_CHAT") != "" {
+					fmt.Printf("[dbg-id] %q match=%v\n", id, idRegex.MatchString(id))
+				}
+				if idRegex.MatchString(id) {
+					return conversationID, id, nil
+				}
+				searchFrom = abs + 1
 			}
 		}
 		if rerr != nil || len(buf) > 1<<20 {

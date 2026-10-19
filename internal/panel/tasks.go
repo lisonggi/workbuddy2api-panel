@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
 // acceptBatchGap 批量接受的批间节流（对齐脚本 1.05s 口径，避免上游风控）。
@@ -102,10 +102,6 @@ func (p *Panel) taskAcceptAll(w http.ResponseWriter, r *http.Request) {
 		}
 		codes = append(codes, t.TaskCode)
 	}
-	if len(codes) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": 0, "message": "所有任务均已接受"})
-		return
-	}
 	const batch = 20
 	accepted := 0
 	var failed []string
@@ -123,6 +119,8 @@ func (p *Panel) taskAcceptAll(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(acceptBatchGap) // 批间节流（对齐脚本 1.05s 口径）
 	}
 	// 小程序口径任务单独批量接受（默认列表不含 mp 码，accept 也要求 mp 头）。
+	// 默认列表全接受过时也要走这一步，小程序任务可能还没接受。
+	mpPending := 0
 	if mpTasks, mpErr := p.cfg.Upstream.ListTasksMP(a); mpErr == nil {
 		var mpCodes []string
 		for _, t := range mpTasks {
@@ -131,6 +129,7 @@ func (p *Panel) taskAcceptAll(w http.ResponseWriter, r *http.Request) {
 			}
 			mpCodes = append(mpCodes, t.TaskCode)
 		}
+		mpPending = len(mpCodes)
 		if len(mpCodes) > 0 {
 			if err := p.cfg.Upstream.AcceptTasksMP(a, mpCodes); err != nil {
 				log.Printf("panel: mp 批量接受失败 uid=%s err=%v", uid, err)
@@ -140,6 +139,10 @@ func (p *Panel) taskAcceptAll(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(acceptBatchGap)
 			}
 		}
+	}
+	if len(codes) == 0 && mpPending == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": 0, "message": "所有任务均已接受"})
+		return
 	}
 	log.Printf("panel: 全部接受 uid=%s 接受=%d 失败=%d", uid, accepted, len(failed))
 	resp := map[string]any{"ok": true, "accepted": accepted, "failed": failed}

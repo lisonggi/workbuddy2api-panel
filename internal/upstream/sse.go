@@ -92,7 +92,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 			if !ok {
 				continue
 			}
-			idx := -1
+			var idx int
 			if v, ok := call["index"].(float64); ok {
 				idx = int(v)
 			} else if cid, _ := call["id"].(string); cid != "" {
@@ -124,7 +124,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 	// mergeMessageFields 把非 delta 的完整 message 内容并入聚合（message 是整条下发，
 	// 非流式拼接，content 只取一次）。role/reasoning_content/tool_calls 与 delta 分支
 	// 同构透出；content 同样置 gotAnyContent，与 delta 路径的 latch 语义一致
-	// （一帧整条 message 之后，后续 delta 帧不重复追加）。
+	// （取到正文之后，再来的整条 message 帧不再并入；delta 帧照常追加）。
 	mergeMessageFields := func(msg map[string]any) {
 		if r2, ok := msg["role"].(string); ok && r2 != "" {
 			role = r2
@@ -484,6 +484,7 @@ type StreamOption func(*streamOptions)
 
 type streamOptions struct {
 	onErrorFrame func(payload string)
+	onToolCallID func(id string)
 	markup       *MarkupRepair
 }
 
@@ -504,6 +505,13 @@ func WithMarkupRepair(r *MarkupRepair) StreamOption {
 // 第一帧之前就把账号记成功，限流号被当成健康号；有观察者后可在流尾按帧分类处置。
 func WithErrorFrameObserver(fn func(payload string)) StreamOption {
 	return func(o *streamOptions) { o.onErrorFrame = fn }
+}
+
+// WithToolCallIDObserver 注册工具调用 id 的观察者：写给客户端的每个带 id 的
+// delta.tool_calls 分片（含标记修复还原出的调用）回调一次，透传字节不变。
+// 给调用方记下「这次回复里有哪些工具调用」，见 session/turns.go。
+func WithToolCallIDObserver(fn func(id string)) StreamOption {
+	return func(o *streamOptions) { o.onToolCallID = fn }
 }
 
 // StreamHint 同 Stream，但上游 error 帧透出前把 hintFn(payload) 的返回值写入
@@ -601,6 +609,11 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 					}
 					if v, ok := tc["index"].(float64); ok && int(v) > maxToolIdx {
 						maxToolIdx = int(v)
+					}
+					if o.onToolCallID != nil {
+						if id, _ := tc["id"].(string); id != "" {
+							o.onToolCallID(id)
+						}
 					}
 				}
 			}
