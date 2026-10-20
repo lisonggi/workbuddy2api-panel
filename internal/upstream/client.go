@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -710,9 +711,22 @@ type Client struct {
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
 	GlobalEnabled bool
 
+	// failover 国内版对话请求的入口熔断状态（前门 → 备用入口），按入口分别记，
+	// 零值可用；见 failover.go 的 NetworkFailover。
+	failover failoverState
+
 	// webSessions 官网网页登录态（每个「域 + uid」一个 Cookie 罐），见 websession.go。
 	// 零值可用，不需要构造函数；并发安全。
 	webSessions webSessionStore
+
+	// HTTPDNSQuery 地址层的查询函数：查 host 的 HTTPDNS 候选 IP（带 600 毫秒预算）。
+	// 测试可替换；nil 时地址层整体不生效（候选为空，现有测试的零值 Client 行为不变）。
+	HTTPDNSQuery func(ctx context.Context, host string) []string
+	// PinIP 地址层的「钉 IP」函数：返回一个 URL/Host/SNI 仍是原域名、TCP 连到 ip 的
+	// RoundTripper。测试可替换；nil 时地址层整体不生效。
+	PinIP func(ip string) http.RoundTripper
+	// addr 地址层的成功/失败记忆、在途换入口表与钉 IP 备忘，零值可用、并发安全。
+	addr addressState
 }
 
 // New 生产默认值。Transport 由 newTransport() 集中构造（连接层加固：真正禁 h2 /
@@ -730,6 +744,11 @@ func New() *Client {
 		// CN 账号恒判 cn，global base 只在 realm=global 的账号上被使用）。
 		GlobalEnabled: true,
 	}
+	// 地址层只在 New() 里装上真实实现：HTTPDNS 查询与基于共享 Transport 的钉 IP
+	// 工厂。零值 Client（测试都这样建）两个函数都是 nil，地址层不生效。
+	dns := newHTTPDNSClient()
+	c.HTTPDNSQuery = dns.query
+	c.PinIP = newPinTransportFactory(tr)
 	c.SanitizeFingerprints.Store(true)
 	return c
 }
@@ -869,7 +888,8 @@ func (c *Client) webBase(a *auth.Auth) string {
 }
 
 // jsonAttempt 一次 JSON 请求的结果。status 为 0 表示传输错误（没拿到 HTTP 状态）；
-// parseFailed 表示 HTTP 2xx 但响应体不是合法信封。
+// parseFailed 表示 HTTP 2xx 但响应体不是合法信封（刷新令牌按「200 但响应体不合格」
+// 换 IP 时要区分）。
 type jsonAttempt struct {
 	data        json.RawMessage
 	raw         []byte
@@ -882,13 +902,19 @@ type jsonAttempt struct {
 // body 读失败（连接中断/空闲掐流/截断）返回普通错误（非 *Error）——半截 body 不进
 // Classify，不参与账号惩罚（传输层故障不该喂熔断误罚号）。
 func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
-	res := c.doJSONAttempt(req)
+	res := c.doJSONAttempt(req, nil)
 	return res.data, res.err
 }
 
-// doJSONAttempt 同 doJSON，但返回完整结果。
-func (c *Client) doJSONAttempt(req *http.Request) jsonAttempt {
-	resp, err := doDecoded(c.HTTP, req)
+// doJSONAttempt 同 doJSON，但返回完整结果；rt 非 nil 时用地址层的钉 IP Transport。
+func (c *Client) doJSONAttempt(req *http.Request, rt http.RoundTripper) jsonAttempt {
+	hc := c.HTTP
+	if rt != nil {
+		cp := *hc
+		cp.Transport = rt
+		hc = &cp
+	}
+	resp, err := doDecoded(hc, req)
 	if err != nil {
 		return jsonAttempt{err: err}
 	}
@@ -965,8 +991,9 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	}
 
 	endpoint := c.chatBase(a) + "/v2/plugin/auth/token/refresh"
-	// 超时：国内版照官方各自限时（刷新 8 秒、刷新后取账号 4 秒，见 refreshTokenCall 与
-	// refreshAccountCheck）；国际版官方没有设，整个刷新（含取账号）仍以 refreshIOTimeout 兜底。
+	// 超时：国内版照官方每次尝试各自限时（刷新 8 秒、刷新后取账号 4 秒，换 IP 重发时重新
+	// 计时，见 refreshTokenCall 与 refreshAccountCheck）；国际版官方没有设，整个刷新（含取
+	// 账号）仍以 refreshIOTimeout 兜底。
 	cn := !c.globalOn(a)
 	ctx := context.Background()
 	if !cn {
@@ -1002,7 +1029,7 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	tr := newDaemonTrace()
 	tr.setRoot(req)
 
-	// 网络 I/O（锁外，国内版 8s / 国际版 30s 上限）。
+	// 网络 I/O（锁外，国内版 8s / 国际版 30s 上限）。国内版失败时按地址层换 IP 重发。
 	res := c.refreshTokenCall(req, cn)
 	data := res.data
 	if res.err != nil {
@@ -1085,14 +1112,99 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	return nil
 }
 
-// refreshTokenCall 发刷新请求；国内版限时 refreshTimeoutCN（官方桌面端 8 秒）。
-func (c *Client) refreshTokenCall(req *http.Request, cn bool) jsonAttempt {
-	if cn {
-		ctx, cancel := context.WithTimeout(req.Context(), refreshTimeoutCN)
-		defer cancel() // doJSONAttempt 读完响应体才返回
-		req = req.WithContext(ctx)
+// refreshTokenCall 发刷新请求；国内版失败时按地址层换 IP 重发（规格 §5）。换 IP 只认
+// HTTP 408/502/503、没有 HTTP 状态的传输错误（含 DNS 失败），以及 200 但 accessToken
+// 不是非空字符串（data 缺失时看顶层）；请求头、请求体原样重发。不换入口。
+func (c *Client) refreshTokenCall(req *http.Request, allowAddr bool) jsonAttempt {
+	// 国内版每次尝试各自限时 refreshTimeoutCN（官方每次重发都是新请求，超时重新算）。
+	attempt := func(r *http.Request, rt http.RoundTripper) jsonAttempt {
+		if allowAddr {
+			ctx, cancel := context.WithTimeout(r.Context(), refreshTimeoutCN)
+			defer cancel() // doJSONAttempt 读完响应体才返回
+			r = r.WithContext(ctx)
+		}
+		return c.doJSONAttempt(r, rt)
 	}
-	return c.doJSONAttempt(req)
+	res := attempt(req, nil)
+	if !allowAddr {
+		return res
+	}
+	host := req.URL.Hostname()
+	if !c.addrLayerOn() || !failoverTrustedHost(host) {
+		return res
+	}
+	var slot *addrSlot
+	pinned := ""
+	for {
+		if !refreshAttemptRetryable(res) {
+			if pinned != "" && res.err == nil {
+				c.noteAddrSuccess(host, pinned)
+			}
+			return res
+		}
+		next := c.nextAddrSlot(req.Context(), slot, host)
+		if next == nil {
+			return res
+		}
+		slot = next
+		pinned = slot.current()
+		retryReq, err := retryRequest(req)
+		if err != nil {
+			return res
+		}
+		res = attempt(retryReq, c.PinIP(pinned))
+	}
+}
+
+// refreshAttemptRetryable 报告这次刷新失败是否换 IP。
+func refreshAttemptRetryable(res jsonAttempt) bool {
+	if res.err == nil {
+		return refreshAccessToken(res.data, res.raw) == ""
+	}
+	if res.parseFailed {
+		// 200 但不是合法信封：data 不是非空字符串，按「可重试的无效响应」处理。
+		return true
+	}
+	var ue *Error
+	if errors.As(res.err, &ue) {
+		switch ue.Status {
+		case http.StatusRequestTimeout, http.StatusBadGateway, http.StatusServiceUnavailable:
+			return true
+		}
+		return false
+	}
+	// 没有 HTTP 状态的传输错误（含 DNS 失败与超时）；调用方取消不算。
+	return res.status == 0 && !errors.Is(res.err, context.Canceled)
+}
+
+// refreshAccessToken 取响应里的 accessToken：data.accessToken；data 缺失（或为 null）
+// 时看顶层。
+func refreshAccessToken(data, raw []byte) string {
+	src := data
+	if len(bytes.TrimSpace(data)) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		src = raw
+	}
+	var tok struct {
+		AccessToken string `json:"accessToken"`
+	}
+	if err := json.Unmarshal(src, &tok); err != nil {
+		return ""
+	}
+	return tok.AccessToken
+}
+
+// retryRequest 复制一个请求用于重发：请求头原样（含同一个 X-Request-ID），请求体
+// 用 GetBody 重新造一份。
+func retryRequest(req *http.Request) (*http.Request, error) {
+	next := req.Clone(req.Context())
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		next.Body = body
+	}
+	return next, nil
 }
 
 // refreshAccountCheck 刷新令牌后的取账号：国内版 GET /v2/plugin/account（data 是账号），国际版
@@ -1177,6 +1289,12 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte, clientIP string, meta Cha
 // 原文）。判定为 ErrNone 的响应（理论上不存在，防御）err 为 nil，handler 按
 // respBody 自行兜底。
 //
+// 国内版对话请求按官方桌面端 5.8.3 内置 CLI 的失败切换规则（见 failover.go）：
+// chatBase 是国内版主入口或备选入口时，失败后按 DNS / 状态码在「换 IP（HTTPDNS
+// 候选与备用 IP）」与「换入口（备用入口）」之间切换，每个请求最多换一次入口；
+// 熔断器打开时直接发备用入口。国际版（globalOn）与 chatBase 不是可信前门的部署
+// （如用户配了自己的中转）不走这套，行为与改造前一致。
+//
 // global chat 自 #119 实测后固定走 /v2（chat 层无 fallback 链；billing 层的 404
 // fallback 独立存在，语义不受影响）。ensureConsoleSystem 在 prepareBody 后统一套用
 // 全局脚本：首条消息非 system 时前置兜底 system（防 console 域上游 code 11-128；
@@ -1190,26 +1308,68 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	if c.globalOn(a) {
 		prepared = ensureConsoleSystem(prepared)
 	}
-	// reqCtx 的 cancel 在每个出口显式调用（Do 失败 / ≥400 / 成功分支移交 monitorBody）。
-	endpoint := c.chatBase(a) + chatCompletionsPath
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(prepared))
+	base := c.chatBase(a)
+	// 请求头只生成一次：ChatHeaders 里的 X-Request-ID、会话 id 每次调用都会新生成，
+	// 切入口时请求头、请求体要原样复用（见 failover.go）。这里建的请求只用来出头。
+	hreq, err := http.NewRequest(http.MethodPost, base+chatCompletionsPath, bytes.NewReader(prepared))
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	c.ChatHeaders(req, a, clientIP, meta)
+	c.ChatHeaders(hreq, a, clientIP, meta)
+	header := hreq.Header
+
+	// 选入口：前门熔断器关着发 chatBase，打开时可能直接发备用入口（见 failover.go）。
+	plan := c.chatFailoverPlan(a, base)
+	if !plan.active {
+		first := c.chatStreamOnce(ctx, a, plan.firstBase, header, prepared, nil)
+		return first.rc, first.status, first.body, first.err
+	}
+	// 国内版可信前门：在入口与地址之间按官方规则切换（见 failover.go）。
+	return c.chatStreamWithFailover(ctx, a, plan, header, prepared)
+}
+
+// chatOnceResult 一次对话请求的结果（chatStreamOnce 的返回值）。cancel 供外层
+// 丢弃响应时调用；成功流交给调用方后由流的 Close（monitorBody）接管，与改造前一致。
+type chatOnceResult struct {
+	rc     io.ReadCloser
+	status int
+	body   []byte
+	err    error
+	cancel context.CancelFunc
+}
+
+// chatStreamOnce 向 origin 发一次对话请求——改造前 ChatStreamContext 里的「发一次」
+// 逻辑原样抽出，供入口切换与地址层复用。header 由外层 ChatHeaders 只生成一次后传入，
+// 保证切入口时请求头原样复用、请求体每次重新造 bytes.NewReader，只换 scheme+host。
+// rt 非 nil 时用地址层的「钉 IP」Transport 发这次请求（URL、Host、SNI 都不变）。
+func (c *Client) chatStreamOnce(ctx context.Context, a *auth.Auth, origin string, header http.Header, prepared []byte, rt http.RoundTripper) chatOnceResult {
+	// reqCtx 的 cancel 在每个出口显式调用（Do 失败 / ≥400 / 成功分支移交 monitorBody）。
 	// 从调用方 ctx 派生：保留取消传播（父 ctx 取消 → 本 ctx 取消），
 	// 同时 monitorBody.Close 仍能独立 cancel 本分支（空闲掐流）。
 	reqCtx, cancel := context.WithCancel(ctx)
-	req = req.WithContext(reqCtx)
-	resp, err := doDecoded(c.chatHTTP(), req)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, origin+chatCompletionsPath, bytes.NewReader(prepared))
+	if err != nil {
+		cancel()
+		return chatOnceResult{err: err}
+	}
+	req.Header = header.Clone()
+	hc := c.chatHTTP()
+	if rt != nil {
+		// 钉 IP 的 Transport 独立（连接池里的连接连的是别的 IP）：复制 client 只换
+		// Transport，超时等其余参数不变。
+		cp := *hc
+		cp.Transport = rt
+		hc = &cp
+	}
+	resp, err := doDecoded(hc, req)
 	if err != nil {
 		cancel()
 		log.Printf("ERR: [upstream] chat_stream acct=%s: transport error: %v", logfmt.Label(a.UID, a.Nickname), err)
-		// 传输层失败 → 清空共享连接池的空闲连接（连接层加固）：失败连接可能仍
+		// 传输层失败 → 清空所用 Transport 的空闲连接（连接层加固）：失败连接可能仍
 		// 留在空闲池里，下一个请求会继续捡到它——仅靠 IdleConnTimeout 等过期
 		// 不够，主动清池才断根。
-		roundTripCloseIdle(c.chatHTTP().Transport)
-		return nil, 0, nil, err
+		roundTripCloseIdle(hc.Transport)
+		return chatOnceResult{err: err}
 	}
 	if resp.StatusCode >= 400 {
 		raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -1219,7 +1379,7 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		// 否则 handler 侧 applyErrorPolicy 会按误判分类罚号。
 		if rerr != nil {
 			log.Printf("ERR: [upstream] chat_stream acct=%s: read body: %v", logfmt.Label(a.UID, a.Nickname), rerr)
-			return nil, 0, nil, fmt.Errorf("read body: %w", rerr)
+			return chatOnceResult{err: fmt.Errorf("read body: %w", rerr)}
 		}
 		kind := Classify(resp.StatusCode, string(raw))
 		log.Printf("WARN: [upstream] chat_stream acct=%s: upstream %d %s body=%s",
@@ -1228,18 +1388,18 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		// 分类一次、随 Kind 信封返回（含 Retry-After 头解析）：
 		// ErrNone 是防御分支（≥400 不应产生 None），返回原文让 handler 兜底。
 		if kind == ErrNone {
-			return nil, resp.StatusCode, raw, nil
+			return chatOnceResult{status: resp.StatusCode, body: raw}
 		}
 		ue := &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
 		if d, ok := ParseRetryAfter(resp.Header); ok {
 			ue.RetryAfter = d
 		}
-		return nil, resp.StatusCode, raw, ue
+		return chatOnceResult{status: resp.StatusCode, body: raw, err: ue}
 	}
 	// 成功分支：cancel 所有权交给 monitorBody（其 Close 会 cancel）；
 	// IdleTimeout<=0 时 monitorBody 原样返回底流、无人调 cancel——可接受：
 	// 取消传播由 http.Transport 在 body Close / 父 ctx 取消时处理，连接正常清理。
-	return monitorBody(resp.Body, c.IdleTimeout, cancel), resp.StatusCode, nil, nil
+	return chatOnceResult{rc: monitorBody(resp.Body, c.IdleTimeout, cancel), status: resp.StatusCode, cancel: cancel}
 }
 
 // ModelInfo 动态模型信息（含 maxInputTokens/maxOutputTokens + 上游模型对象全字段）。
@@ -1850,30 +2010,254 @@ func (c *Client) GlobalEffortSnapshot() (efforts map[string][]string, defaults m
 	return c.effortsSnapshot("global"), c.defaultEffortsSnapshot("global")
 }
 
-// fetchV3ConfigModelMap 拉 /v3/config 配置目录，按模型 id 建能力表。请求形状同桌面端内置 CLI：
-// GET、请求框架的头、`Connection: close`。该端点按 UA 下发不同的模型集合（IDE、CLI、桌面端
-// 三种 UA 各不相同），这里只用桌面端的，拿到的就是官方桌面端用户看到的那一份。
-func (c *Client) fetchV3ConfigModelMap(a *auth.Auth) (map[string]ModelInfo, error) {
-	req, err := http.NewRequest(http.MethodGet, c.chatBase(a)+"/v3/config", nil)
-	if err != nil {
-		return nil, err
+// 拉配置的预算（官方桌面端 fetchFromRemote 的 5000ms / 250ms / 3000ms）；测试可调。
+var (
+	// configFetchBudget 整个拉配置的总预算。
+	configFetchBudget = 5 * time.Second
+	// configFetchMinBudget 剩余预算低于它就不再试下一步。
+	configFetchMinBudget = 250 * time.Millisecond
+	// configFetchTimeoutBudget 剩余预算不够、失败又是「data 无效」或超时类时给的独立预算。
+	configFetchTimeoutBudget = 3 * time.Second
+)
+
+// configAttempt 一次 /v3/config 请求的结果。
+type configAttempt struct {
+	status      int    // HTTP 状态；0 = 没有状态的传输错误
+	raw         []byte // 响应体原文（成功时再解析）
+	err         error  // 传输/HTTP/解析/业务码错误；data 无效时是解析出的原错误
+	dataInvalid bool   // HTTP 200 但 data 没有可持久化的内容（官方 isPersistableProductConfiguration）
+	timeout     bool   // 超时类失败（net.Error.Timeout 或 408）
+	retryable   bool   // 按规格「可以换」
+}
+
+// configDataPersistable 官方 isPersistableProductConfiguration：data 存在、不是 null，
+// 且里面至少有一个非空的值（数组非空、对象有键，其他类型都算非空）。
+func configDataPersistable(data json.RawMessage) bool {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return false
 	}
-	// 同桌面端内置 CLI：拉配置的请求带 Connection: close。
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return false
+	}
+	switch x := v.(type) {
+	case nil:
+		return false
+	case []any:
+		return len(x) > 0
+	case map[string]any:
+		return len(x) > 0
+	default:
+		return true
+	}
+}
+
+// configIsTimeout 报告错误是不是超时类（net.Error.Timeout）。
+func configIsTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// configFetchOnce 发一次 /v3/config。budget 是这次尝试的 ctx 预算；rt 非 nil 时用
+// 地址层的钉 IP Transport。
+func (c *Client) configFetchOnce(a *auth.Auth, base string, rt http.RoundTripper, budget time.Duration) configAttempt {
+	if budget <= 0 {
+		budget = time.Nanosecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v3/config", nil)
+	if err != nil {
+		return configAttempt{err: err}
+	}
 	req.Close = true
 	c.frameworkHeaders(req, a, c.userAgent(a))
-	resp, err := doDecoded(c.HTTP, req)
+	hc := c.HTTP
+	if rt != nil {
+		cp := *hc
+		cp.Transport = rt
+		hc = &cp
+	}
+	resp, err := doDecoded(hc, req)
 	if err != nil {
-		return nil, err
+		return configAttempt{err: err, timeout: configIsTimeout(err),
+			retryable: !errors.Is(err, context.Canceled)}
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		// 读失败 → 传输层错误：半截 body 不进解析（不罚号）。
-		return nil, fmt.Errorf("read body: %w", err)
+		return configAttempt{status: resp.StatusCode, err: fmt.Errorf("read body: %w", err)}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("v3/config status %d: %s", resp.StatusCode, truncate(string(raw), 120))
+		at := configAttempt{status: resp.StatusCode, raw: raw,
+			err: fmt.Errorf("v3/config status %d: %s", resp.StatusCode, truncate(string(raw), 120))}
+		// 只有 408/502/503 可以换（504 不换）。
+		at.retryable = failoverRetryIPStatus(resp.StatusCode)
+		at.timeout = resp.StatusCode == http.StatusRequestTimeout
+		return at
 	}
+	var env struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return configAttempt{status: resp.StatusCode, raw: raw,
+			err: fmt.Errorf("v3/config parse: %w", err)}
+	}
+	at := configAttempt{status: resp.StatusCode, raw: raw}
+	// 官方只看 data 有没有可持久化的内容，不看业务码：data 无效（业务码非 0 时多半如此）
+	// 一律按「可重试的无效响应」处理；data 有内容但业务码非 0 时按原语义报错、不换。
+	if configDataPersistable(env.Data) && env.Code != 0 {
+		at.err = fmt.Errorf("v3/config code=%d", env.Code)
+		return at
+	}
+	if !configDataPersistable(env.Data) {
+		// 200 但 data 无效：按官方口径当「可重试的无效响应」。
+		at.dataInvalid = true
+		at.retryable = true
+		if _, perr := parseV3Config(raw); perr != nil {
+			at.err = perr
+		} else {
+			at.err = fmt.Errorf("v3/config returned empty models")
+		}
+	}
+	return at
+}
+
+// configSuccess 报告这次尝试是否拿到了可用目录；成功时返回解析结果。
+func configSuccess(at configAttempt) (map[string]ModelInfo, bool) {
+	if at.err != nil || at.dataInvalid {
+		return nil, false
+	}
+	out, err := parseV3Config(at.raw)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// configAttemptError 这次尝试要返回的错误（data 可持久化但解析失败时用解析错误）。
+func configAttemptError(at configAttempt) error {
+	if at.err != nil {
+		return at.err
+	}
+	_, err := parseV3Config(at.raw)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("v3/config returned empty models")
+}
+
+// noteConfigAttempt 把一次拉配置的尝试按对话的同一口径记进入口熔断器（共用 c.failover）。
+func (c *Client) noteConfigAttempt(origin string, at configAttempt) {
+	if at.err == nil && !at.dataInvalid {
+		c.failover.noteSuccess(origin)
+		return
+	}
+	if at.status != 0 {
+		if failoverIsInfraStatus(at.status) {
+			c.failover.noteInfraFailure(origin)
+		}
+		return
+	}
+	if failoverIsInfraError(at.err) {
+		c.failover.noteInfraFailure(origin)
+	}
+}
+
+// fetchV3ConfigModelMap 拉 /v3/config 配置目录，按模型 id 建能力表。请求形状同桌面端内置 CLI：
+// GET、请求框架的头、`Connection: close`。该端点按 UA 下发不同的模型集合（IDE、CLI、桌面端
+// 三种 UA 各不相同），这里只用桌面端的，拿到的就是官方桌面端用户看到的那一份。
+//
+// 超时与失败切换照官方桌面端 5.8.3 内置 CLI 的 fetchFromRemote（规格 §4）：整个拉配置最多
+// configFetchBudget（5 秒）；国内版 chatBase 是前门时按熔断器选首选入口，失败后
+// 「主入口 → 备用入口 → 备用 IP」。国际版与不可信中转只发一次。只有「可以换」的失败才换：
+// 200 但 data 没有可持久化内容、HTTP 408/502/503、没有 HTTP 状态的传输错误（含 DNS 失败）。
+func (c *Client) fetchV3ConfigModelMap(a *auth.Auth) (map[string]ModelInfo, error) {
+	base := c.chatBase(a)
+	if !c.configFailoverActive(a, base) {
+		// 国际版 / 不可信 base：只发一次，5 秒总预算。
+		at := c.configFetchOnce(a, base, nil, configFetchBudget)
+		if out, ok := configSuccess(at); ok {
+			return out, nil
+		}
+		return nil, configAttemptError(at)
+	}
+
+	plan := c.chatFailoverPlan(a, base)
+	start := time.Now()
+	remaining := func() time.Duration { return configFetchBudget - time.Since(start) }
+	// 下一步的预算：剩余 <250ms 且失败可以换、且是「data 无效」或超时类时，给 3 秒独立预算。
+	nextBudget := func(prev configAttempt) time.Duration {
+		left := remaining()
+		if left < configFetchMinBudget && prev.retryable && (prev.dataInvalid || prev.timeout) {
+			return configFetchTimeoutBudget
+		}
+		return left
+	}
+
+	// 首选入口按熔断器：前门打开且备用入口没打开时直接发备用入口。
+	firstBase := plan.firstBase
+	at := c.configFetchOnce(a, firstBase, nil, configFetchBudget)
+	c.noteConfigAttempt(plan.firstOrigin, at)
+	if out, ok := configSuccess(at); ok {
+		return out, nil
+	}
+	if !at.retryable {
+		return nil, configAttemptError(at)
+	}
+	lastErr := configAttemptError(at)
+
+	// 首选是备用入口 → 直接试备用 IP；否则先发备用入口，失败再试备用 IP。
+	if plan.firstOrigin != failoverBackupOrigin {
+		budget := nextBudget(at)
+		if budget < configFetchMinBudget {
+			return nil, lastErr
+		}
+		backupBase := failoverSwapOrigin(firstBase, failoverBackupOrigin)
+		next := c.configFetchOnce(a, backupBase, nil, budget)
+		c.noteConfigAttempt(failoverOrigin(backupBase), next)
+		if out, ok := configSuccess(next); ok {
+			return out, nil
+		}
+		lastErr = configAttemptError(next)
+		if !next.retryable {
+			return nil, lastErr
+		}
+		at = next
+	}
+
+	// 试备用 IP：只在备用入口上；地址层不生效（钉 IP 函数为 nil）时跳过。
+	if c.PinIP == nil || len(failoverFallbackIPs) == 0 {
+		return nil, lastErr
+	}
+	budget := nextBudget(at)
+	if budget < configFetchMinBudget {
+		return nil, lastErr
+	}
+	backupBase := failoverSwapOrigin(firstBase, failoverBackupOrigin)
+	rt := c.PinIP(failoverFallbackIPs[0])
+	final := c.configFetchOnce(a, backupBase, rt, budget)
+	c.noteConfigAttempt(failoverOrigin(backupBase), final)
+	if out, ok := configSuccess(final); ok {
+		return out, nil
+	}
+	return nil, configAttemptError(final)
+}
+
+// configFailoverActive 报告拉配置是否走「主入口 → 备用入口 → 备用 IP」：国内版且 chatBase
+// 是可信入口（直接配成备用入口时跳过换入口，只试备用 IP，同官方）；国际版、不可信中转只发一次。
+func (c *Client) configFailoverActive(a *auth.Auth, base string) bool {
+	if c.globalOn(a) {
+		return false
+	}
+	o := failoverOrigin(base)
+	return o == cnProductEndpoint || o == failoverAltOrigin || o == failoverBackupOrigin
+}
+
+// parseV3Config 解析 /v3/config 响应体为模型目录。错误语义与改造前一致。
+func parseV3Config(raw []byte) (map[string]ModelInfo, error) {
 	var env struct {
 		Code int `json:"code"`
 		Data struct {

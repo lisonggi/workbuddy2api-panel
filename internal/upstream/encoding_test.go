@@ -313,7 +313,7 @@ func TestDoDecodedOnlyWhenRequested(t *testing.T) {
 
 // TestAcceptEncodingPerRequestKind 各类请求按官方各自的取值设 Accept-Encoding（见 encoding.go 文件头）。
 func TestAcceptEncodingPerRequestKind(t *testing.T) {
-	c := &Client{}
+	c := &Client{WebBaseCN: "https://web.example"}
 	a := upAuth()
 	newReq := func(method string) *http.Request {
 		r, _ := http.NewRequest(method, "https://x.example/", nil)
@@ -335,6 +335,42 @@ func TestAcceptEncodingPerRequestKind(t *testing.T) {
 	r = newReq(http.MethodPost)
 	c.ChatHeaders(r, a, "", ChatMeta{ConversationRequestID: "rq"})
 	check("对话", r, acceptEncodingAxios)
+	r = newReq(http.MethodGet)
+	c.webHeaders(r, a, webPageGrowthCenter)
+	check("官网网页 XHR", r, acceptEncodingChrome)
+	r = newReq(http.MethodGet)
+	c.webNavigationHeaders(r, a)
+	check("client-login 导航", r, acceptEncodingChrome)
+	r = newReq(http.MethodGet)
+	c.webMPHeaders(r, a)
+	check("小程序网页", r, acceptEncodingBrowser)
+	r, err := c.globalRegisterReq(http.MethodPost, "https://x.example/", "", map[string]string{"k": "v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("国际版注册", r, acceptEncodingChrome)
+
+	var code *http.Request
+	cc := &Client{WebBaseCN: "https://web.example", HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		code = r
+		return jsonResp(200, `{"code":0,"data":{}}`), nil
+	})}}
+	_, _ = cc.fetchDeviceAuthCode(&auth.Auth{AccessToken: "at", RefreshToken: "rt", UID: "u-1"})
+	if code == nil {
+		t.Fatal("登录码请求没发出")
+	}
+	check("网页登录码", code, acceptEncodingNodeFetch)
+	wantHeaders(t, code.Header, map[string]string{"Accept": "*/*", "Accept-Language": "*", "Sec-Fetch-Mode": "cors", "User-Agent": "node"})
+
+	var login *http.Request
+	f := &loginFoFake{handler: func(_ string, _ bool, r *http.Request) (*http.Response, error) {
+		login = r
+		return jsonResp(http.StatusOK, loginFoStateBody), nil
+	}}
+	if _, err := loginFoClient(f).LoginAuthState("cn"); err != nil {
+		t.Fatalf("LoginAuthState: %v", err)
+	}
+	check("登录", login, acceptEncodingAxios)
 }
 
 // TestCallSitesDecode 出站请求的几个发送点都会解压：业务 JSON（zstd）、对话流（br）、对话

@@ -243,7 +243,8 @@ func loginNoIdentity(req *http.Request) {
 }
 
 // loginDo 构造并发出一次登录请求；构造失败（URL 非法）与请求失败都返回 err。
-// 国内版按官方超时（8/4 秒）加 ctx 期限；国际版保持现状，不设超时。
+// 国内版按官方超时（8/4 秒）加 ctx 期限；发起授权失败时按地址层换 IP 重发。
+// 国际版保持现状：不设超时、不换 IP。
 func (c *Client) loginDo(method, rawURL, realm string, kind loginKind, tok LoginToken, tr LoginTrace) (code int, msg string, data json.RawMessage, status int, err error) {
 	req, err := c.loginRequest(method, rawURL, realm, kind, tok, tr)
 	if err != nil {
@@ -251,7 +252,7 @@ func (c *Client) loginDo(method, rawURL, realm string, kind loginKind, tok Login
 	}
 	_, _, global := loginEndpoint(realm)
 	if global {
-		return c.loginCall(req, 0)
+		return c.loginCall(req, false, 0)
 	}
 	timeout := loginPollTimeout
 	switch kind {
@@ -260,23 +261,62 @@ func (c *Client) loginDo(method, rawURL, realm string, kind loginKind, tok Login
 	case loginKindAccount, loginKindAccounts:
 		timeout = loginAccountTimeout
 	}
-	return c.loginCall(req, timeout)
+	return c.loginCall(req, kind == loginKindState, timeout)
 }
 
-// loginCall 发一次登录请求并解信封；timeout > 0 时加 ctx 期限。HTTP ≥300 与解析失败返回
-// *LoginError；业务码非 0 不在这里报错，交给调用方判断（11217 / 12151 各有专门处理）。
-func (c *Client) loginCall(req *http.Request, timeout time.Duration) (code int, msg string, data json.RawMessage, status int, err error) {
-	if timeout > 0 {
-		ctx, cancel := context.WithTimeout(req.Context(), timeout)
-		defer cancel() // loginCallOnce 读完响应体才返回，返回后再 cancel 不影响结果
-		req = req.WithContext(ctx)
+// loginCall 发一次登录请求并解信封；allowAddr 时失败按地址层换 IP 重发（只用于国内版
+// 发起授权）。timeout > 0 时每次尝试各自限时（官方每次重发都是一个新请求，超时重新算）。
+// HTTP ≥300 与解析失败返回 *LoginError；业务码非 0 不在这里报错，交给调用方判断
+// （11217 / 12151 各有专门处理）。
+func (c *Client) loginCall(req *http.Request, allowAddr bool, timeout time.Duration) (code int, msg string, data json.RawMessage, status int, err error) {
+	attempt := func(r *http.Request, rt http.RoundTripper) (int, string, json.RawMessage, int, error) {
+		if timeout > 0 {
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel() // loginCallOnce 读完响应体才返回，返回后再 cancel 不影响结果
+			r = r.WithContext(ctx)
+		}
+		return c.loginCallOnce(r, rt)
 	}
-	return c.loginCallOnce(req)
+	code, msg, data, status, err = attempt(req, nil)
+	if !allowAddr {
+		return
+	}
+	host := req.URL.Hostname()
+	if !c.addrLayerOn() || !failoverTrustedHost(host) {
+		return
+	}
+	var slot *addrSlot
+	pinned := ""
+	for {
+		if !loginAuthStateRetryable(status, data, err) {
+			if pinned != "" && err == nil && loginAuthStateValid(data) {
+				c.noteAddrSuccess(host, pinned)
+			}
+			return
+		}
+		next := c.nextAddrSlot(req.Context(), slot, host)
+		if next == nil {
+			return
+		}
+		slot = next
+		pinned = slot.current()
+		retryReq, cerr := retryRequest(req)
+		if cerr != nil {
+			return
+		}
+		code, msg, data, status, err = attempt(retryReq, c.PinIP(pinned))
+	}
 }
 
-// loginCallOnce 发一次登录请求并解信封。
-func (c *Client) loginCallOnce(req *http.Request) (code int, msg string, data json.RawMessage, status int, err error) {
-	resp, err := doDecoded(c.loginClient(), req)
+// loginCallOnce 发一次登录请求（rt 非 nil 时用地址层的钉 IP Transport）并解信封。
+func (c *Client) loginCallOnce(req *http.Request, rt http.RoundTripper) (code int, msg string, data json.RawMessage, status int, err error) {
+	hc := c.loginClient()
+	if rt != nil {
+		cp := *hc
+		cp.Transport = rt
+		hc = &cp
+	}
+	resp, err := doDecoded(hc, req)
 	if err != nil {
 		return 0, "", nil, 0, err
 	}
@@ -298,6 +338,41 @@ func (c *Client) loginCallOnce(req *http.Request) (code int, msg string, data js
 		return 0, "", nil, status, &LoginError{Status: status, text: fmt.Sprintf("parse failed: %v", err)}
 	}
 	return env.Code, env.Msg, env.Data, status, nil
+}
+
+// loginAuthStateValid auth/state 的 200 响应是否合格：data 是对象且 state、authUrl
+// 都是非空字符串（官方把不合格的 200 当「可重试的无效响应」）。
+func loginAuthStateValid(data json.RawMessage) bool {
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return false
+	}
+	state, ok := obj["state"].(string)
+	if !ok || state == "" {
+		return false
+	}
+	authURL, ok := obj["authUrl"].(string)
+	return ok && authURL != ""
+}
+
+// loginAuthStateRetryable 报告发起授权这次失败是否换 IP：HTTP 408/502/503、没有 HTTP
+// 状态的传输错误（含 DNS 失败），或 200 但响应体不合格。4xx/500/504 等不换。
+func loginAuthStateRetryable(status int, data json.RawMessage, err error) bool {
+	if status == 0 {
+		return err != nil && !errors.Is(err, context.Canceled)
+	}
+	if status >= 300 {
+		switch status {
+		case http.StatusRequestTimeout, http.StatusBadGateway, http.StatusServiceUnavailable:
+			return true
+		}
+		return false
+	}
+	// HTTP 200：解析失败或 data 不合格都算「可重试的无效响应」。
+	if err != nil {
+		return true
+	}
+	return !loginAuthStateValid(data)
 }
 
 // LoginAuthState 发起授权：POST <域>/v2/plugin/auth/state?platform=<P>，body 为 {}。
