@@ -475,6 +475,30 @@ func TestPanelAccountCheckin(t *testing.T) {
 		}
 	})
 
+	// 国际版没有签到活动（上游 400「签到活动未开启或已过期」）：不发签到，只刷新余额。
+	t.Run("国际版号跳过签到", func(t *testing.T) {
+		p, up := newPanelFor(t, Config{Pool: pool.New(""), Upstream: &upstream.Client{
+			BillingBaseCN: "https://" + autoBillingHost, BillingBaseGlobal: "https://" + autoBillingHost, GlobalEnabled: true,
+		}})
+		glb := taskTestAuth("g1", "国际号")
+		glb.Domain = "www.workbuddy.ai"
+		p.cfg.Pool.Add(glb)
+		up.on(http.MethodPost, autoBillingHost, "/billing/meter/get-user-resource", "", autoOK(loginResourceBody(475, 480)))
+		resp := autoDecode(t, postJSON(t, p, "/panel/api/accounts/g1/checkin", ``))
+		if resp["checkin_done"] != false || resp["credits"] != float64(475) {
+			t.Fatalf("国际版号结果不对: %v", resp)
+		}
+		if msg, _ := resp["checkin_message"].(string); !strings.Contains(msg, "国际版没有签到活动") {
+			t.Fatalf("国际版号应提示跳过签到: %v", resp)
+		}
+		// 国际版签到会先试不带 /v2 的路径，两条都不应发。
+		for _, path := range []string{checkinPath, "/billing/meter/daily-checkin"} {
+			if got := len(up.requestsTo(http.MethodPost, autoBillingHost, path, "")); got != 0 {
+				t.Fatalf("国际版号不应签到（%s），实际 %d", path, got)
+			}
+		}
+	})
+
 	t.Run("余额失败返回 balance_error", func(t *testing.T) {
 		p, up := newPanelFor(t, Config{Pool: pool.New("")})
 		p.cfg.Pool.Add(taskTestAuth("u1", "一号"))
