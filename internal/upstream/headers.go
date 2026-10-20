@@ -196,7 +196,7 @@ func (c *Client) injectCodeBuddyRequest(req *http.Request) {
 // X-Requested-With，以及各拦截器补的头——CommonHeaderHttpInterceptor 的 X-Request-ID（32 位
 // 十六进制，每个请求新生成）、ProductEndpointHttpInterceptor 的 X-Product、UA、
 // AuthenticationHttpInterceptor 的账号头（Authorization、X-User-Id、企业号的 X-Enterprise-Id 与同值的
-// X-Tenant-Id、X-Domain）。
+// X-Tenant-Id、X-Domain，账号有部门全名时的 X-Department-Info）。
 // Content-Type 只在 GET 以外的请求上设（官方 GET 不带，POST 都带 JSON 体；网关几个不带体的 POST
 // 不是桌面端的接口，保持以前也带的样子）。官方不发的 Origin / Referer / Accept-Language /
 // X-CodeBuddy-Request / X-Machine-ID / X-Session-ID 一概不发；需要的个别请求（积分的
@@ -225,8 +225,19 @@ func (c *Client) frameworkHeaders(req *http.Request, a *auth.Auth, ua string) {
 		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
 		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
 	}
+	injectDepartment(req, a)
 	if d := chatDomain(a); d != "" {
 		req.Header.Set("X-Domain", d)
+	}
+}
+
+// injectDepartment 账号有部门全名（企业号）时带 X-Department-Info，值原样（官方
+// AuthenticationHttpInterceptor：account.departmentFullName 非空才加）。官方用 Node 发请求，
+// 头的值里有超出 Latin-1 的字符时 Node 会直接报错；上游返回的部门全名是什么样子没有企业号
+// 实测过（未确认），网关照原样发 UTF-8。
+func injectDepartment(req *http.Request, a *auth.Auth) {
+	if d := a.DepartmentValue(); d != "" {
+		req.Header.Set("X-Department-Info", d)
 	}
 }
 
@@ -253,11 +264,13 @@ type ChatMeta struct {
 	ExpertTeamTask        bool   // X-Expert-Team-Task：专家团（市场 expert_type=team）为 true，只和 ExpertID 一起发
 }
 
-// ChatHeaders 设置 chat 出站请求头。形状对齐桌面端内置 CLI 2.161.0 的对话请求：官方对话请求
-// 不带 Origin / Referer / Accept-Language / X-CodeBuddy-Request / X-Machine-ID / X-Session-ID，
-// 也不带 X-No-*（那几个只在登录前的 auth/state、auth/token 上发）。
+// ChatHeaders 设置 chat 出站请求头。形状对齐桌面端内置 CLI 2.161.0 的对话请求（见文件头），
+// 10-19 生产用国内版、国际版个人号逐项实测均 200：
+//   - 官方对话请求不带 Origin / Referer / Accept-Language / X-CodeBuddy-Request / X-Machine-ID /
+//     X-Session-ID，也不带 X-No-*（那几个只在登录前的 auth/state、auth/token 上发）。
 //   - 账号头：Authorization、X-User-Id；企业号加 X-Enterprise-Id 与同值的 X-Tenant-Id，个人号
-//     两个都不发；X-Domain 取登录域（国际版固定 www.workbuddy.ai），没有就不发。
+//     两个都不发；有部门全名时加 X-Department-Info；X-Domain 取登录域（国际版固定
+//     www.workbuddy.ai），没有就不发。
 //   - X-Agent-Intent=craft、X-Agent-Type=main（主对话）、X-Private-Data（见 privateDataValue）。
 //   - UA、X-IDE-* 取桌面端传给内置 CLI 的值（见 defaultCLIUA、injectAttribution）；X-Product 是
 //     请求框架给每个请求加的 deploymentType；不带 X-Device-Token。
@@ -285,6 +298,7 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
 		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
 	}
+	injectDepartment(req, a)
 	if d := chatDomain(a); d != "" {
 		req.Header.Set("X-Domain", d)
 	}
