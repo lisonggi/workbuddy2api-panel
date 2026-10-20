@@ -8,6 +8,97 @@
 
 条目按「新增 / 变更 / 弃用 / 移除 / 修复 / 安全」分组。面板的更新提醒读的就是这份文件，发版规则见[发版与版本号](releasing.md)。
 
+## [1.1.2] - 2026-10-20
+
+出站请求按官方 WorkBuddy 桌面端安装包对齐（国内版 5.8.3、国际版 5.8.4，两者都内置 CLI 2.161.0），依据和未对齐的项目见[官方客户端对照](official-client.md)。实测只用了国内版、国际版各几个个人免费号和少数几个模型（deepseek、glm、kimi），企业号、付费号以及 GPT、Gemini、Grok 都没有测到。
+
+### 新增
+
+- 国内版请求出错时照官方内置 CLI 换入口、换地址（国际版官方没有这一套，网关也不做）：
+  - 对话换入口：`www.workbuddy.cn`（或 `copilot.tencent.com`）返回 408、502、503、504，连不上、超时（含响应头超时），或者 2xx 却没有内容时，同一请求改发备用入口 `wb.tencentbuddy.com` 一次；响应体 `retry_policy.retry` 为 `false` 时不换。60 秒内连续 3 次基础设施类失败就熔断 15 秒，期间直接发备用入口；
+  - 对话换地址：DNS 解析失败时先换地址再换入口；408、502、503 和传输错误在换不了入口时换地址（504 不换）。候选地址是腾讯云 HTTPDNS 查到的 IP，备用入口另加官方内置的备用 IP；请求钉到这个 IP 上发，域名和证书校验不变。30 秒内失败过的 IP 跳过，上次成功的排第一个；同一请求换过的地址记住，后续重发沿用；
+  - HTTPDNS 照官方：调用方最多等 600 毫秒，查询本身不取消、查完写进缓存；单个请求连续 300 毫秒没有收发才算超时；结果缓存 300 秒，过了 225 秒在后台续期，续期时现取服务 IP 列表；缓存没命中时每次各查一路；
+  - 拉模型目录：5 秒总预算内依次试主入口、备用入口、备用 IP，408、502、503、传输错误或返回的目录无效时换下一个；
+  - 登录与刷新令牌不换入口（官方也不换）；发起授权和刷新令牌在 408、502、503、传输错误或返回无效内容时依次换 HTTPDNS 地址重发。每次尝试单独计时：发起授权、刷新令牌 8 秒，轮询、取账号 4 秒；
+  - `chat_base_cn` 配成备用入口时只换地址，配成别的地址时整套不生效；
+  - 生产（美国机房）实测：HTTPDNS 查到三个入口的 IP，钉到每个 IP（含备用 IP）拉模型目录都成功。这种网络下一次完整查询约 1.4 秒，第一次按没有结果返回，之后命中缓存。
+
+  见[官方客户端对照](official-client.md#备用入口)。
+- 配置项 `upstream.model_optimization`（面板「上游与高级 → 出站请求」里的「允许上游用对话做模型优化」），默认关闭：每条对话都带 `X-Private-Data: true`。两个安装包的产品配置都让「模型优化」默认关闭，所以这就是官方客户端没动过这个开关时的行为。打开等于在桌面端打开这个开关：个人号发 `false`，企业号仍发 `true`（新版官方 CLI 对企业号一律不允许）。保存即生效，见[配置](configuration.md)。
+
+### 变更
+
+- 客户端没传 `conversation_id` 时，同一段对话的 `X-Conversation-ID` 不再每轮都换：对话的第一个请求新生成一个；历史里出现第一条助手回复以后，按「账号 + 系统提示词 + 第一条用户消息 + 第一条助手回复」认出这段对话，第一次认出时生成一个记在内存里，此后整段对话不变，两个域相同。记录在最后一次使用后保留 2 小时，网关重启或隔了更久再接着聊会换一个新 id，上游缓存断一次。官方客户端也是整段对话用同一个会话 id，上游的前缀缓存按它命中：实测 `glm-5.2` 在会话 id 稳定时第二轮 8 次全部命中，每轮换新 id 只命中 3/10，没命中的一轮积分是命中时的 3 倍多。加上第一条助手回复，开头逐字相同的两段不相干对话仍会拿到不同的 id；两个域、4 个模型共 29 次串会话测试，都没有带出别的对话的内容。1.1.0、1.1.1 里「每轮新生成」「国内版客户端没给就不发」的做法由此取代，见[会话粘性](gateway.md#会话粘性)。
+- 会话 id、轮次 id、消息 id 改成官方的形状（内置 CLI 2.161.0 的 `uuidv7()`）：会话 id 是带连字符的 36 位 UUID v7，轮次 id 和消息 id 是去掉连字符的 UUID v7，前 48 位都是生成时的毫秒数。以前都是随机或哈希出来的 32 位十六进制，按内容派生的会话 id 和轮次 id 现在第一次派生时生成、记在内存里。链路头的 span id 改为每条消息单独随机，不再截消息 id。
+- 任务中心和各类上报不再发带网关名字的 id：以前对话活跃上报、夜间对话、领养前置、连登上报、任务中心的事件链里，会话 id、轮次 id 是 `wb2api-rm-…`、`wb2api-tpl-…`、`wb2api-<毫秒>` 这类自造值，消息 id 是 `msg-pb`、`msg-…-assistant` 这类值，定时任务的名字是「wb2api 自动化」。现在都用上面官方形状的 id，三个 `chat_message_*` 事件带同一个模型消息 id，定时任务名改成「每日资讯简报」。真发了对话的几处（夜间对话、体验模型的对话任务），上报和这次对话用同一个会话 id、轮次 id。
+- 网关不再自动补 `prompt_cache_key`（客户端自己带的照转）。官方客户端不发这个字段，实测它也没有让哪个模型的缓存命中变多，`glm-5.2` 每轮换新会话 id 时带上它反而命中更少。1.0.0 同步自上游的「`prompt_cache_key` 回退到会话键」和 1.1.0 里「`prompt_cache_key` 仍按会话键区分不同对话」的做法一并去掉。
+- 新会话分配账号时也看成本分层：先只留这个模型最便宜的一层（实测免费 > 尚无观测 > 实测收费，成本探索照常），再按会话键挑号。以前新会话不看成本分层，会绑到实测收费的号上，即使池里还有免费的号。已经绑定的会话不因此换号，见[选号策略](gateway.md#选号策略)。
+- 企业号补上部门全名：官方给有部门全名的账号在桌面端请求上带 `X-Department-Info`、在上报事件里带 `enterprise`，网关以前没存这一项。现在登录时取账号就存进凭证文件的 `account.departmentFullName`（命令行登录工具和 `login.sh` 也写），1.1.2 以前的凭证文件在下一次刷新令牌时补上；有值才发，个人号不变。池里没有带部门的企业号，没有实测。
+- 国内版请求全部改发官方产品入口 `www.workbuddy.cn`。以前对话、刷新令牌、登录、模型目录、成长任务和任务中心发往 `copilot.tencent.com`（官方的备用入口），积分、签到、积分补偿、开学季活动和小程序上报发往 `www.codebuddy.cn`（桌面端里只用于网页链接）。生产对比了两个域名：对话、模型目录、积分与签到状态、成长任务和猫猫旅行的查询、任务中心的专家列表、登录的发起授权和轮询，结果都相同。会改动账号状态的请求，网关本来就会自动做的几样用新代码在生产上真做了一次：两个域各刷新一个号的令牌、3 个号的旅行领奖、1 个号的旅行出发，都成功；其余的用必然失败的参数按新形状发（今天已签过的签到、没完成的任务领奖、不存在的兑换档位、没有次数的抽奖、已领过的积分补偿、小程序领不存在的任务等），都返回业务错误，说明路径和认证都对。面板添加国内版账号时打开的授权页随之变成 `www.workbuddy.cn`。详见[官方客户端对照](official-client.md#国内版域名)。
+- 对话请求：
+  - 补上官方每条都带的 `X-Agent-Intent`、`X-Agent-Type`、`X-Private-Data`、W3C `traceparent` 与单行 `b3`；企业号多带一个与企业 ID 同值的 `X-Tenant-Id`；
+  - 带了思考档位时补 `reasoning_summary: "auto"`；
+  - `X-Product` 由 `WorkBuddy` 改成 `SaaS`：官方请求框架给经过它的每个请求都加部署类型，两个安装包都是 `SaaS`；
+  - 去掉官方对话请求里没有的头：`Origin`、`Referer`、`Accept-Language`、`X-CodeBuddy-Request`、`X-Machine-ID`、`X-Session-ID`、`X-Root-Request-ID`、`X-Device-Token`，以及个人号的 `X-No-Enterprise-Id`、没有登录域时的 `X-No-Department-Info`；
+  - User-Agent 改成内置 CLI 的取值：国内版 `WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0`，国际版 `WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0`；`X-IDE-Version` 跟着改成 5.8.3 / 5.8.4。
+- 积分、签到、上报、外观、专家列表这些请求改成桌面端后台服务的形状：
+  - UA 由单段的 `WorkBuddy/5.5.4` 改成 `<应用名>/<版本> WorkBuddy/<版本> CLI/2.161.0`，应用名国内版是 `WorkBuddy`、国际版是 `workbuddy-ai`；
+  - 补上官方请求框架每个请求都带的 `X-Requested-With`、`X-Product: SaaS` 和 `X-Request-ID`（32 位十六进制，每次新生成）；`X-Domain` 改成登录域（任务中心几个请求以前填的是带 `https://` 的完整地址）；
+  - 不再带 `X-CodeBuddy-Request`；
+  - `Accept-Language` 只在积分查询上带，值为 `zh` 或 `en`（以前每条都带 `zh-CN` / `en-US`）；
+  - `X-Device-Token` 只在签到上带。
+- 各类请求的 `Accept-Encoding` 照官方各自的取值发（以前都是 Go 默认的 `gzip`）：
+  - 桌面端的请求（对话、刷新令牌、登录、模型目录、积分、签到、上报等）是请求框架 axios 的 `gzip, compress, deflate, br`；
+  - 网页登录码请求是 Node 内置 fetch 的 `br, gzip, deflate`，另补它默认带的 `Accept-Language: *`、`Sec-Fetch-Mode: cors`；
+  - 官网网页和国际版注册页是 Chrome 的 `gzip, deflate, br, zstd`，小程序网页是 iOS WebKit 的 `gzip, deflate, br`；
+  - 响应按 `Content-Encoding` 解压，br、zstd 用 [andybalholm/brotli](https://github.com/andybalholm/brotli)、[klauspost/compress](https://github.com/klauspost/compress)。生产实测上游目前不压缩响应，对话流照常。
+- 设备与平台按 macOS 版官方客户端对齐（对照的两个安装包都是 macOS 版）。以前上报事件里写的是 Windows，Windows 版官方会带腾讯闭源 SDK 算出的设备标识 qimei36，网关做不出来；macOS 版官方本来就不带它和 `X-Device-Id-List`。具体是：
+  - 桌面端上报和对话活跃上报的公共字段照 5.8.3 的事件处理器补齐：系统 `darwin` / `arm64` / `24.6.0`、`cpuModel: Apple M2`、8 核、16 GB，`machineId` 改成 macOS 的大写 UUID 形状，补上 `cpuModel`、企业号的 `enterpriseId`，后台服务事件的 `sessionId` 改为空串，去掉 5.5.6 才有的 `presentAt`；对话活跃上报以前只有业务字段，现在也带这些公共字段；
+  - 官网网页、client-login 和国际版注册页的 UA 改成 Mac 上的 Chrome 152（国际版注册以前是 Windows 上的 Chrome 120），`Sec-CH-UA-Platform` 改成 `"macOS"`；
+  - 网页上报照官网前端的公共参数：`os` / `osVersion` 由 UA 解析（`macOS` / `10.15.7`，以前是 `Win32` / `10.0`），补上 `sessionId`、`username`、`type`、`product: UserCenter`，`machineId` 改成 32 位十六进制，去掉 `arch`；
+  - 生产实测这几种上报都返回成功，成长任务列表正常。见[官方客户端对照](official-client.md#设备与平台)。
+- 积分查询改用官方桌面端的三个接口：汇总、付费包、免费包同时查，两个域路径相同。余额以汇总为准，单包额度按官方读精确值字段。以前的 `/v2/billing/meter/get-user-resource` 在官方 5.8.3 里已经没有了；生产对比，按旧接口整数字段算出的余额和官方汇总对不上，新算法一致。命令行积分工具 `cmd/credit` 改用同一套查询，企业号改查企业额度，不限量的企业号标 `unlimited`、不计入总计。见[官方客户端对照](official-client.md#积分与签到)。
+- 签到前先查签到状态：活动没开或今天已签就不再发签到请求（官方桌面端也是先查状态，用户点了才签）。国际版不再先试一遍不带 `/v2` 的签到路径。
+- 成长中心（任务、猫猫旅行、连登、抽奖、补签卡、兑换）、积分补偿、新手礼包、试用、账号资料（同步昵称）改成官网网页的形状：这些接口官方只在官网网页上调，桌面端点“成长中心”打开的就是浏览器。请求发往官网域，带 `X-Client-Platform: web` 和浏览器的 UA、客户端提示（`Sec-CH-UA*`）、`Sec-Fetch-*`，不带 `X-User-Id`、`X-Domain` 等桌面端的头。认人照官方的流程用网页登录态：先用账号令牌换一次性登录码（`POST /v2/plugin/device/auth/code`），再打开 `/console/client-login` 换到 session Cookie（照浏览器跟随它的跳转打开目标页），之后这些请求只带 Cookie、不带 `Authorization`；Cookie 失效（401）时自动重取一次。每个账号一份登录态，只存在内存里，重启后重取。另外：任务列表先查订阅任务状态；接受任务改用不带 `/v2` 的路径；领奖、领养等不再带空请求体，旅行领奖发 `{}`；兑换、抽奖的 `client_token` 带上网页的前缀；新手礼包先查领取状态，开放且没领过才领。国际版没有成长体系，任务列表直接返回空，不再请求上游。见[官方客户端对照](official-client.md#官网网页的请求)。
+- 小程序限定任务（列表、接受、领奖）改成官网网页嵌在微信小程序里的形状：发往官网域（以前发往对话域），带 `X-Client-Platform: miniprogram`、`Authorization: Bearer` 和微信小程序 web-view 的 UA，其余和网页相同；不再带旧版 CLI 的 `X-CodeBuddy-Request`、`X-User-Id`、`X-Domain`、`X-Device-Token`。开学季活动的接口和小程序埋点上报以前没设 UA（发的是 Go 默认的 `Go-http-client/1.1`），改用同一个小程序 UA。领奖不再在 400 时改走网页领奖（官方小程序只有这一种形状）。生产实测任务列表正常，领不存在的任务回「任务没完成」。
+- 登录（面板添加账号和命令行登录工具）改成官方桌面端后台服务的形状：发起授权的 `platform` 国内版改为 `workbuddy`、国际版改为 `workbuddy-ai`；带上官方的 `X-No-Authorization` 等标记、`X-Custom-Channel-Id` 和后台服务的 UA；不再带旧版 CodeBuddy CLI 的 UA 和 `Origin`、`Referer`；国内版取账号改用 `/v2/plugin/account`；国际版取到账号后照官方再取一次账号列表 `/v2/plugin/accounts`（失败只记日志）。链路头照官方：每次登录生成一个登录会话 id，发起授权、轮询、取账号带同一条 trace 的 `X-Trace-ID`、`b3`、`X-B3-*`（国际版发起授权不带这几个，官方也不带）和各自子 span 的 `traceparent`；授权页地址追加 `version=<客户端版本>`，国内版另加 `traceparent`、`loginSessionId`、`login_owner_id`。生产实测发起授权、轮询、取账号都正常，加了参数的授权页两个域都能打开；国内版扫码登录走完了整个流程：扫码后拿到令牌和账号，按面板的方式落盘、读回，再用它拉模型目录、查积分包都成功。见[官方客户端对照](official-client.md#登录)。
+- 刷新令牌改成官方的形状和流程：
+  - 请求体 `{}`（以前没有请求体），仍带 `X-Auth-Refresh-Source: plugin`，补上 `X-Product: SaaS`、`X-Request-ID` 和根 span 的链路头，去掉官方没有的 `Origin`、`Referer`、`Accept-Language`、`X-CodeBuddy-Request`、`X-Machine-ID`、`X-Session-ID`；
+  - 刷新成功后用新令牌取一次账号（国内版 `/v2/plugin/account`，国际版 `/v2/plugin/accounts`），照官方挑出对应的那个账号，把昵称、部门全名等合并进本地，再照官方比对身份（账号类型、企业 id、`oneidAccountId`、部门全名、`idp`、令牌的 `tokenType` 和登录域），变了就当刷新失败；取不到账号、新令牌和旧的一样也当失败，新令牌不写回。为此凭证文件多存账号的 `type`、`oneidAccountId`、`idp` 和令牌的 `tokenType`，1.1.2 以前的文件第一次刷新时补上、不比对。uid 对不上照官方保留本地账号、照常用新令牌（以前当刷新失败）；
+  - 生产实测两个域各刷新一个号：两个令牌都换了，旧的访问令牌刷新后仍能用；有效期国内版 30 天、国际版约 1 年。
+- 模型目录：
+  - 个人号只用内置 CLI 的 UA 拉一次 `/v3/config`，拉到的和官方桌面端是同一份；请求头同样是官方请求框架的形状；
+  - 不再换成 IDE、CLI 的 UA 各拉一遍，也不再调只给企业号用的企业模型接口；
+  - 企业号改用官方的企业模型接口 `/console/enterprises/{企业 ID}/config/models`（两个域都是），带 `chat` 标签的模型并进名单，和 `/v3/config` 合并。以前国内版用 `/console/enterprises/personal/models`、国际版用 `/v2/enterprises/personal/models`，都不是官方的接口。池里没有企业号，没有实测；
+  - 名单更准：去掉的 `glm-4.7`、`glm-5.0`、`o4-mini`、`auto-chat`、`deep-model` 实测都用不了；国内版新增 18 个、国际版新增 8 个；带思考档位的模型国内版从 12 个增加到 18 个，国际版从 10 个增加到 18 个。
+
+  代价有三条：
+  - 少数模型的可选档位收窄到桌面端的范围，例如国内版 `deepseek-v4-pro` 只有 high / xhigh，请求 low 会被提到 high，扣费更多；
+  - 只在旧目录里出现的模型（国内版 `default`，国际版 `gpt-5.3-codex`、`enhance-1.0`）不再列出，但直接请求照样转发；国际版专属的名字不带前缀时默认发往国内版，要加 `global:` 前缀；
+  - 国内版几个模型在 `/v1/models` 里显示的最大输出从 393,216 变成桌面端目录里的 128,000，这个值只用于展示，不截断请求。
+- 任务中心：
+  - 桌面端上报的 UA、`X-IDE-Version`、事件里的版本号和提交号从 5.5.6 一起改成国内版 5.8.3，和其余请求用同一个版本；事件的公共字段见上面的「设备与平台」；
+  - 专家对话改成普通对话请求的形状，只多带官方的 `X-Expert-Id`，团队专家另带 `X-Expert-Team-Task: true`，不再带 `x-codebuddy-request`；会经过上面的备用入口切换；
+  - 网页上报照官网的 `sendBeacon` 发（`Content-Type: text/plain;charset=UTF-8`），用网页登录态（Cookie），事件里的 UA 和请求头一致；
+  - 各事件的业务字段照 5.8.3 逐个核对改齐（以前照的是 5.5.6 的抓包）：
+    - 对话链补上官方带的会话 id、轮次 id、模型等字段，去掉官方普通对话里没有的空 `buddyId`、`buddyName`；
+    - `buddyapp_enter_click` 的 `isFirstPage` 由字符串 `"1"` 改成布尔值；
+    - 设计画布、定时任务的事件补齐官方的字段；
+    - 界面上报的事件（模板、灵感案例的点击、换主题、专家召唤、定时任务、Buddy 应用）照官方补上 `mode: LOCAL` 和空的 `buddyId`、`buddyName`。Buddy 应用的发现、曝光、进入三个事件以前把应用 id 填进 `buddyId`，官方是空串，只有授权确认、跳过绑定两个事件带应用；
+    - 灵感案例改从官方静态站点现拉真实案例（和发现页同一份），事件里的案例 id、名字、类型、分类、提示词长度、在分类里的位置都是真实值，以前是写死的一个案例、提示词长度填 0。补上发现页的三次点击（分类、卡片、做同款按钮）和回首页发送时的 `query_recommend_prompt_send`；来源改成分类列表 `scene`，以前的 `discover` 不是官方的取值。站点拉不到时这个任务不上报；
+    - 模板任务改用官方首页的模板列表，取工作模式下前 5 个按钮的真实 id 和名字，以前是编的 1 到 5。`template_used` 的 `template_id` 照官方改成数字，补上点模板按钮的埋点，建任务事件带上 `has_template`、模板 id 和名字。列表拉不到时这个任务不上报；
+    - 尝鲜技能任务的 `fileCount` 改按 5.8.3 内置技能数算（49），以前照抓包写的 56；
+    - 专家召唤的 `type` 改取专家的第一个分类（没有分类为 `all`），召唤按钮的页面地址改成专家中心 `#/experts`；
+    - 和专家对话时，对话链带上专家 id（建任务事件的 `has_expert` 等四项、四个对话事件的 `expertId`）；专家使用事件的 `cost`（召唤到使用的毫秒数）和 `characterCount`（提示词长度）按实际算，以前是固定的 9000 和 14；
+    - 换主题任务照外观设置页的顺序，先拉主题列表、再按账号的订阅包取版本档，然后设置主题、上报事件。事件里的 `vipLevel`、`series`、`type` 用真实值，以前是 `free`、空串、`unknown`；生产查到 `theme-tkmw7j` 是 `free`、`craft`。这个主题限时到 2026-11-02，下架后任务报「主题列表里没有」，不再盲设。
+
+    仍是典型值的字段见[官方客户端对照](official-client.md#没对齐或没实测的)。
+  - 去掉调试开关 `WB2A_DEBUG_CHAT`：它会把带令牌的请求头打到标准输出。
+
+### 修复
+
+- `upstream.client_name` 的文档说留空只发 `X-Product: SaaS`，实际留空等于 `WorkBuddy`，已更正。`upstream.client_version`、`upstream.cli_version` 的默认值、`upstream.user_agent` 的说明和面板里的占位文字也按新取值更正。
+
 ## [1.1.1] - 2026-10-19
 
 ### 修复
