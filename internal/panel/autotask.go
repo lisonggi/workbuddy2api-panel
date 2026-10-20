@@ -537,13 +537,14 @@ func runSequentialModelChat(p *Panel, a *auth.Auth) (string, error) {
 // primary：PC 灵感事件组（DesktopPlaybookPromptSequence，playbook_prompt 三账号
 // 实测点亮）；fallback：mp 指纹灵感事件组（MiniPlaybookEvents，mpsrc 形状）。
 func runSequentialPlaybook(p *Panel, a *auth.Auth) (string, error) {
-	ms := time.Now().UnixMilli()
 	return p.runSequentialEventTask(a, "Sequential_Tasks_7",
 		func() error {
-			conv := fmt.Sprintf("wb2api-pb-%d", ms)
-			req := fmt.Sprintf("wb2api-pb-req-%d", ms)
+			pc, err := p.cfg.Upstream.PickPlaybookCase(a)
+			if err != nil {
+				return fmt.Errorf("灵感案例: %w", err)
+			}
 			return p.cfg.Upstream.ReportDesktopEvent(a,
-				upstream.DesktopPlaybookPromptSequence(conv, req, "pm-gtm-launch-plan", "新产品上市 GTM 发布计划一页纸")...)
+				upstream.DesktopPlaybookPromptSequence(upstream.NewConversationID(), upstream.NewRequestID(), pc)...)
 		},
 		func() error {
 			return p.cfg.Upstream.ReportMPEvent(a, upstream.MiniPlaybookEvents("pm-gtm-launch-plan", "新产品上市 GTM 发布计划一页纸")...)
@@ -1044,17 +1045,19 @@ func runAppearance(p *Panel, a *auth.Auth) (string, error) {
 
 // runTemplateUse 完成 template_5（使用 5 个模板创建任务）。
 // 2026-09-12 三账号实测：agent_task_created_with_template + template_used 事件组
-// （JOIN chat 链）一次上报 5 组即 5/5 点亮。template_id 服务端不校验真实性。
+// （JOIN chat 链）一次上报 5 组即 5/5 点亮。template_id 服务端不校验真实性，1.1.2 起仍照官方首页
+// 现拉模板列表，取工作模式下前 5 个按钮的真实 id 和名字。
 // templateUseGap 相邻两组模板事件之间的间隔。
 var templateUseGap = 300 * time.Millisecond
 
 func runTemplateUse(p *Panel, a *auth.Auth) (string, error) {
-	templates := [][2]string{{"1", "深度研究"}, {"2", "周报生成"}, {"3", "竞品分析"}, {"4", "活动策划"}, {"5", "代码评审"}}
-	for i, tp := range templates {
-		ms := time.Now().UnixMilli()
-		conv := fmt.Sprintf("wb2api-tpl-%d-%d", ms, i)
-		req := fmt.Sprintf("wb2api-tpl-req-%d-%d", ms, i)
-		events := upstream.DesktopTemplateUseSequence(conv, req, tp[0], tp[1])
+	scenes, err := p.cfg.Upstream.PickWorkingScenes(a, 5)
+	if err != nil {
+		return "", fmt.Errorf("首页模板: %w", err)
+	}
+	for i, sc := range scenes {
+		conv, req := upstream.NewConversationID(), upstream.NewRequestID()
+		events := upstream.DesktopTemplateUseSequence(conv, req, sc)
 		if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 			return fmt.Sprintf("第 %d 组模板事件上报失败: %v", i+1, err), nil
 		}
@@ -1066,23 +1069,22 @@ func runTemplateUse(p *Panel, a *auth.Auth) (string, error) {
 // runPlaybookPrompt 完成 playbook_prompt（灵感案例 Dialog 中发送 Prompt）。
 // 判据是 playbook_prompt_send（Dialog 发送）而非卡片曝光/点击——asar 逆向确认。
 func runPlaybookPrompt(p *Panel, a *auth.Auth) (string, error) {
-	ms := time.Now().UnixMilli()
-	conv := fmt.Sprintf("wb2api-pb-%d", ms)
-	req := fmt.Sprintf("wb2api-pb-req-%d", ms)
-	events := upstream.DesktopPlaybookPromptSequence(conv, req, "pm-gtm-launch-plan", "新产品上市 GTM 发布计划一页纸")
+	// 案例从官方静态站点现拉（同桌面端发现页），事件里的类型、分类、提示词长度是它的真实值。
+	pc, err := p.cfg.Upstream.PickPlaybookCase(a)
+	if err != nil {
+		return "", fmt.Errorf("灵感案例: %w", err)
+	}
+	events := upstream.DesktopPlaybookPromptSequence(upstream.NewConversationID(), upstream.NewRequestID(), pc)
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 		return "", err
 	}
-	return "已上报 playbook_cta_click + playbook_prompt_send", nil
+	return "已上报 playbook_cta_click + playbook_prompt_send（案例 " + pc.Title + "）", nil
 }
 
 // runCreateCanvas 完成 create_canvas（设计创意模式创建画布，+300 分）。
 // 判据是 wbx_design_canvas_task_create/open（Ardot create_design 工具完成遥测）。
 func runCreateCanvas(p *Panel, a *auth.Auth) (string, error) {
-	ms := time.Now().UnixMilli()
-	conv := fmt.Sprintf("wb2api-canvas-%d", ms)
-	req := fmt.Sprintf("wb2api-canvas-req-%d", ms)
-	events := upstream.DesktopDesignCanvasSequence(conv, req)
+	events := upstream.DesktopDesignCanvasSequence(upstream.NewConversationID(), upstream.NewRequestID())
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 		return "", err
 	}

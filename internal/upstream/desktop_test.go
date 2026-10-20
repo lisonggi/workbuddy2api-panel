@@ -462,52 +462,103 @@ func TestReportWebEvent(t *testing.T) {
 	}
 }
 
-// TestDesktopTemplateUseSequence 模板任务事件组：对话链 + 两个模板事件，
-// 模板 id/name/requestId 透传。
+// TestDesktopTemplateUseSequence 模板任务：点模板按钮的自动埋点 + template_used（渲染层，模板 id 是
+// 数字）→ 对话链（建任务事件带模板）→ agent_task_created_with_template（id 是模板 id 的字符串）。
 func TestDesktopTemplateUseSequence(t *testing.T) {
-	events := DesktopTemplateUseSequence("conv-t", "req-t", "tpl-1", "日报模板")
-	if len(events) != 8 {
-		t.Fatalf("events = %d，应为 8", len(events))
-	}
-	if events[0]["eventCode"] != "agent_task_created" || events[3]["eventCode"] != "chat_message_response" {
-		t.Errorf("前 6 个应是对话链: %v", events[0]["eventCode"])
-	}
-	if events[0]["conversationId"] != "conv-t" {
-		t.Errorf("对话链会话 id = %v", events[0]["conversationId"])
-	}
-	if events[0]["messageId"] != "msg-tpl-1" {
-		t.Errorf("模板对话 messageId = %v，应为 msg-tpl-1", events[0]["messageId"])
-	}
-	created := events[6]
-	if created["eventCode"] != "agent_task_created_with_template" || created["id"] != "tpl-1" ||
-		created["name"] != "日报模板" || created["requestId"] != "req-t" || created["mode"] != "working" {
-		t.Errorf("agent_task_created_with_template = %v", created)
-	}
-	used := events[7]
-	if used["eventCode"] != "template_used" || used["template_id"] != "tpl-1" || used["task_mode"] != "working" {
-		t.Errorf("template_used = %v", used)
-	}
-}
-
-// TestDesktopPlaybookPromptSequence 灵感案例事件组：对话链 + 三个 playbook 事件。
-func TestDesktopPlaybookPromptSequence(t *testing.T) {
-	events := DesktopPlaybookPromptSequence("conv-p", "req-p", "case-7", "案例七")
+	events := DesktopTemplateUseSequence("conv-t", "req-t", HomeScene{ID: 52, Name: "金融服务", Mode: "working"})
 	if len(events) != 9 {
 		t.Fatalf("events = %d，应为 9", len(events))
 	}
-	click := events[6]
-	if click["eventCode"] != "web_element_click" || click["pageName"] != "playbook_detail" ||
-		click["elementId"] != "playbook_ctaClick" || click["elementName"] != "案例七" || click["source"] != "discover" {
-		t.Errorf("web_element_click = %v", click)
+	click := events[0]
+	if click["eventCode"] != "web_element_click" || click["elementId"] != "agent_template_clicked" ||
+		click["elementName"] != "点击模板" || click["source"] != "金融服务" || click["pageURL"] != "#/" ||
+		click["mode"] != nil || click["buddyId"] != nil {
+		t.Errorf("模板按钮点击 = %v", click)
 	}
-	cta := events[7]
+	used := events[1]
+	if used["eventCode"] != "template_used" || used["template_id"] != 52 || used["template_name"] != "金融服务" ||
+		used["task_mode"] != "working" || used["mode"] != "LOCAL" || used["buddyId"] != "" || used["buddyName"] != "" {
+		t.Errorf("template_used = %v", used)
+	}
+	if _, ok := used["prompt_index"]; ok {
+		t.Errorf("没选示例提示词不该带 prompt_index: %v", used)
+	}
+	created := events[2]
+	if created["eventCode"] != "agent_task_created" || created["conversationId"] != "conv-t" ||
+		created["has_template"] != true || created["action"] != "52" || created["template_name"] != "金融服务" {
+		t.Errorf("建任务事件 = %v", created)
+	}
+	if id, _ := created["messageId"].(string); !upstreamtest.UUIDv7Hex.MatchString(id) {
+		t.Errorf("模板对话 messageId = %v，应是官方消息 id 的形状", created["messageId"])
+	}
+	if events[5]["eventCode"] != "chat_message_response" {
+		t.Errorf("中间应是对话链: %v", events[5]["eventCode"])
+	}
+	withTpl := events[8]
+	if withTpl["eventCode"] != "agent_task_created_with_template" || withTpl["id"] != "52" ||
+		withTpl["name"] != "金融服务" || withTpl["requestId"] != "req-t" ||
+		withTpl["mode"] != "LOCAL" || withTpl["isCustomModel"] != true || withTpl["buddyId"] != nil {
+		t.Errorf("agent_task_created_with_template = %v", withTpl)
+	}
+}
+
+// TestDesktopPlaybookPromptSequence 灵感案例做同款：发现页三次点击（分类、卡片、做同款按钮）→
+// playbook_cta_click → 对话链（输入长度是案例提示词长度）→ playbook_prompt_send，字段取案例的真实值。
+func TestDesktopPlaybookPromptSequence(t *testing.T) {
+	pc := PlaybookCase{ID: "case-7", Title: "案例七", Type: "html", CategoryID: "business",
+		CategoryName: "商业分析", PromptLength: 441, Position: 3}
+	events := DesktopPlaybookPromptSequence("conv-p", "req-p", pc)
+	if len(events) != 12 {
+		t.Fatalf("events = %d，应为 12", len(events))
+	}
+	clicks := []struct{ page, id, name string }{
+		{"playbook_list", "playbook_sceneFilter", "business"},
+		{"playbook_list", "playbookCard_case-7", "案例七"},
+		{"playbook_detail", "playbook_ctaClick", "案例七"},
+	}
+	for i, want := range clicks {
+		ev := events[i]
+		if ev["eventCode"] != "web_element_click" || ev["pageName"] != want.page || ev["elementId"] != want.id ||
+			ev["elementName"] != want.name || ev["source"] != "scene" || ev["pageURL"] != nil ||
+			ev["mode"] != "LOCAL" || ev["buddyId"] != "" || ev["buddyName"] != "" {
+			t.Errorf("第 %d 次点击 = %v", i+1, ev)
+		}
+	}
+	cta := events[3]
 	if cta["eventCode"] != "playbook_cta_click" || cta["id"] != "case-7" || cta["name"] != "案例七" ||
-		cta["type"] != "document" || cta["position"] != 0 || cta["source"] != "discover" {
+		cta["type"] != "html" || cta["position"] != 3 || cta["source"] != "scene" ||
+		cta["categoryId"] != "business" || cta["categoryName"] != "商业分析" ||
+		cta["skills"] != "" || cta["skillNames"] != "" || cta["expertId"] != nil ||
+		cta["mode"] != "LOCAL" || cta["buddyId"] != "" {
 		t.Errorf("playbook_cta_click = %v", cta)
 	}
-	send := events[8]
+	rec := events[4]
+	if rec["eventCode"] != "query_recommend_prompt_send" || rec["batchId"] != "" || rec["recommendId"] != "case-7" ||
+		rec["queryId"] != "case-7" || rec["type"] != "商业分析" || rec["query"] != "案例七" || rec["position"] != 0 ||
+		rec["mode"] != "work" || rec["buddyId"] != "" || rec["buddyName"] != "" {
+		t.Errorf("query_recommend_prompt_send = %v", rec)
+	}
+	if noCat := DesktopPlaybookPromptSequence("c", "r", PlaybookCase{ID: "x", Type: "html"})[4]; noCat["type"] != "html" {
+		t.Errorf("没有分类名时推荐类型应取案例类型: %v", noCat)
+	}
+	for _, ev := range events[5:11] {
+		if ev["conversationId"] != "conv-p" || ev["requestId"] != "req-p" {
+			t.Errorf("对话链 id 不对: %v", ev)
+		}
+		if ev["eventCode"] == "chat_request_send" && ev["inputLength"] != 441 {
+			t.Errorf("chat_request_send.inputLength = %v，应为提示词长度", ev["inputLength"])
+		}
+	}
+	send := events[11]
+	if send["mode"] != nil || send["buddyId"] != nil {
+		t.Errorf("playbook_prompt_send 走 wb.metrics，不该补渲染层字段: %v", send)
+	}
 	if send["eventCode"] != "playbook_prompt_send" || send["conversationId"] != "conv-p" ||
-		send["requestId"] != "req-p" || send["id"] != "case-7" || send["type"] != "document" {
+		send["requestId"] != "req-p" || send["id"] != "case-7" || send["type"] != "html" ||
+		send["promptLength"] != 441 || send["isOfficial"] != 1 || send["source"] != "scene" ||
+		send["categoryId"] != "business" || send["categoryName"] != "商业分析" ||
+		send["ext1"] != "discover" || send["queryId"] != "case-7" || send["skills"] != "" ||
+		send["skillNames"] != "" || send["position"] != nil {
 		t.Errorf("playbook_prompt_send = %v", send)
 	}
 }

@@ -29,6 +29,8 @@ const (
 	autoChatHost    = "chat.test"
 	autoBillingHost = "billing.test"
 	autoWebHost     = "web.test"
+	// autoStaticHost 灵感案例静态站点（官方 static.workbuddy.cn/workbuddy/playbook）。
+	autoStaticHost = "static.test"
 
 	autoTasksPath = "/v2/activity/growth/tasks"
 	// autoSubscribePath 订阅任务状态：网页拉列表前先查（失败不影响列表）。
@@ -179,6 +181,26 @@ func (f *autoUpstream) onWebClaim(code string, h autoHandler) {
 	f.on(http.MethodPost, autoWebHost, "/activity/growth/tasks/"+code+"/claim", "web", h)
 }
 
+// onPlaybook 登记灵感案例静态站点：索引里第一个案例带专家，第二个才是网关会挑的 plain 案例。
+func (f *autoUpstream) onPlaybook() {
+	f.on(http.MethodGet, autoStaticHost, "/playbook/registry.json", "", autoOK(`{"cases":[`+
+		`{"id":"with-expert","title":"带专家","categories":["business"],"experts":[{"id":"x"}]},`+
+		`{"id":"pm-plan","title":"产品计划","categories":["business"],"artifact_type":"html"}]}`))
+	f.on(http.MethodGet, autoStaticHost, "/playbook/categories.json", "", autoOK(`{"categories":[{"id":"business","name":"商业分析"}]}`))
+	f.on(http.MethodGet, autoStaticHost, "/playbook/cases/pm-plan/case.json", "",
+		autoOK(`{"id":"pm-plan","title":"产品计划","categories":["business"],"artifact_type":"html","prompt":"写一份产品计划"}`))
+}
+
+// autoScenesJSON 首页模板列表：工作模式 6 个（其中一个只在 plan 下出现），外加一个编程模式的。
+const autoScenesJSON = `[{"id":47,"name":"创作文档","mode":"working"},{"id":54,"name":"日常开发","mode":"coding"},` +
+	`{"id":52,"name":"金融服务","mode":"working"},{"id":62,"name":"只在规划","mode":"working","interactionModes":["plan"]},` +
+	`{"id":48,"name":"分析数据","mode":"working"},{"id":49,"name":"制作PPT","mode":"working"},{"id":50,"name":"深度研究","mode":"working"}]`
+
+// onScenes 登记首页模板列表。
+func (f *autoUpstream) onScenes() {
+	f.on(http.MethodGet, autoStaticHost, "/scenes/scenes-v2.json", "", autoOK(autoScenesJSON))
+}
+
 // requests 返回已记录请求的快照。
 func (f *autoUpstream) requests() []autoReq {
 	f.mu.Lock()
@@ -249,9 +271,13 @@ func newAutoPanel(t *testing.T) (*Panel, *autoUpstream) {
 			ChatBaseCN:    "https://" + autoChatHost,
 			BillingBaseCN: "https://" + autoBillingHost,
 			WebBaseCN:     "https://" + autoWebHost,
+			PlaybookBase:  "https://" + autoStaticHost + "/playbook",
+			ScenesBase:    "https://" + autoStaticHost + "/scenes",
 		},
 		AuthDir: t.TempDir(),
 	})
+	up.onPlaybook()
+	up.onScenes()
 	return panel, up
 }
 
@@ -1521,8 +1547,47 @@ func TestRunDesktopReportActions(t *testing.T) {
 	}
 }
 
-// template_5：一组事件包含 template_used，按模板 id 1..5 顺序上报；第 N 组失败
-// 返回说明文字但不报错。
+// playbook_prompt：案例从静态站点现拉，事件里是它的真实字段；站点拉不到就不上报。
+func TestRunPlaybookPrompt(t *testing.T) {
+	autoFastWaits(t)
+
+	t.Run("字段取真实案例", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		msg, err := runPlaybookPrompt(p, autoAuth(t, p))
+		if err != nil || !strings.Contains(msg, "产品计划") {
+			t.Fatalf("msg=%q err=%v", msg, err)
+		}
+		evs := autoEvents(t, up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")[0].Body)
+		cta := autoEventByCode(t, evs, "playbook_cta_click")
+		if cta["id"] != "pm-plan" || cta["type"] != "html" || cta["categoryName"] != "商业分析" ||
+			cta["position"] != float64(1) || cta["source"] != "scene" {
+			t.Fatalf("playbook_cta_click = %v", cta)
+		}
+		send := autoEventByCode(t, evs, "playbook_prompt_send")
+		if send["promptLength"] != float64(7) || send["ext1"] != "discover" || send["queryId"] != "pm-plan" {
+			t.Fatalf("playbook_prompt_send = %v", send)
+		}
+		if !upstreamtest.UUIDv7.MatchString(send["conversationId"].(string)) ||
+			!upstreamtest.UUIDv7Hex.MatchString(send["requestId"].(string)) {
+			t.Fatalf("会话 / 轮次 id 形状不对: %v", send)
+		}
+	})
+
+	t.Run("站点拉不到不上报", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.on(http.MethodGet, autoStaticHost, "/playbook/registry.json", "", autoFail(503, "busy"))
+		if _, err := runPlaybookPrompt(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "灵感案例") {
+			t.Fatalf("err = %v", err)
+		}
+		if n := len(up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")); n != 0 {
+			t.Fatalf("不应上报，实际 %d 次", n)
+		}
+	})
+}
+
+// template_5：现拉首页模板列表，取工作模式下 craft 能看到的前 5 个，按列表顺序各报一组；第 N 组失败
+// 返回说明文字但不报错；模板列表拉不到不上报。
 func TestRunTemplateUse(t *testing.T) {
 	autoFastWaits(t)
 
@@ -1537,11 +1602,31 @@ func TestRunTemplateUse(t *testing.T) {
 		if len(reqs) != 5 {
 			t.Fatalf("应上报 5 组，实际 %d", len(reqs))
 		}
+		want := []struct {
+			id   float64
+			name string
+		}{{47, "创作文档"}, {52, "金融服务"}, {48, "分析数据"}, {49, "制作PPT"}, {50, "深度研究"}}
 		for i, r := range reqs {
-			ev := autoEventByCode(t, autoEvents(t, r.Body), "template_used")
-			if ev["template_id"] != strconv.Itoa(i+1) {
-				t.Fatalf("第 %d 组模板 id 不对: %v", i+1, ev)
+			evs := autoEvents(t, r.Body)
+			ev := autoEventByCode(t, evs, "template_used")
+			if ev["template_id"] != want[i].id || ev["template_name"] != want[i].name {
+				t.Fatalf("第 %d 组模板不对: %v", i+1, ev)
 			}
+			withTpl := autoEventByCode(t, evs, "agent_task_created_with_template")
+			if withTpl["id"] != strconv.Itoa(int(want[i].id)) {
+				t.Fatalf("第 %d 组建任务模板 id 不对: %v", i+1, withTpl)
+			}
+		}
+	})
+
+	t.Run("模板列表拉不到不上报", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.on(http.MethodGet, autoStaticHost, "/scenes/scenes-v2.json", "", autoFail(502, "bad"))
+		if _, err := runTemplateUse(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "首页模板") {
+			t.Fatalf("err = %v", err)
+		}
+		if n := len(up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")); n != 0 {
+			t.Fatalf("不应上报，实际 %d 次", n)
 		}
 	})
 
@@ -1562,8 +1647,8 @@ func TestRunTemplateUse(t *testing.T) {
 		if !strings.HasPrefix(msg, "第 2 组模板事件上报失败: ") {
 			t.Fatalf("message 不对: %q", msg)
 		}
-		if got := len(up.requests()); got != 2 {
-			t.Fatalf("失败后应停止，实际 %d 个请求", got)
+		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")); got != 2 {
+			t.Fatalf("失败后应停止，实际上报 %d 次", got)
 		}
 	})
 }
@@ -2586,6 +2671,20 @@ func TestRunSequentialEventTask(t *testing.T) {
 		evs := autoEvents(t, mp[0].Body)
 		autoEventByCode(t, evs, "playbook_cta_click")
 		autoEventByCode(t, evs, "playbook_prompt_send")
+	})
+
+	t.Run("playbook 案例拉不到不上报", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onDefaultTasks(autoOK(autoTasksJSON()))
+		up.onMPTasks(autoOK(autoTasksJSON(autoTaskJSON("Sequential_Tasks_7", 1, 0, "accepted"))))
+		up.on(http.MethodGet, autoStaticHost, "/playbook/categories.json", "", autoFail(404, "no"))
+		msg, err := runSequentialPlaybook(p, autoAuth(t, p))
+		if err != nil || !strings.HasPrefix(msg, "判据上报失败: 灵感案例: ") {
+			t.Fatalf("msg=%q err=%v", msg, err)
+		}
+		if n := len(up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")); n != 0 {
+			t.Fatalf("不应上报，实际 %d 次", n)
+		}
 	})
 
 	t.Run("主判据上报失败", func(t *testing.T) {

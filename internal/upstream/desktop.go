@@ -36,6 +36,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -487,52 +488,88 @@ func (c *Client) ReportWebEvent(a *auth.Auth, eventCode, pageURL, elementID, ele
 // （data/desktop-task-protocol.md §7.3）。
 // ---------------------------------------------------------------------------
 
-// DesktopTemplateUseSequence 构造「使用模板创建任务」事件组（实测 template_5 计数）：
-// agent_task_created_with_template {mode,isCustomModel,id,name,requestId} +
-// template_used {template_id,task_mode}，JOIN 一条完整 chat 链。
-// 三账号实测：5 组（不同模板）一次上报 → 5/5 点亮。
-func DesktopTemplateUseSequence(conversationID, requestID, templateID, templateName string) []DesktopEvent {
-	events := DesktopChatSequence(conversationID, requestID, "msg-"+templateID, "fast-model", "fast-model")
-	events = append(events,
-		DesktopEvent{
-			"eventCode": "agent_task_created_with_template", "mode": "working",
-			"isCustomModel": false, "id": templateID, "name": templateName, "requestId": requestID,
-		},
-		DesktopEvent{"eventCode": "template_used", "template_id": templateID, "task_mode": "working"},
-	)
-	return events
+// DesktopTemplateUseSequence 构造「使用模板创建任务」事件组（实测 template_5 计数；三账号实测
+// 5 组不同模板一次上报 → 5/5 点亮）。照官方 5.8.3 首页点模板再发送的顺序：
+//   - 点模板按钮：界面自动埋点的 web_element_click（agent_template_clicked，source 是模板名，
+//     pageURL 取首页的 hash "#/"，未确认）；同时 reportTemplateUsed 报 template_used，
+//     template_id 是模板的数字 id，没选模板下的示例提示词就不带 prompt_index；
+//   - 首轮回复后：建任务事件带 has_template、action（模板 id 的字符串）、template_name，
+//     再报 agent_task_created_with_template（首页 taskCreatedWithTemplate：mode 是 LOCAL，
+//     isCustomModel 固定 true，id 同 action）。
+//
+// 只发事件不真发对话，用户自己写的输入长度取对话链的典型值。
+func DesktopTemplateUseSequence(conversationID, requestID string, sc HomeScene) []DesktopEvent {
+	id := strconv.Itoa(sc.ID)
+	events := []DesktopEvent{
+		{"eventCode": "web_element_click", "elementId": "agent_template_clicked", "elementName": "点击模板",
+			"source": sc.Name, "pageURL": "#/"},
+		rendererEvent(DesktopEvent{"eventCode": "template_used", "task_mode": "working",
+			"template_name": sc.Name, "template_id": sc.ID}),
+	}
+	chat := DesktopChatSequence(conversationID, requestID, NewRequestID(), "fast-model", "fast-model")
+	created := chat[0]
+	created["has_template"], created["action"], created["template_name"] = true, id, sc.Name
+	events = append(events, chat...)
+	return append(events, DesktopEvent{
+		"eventCode": "agent_task_created_with_template", "mode": "LOCAL",
+		"isCustomModel": true, "id": id, "name": sc.Name, "requestId": requestID,
+	})
 }
 
-// DesktopPlaybookPromptSequence 构造「灵感案例做同款」事件组（实测 playbook_prompt 计数）：
-// web_element_click(playbook_ctaClick) + playbook_cta_click + playbook_prompt_send
-// （Dialog 发送 Prompt，带 conversationId/requestId JOIN chat 链）。三账号实测 1/1 点亮。
-func DesktopPlaybookPromptSequence(conversationID, requestID, caseID, caseName string) []DesktopEvent {
-	events := DesktopChatSequence(conversationID, requestID, "msg-pb", "fast-model", "fast-model")
-	payload := map[string]any{
-		"id": caseID, "name": caseName, "type": "document",
-		"categoryId": "", "categoryName": "",
+// DesktopPlaybookPromptSequence 构造「灵感案例做同款」事件组（实测 playbook_prompt 计数），照官方
+// 5.8.3 发现页从分类列表进详情再做同款的顺序：分类筛选、案例卡片、做同款按钮三个 web_element_click
+// （发现页的 reportEvent，不带 pageURL）→ playbook_cta_click → 回到首页发送时的
+// query_recommend_prompt_send（首页把案例当一条推荐报，buildPlaybookQueryRecommendSendEvent）→
+// 对话链 → playbook_prompt_send（首轮回复后经 wb.metrics 上报，带 conversationId/requestId JOIN
+// chat 链）。来源是分类列表（scene），ext1 发现页为 discover。案例字段取 PickPlaybookCase 的真实值；
+// 案例不带技能、专家，skills 两项为空串，专家两项官方为 undefined、不出现。
+func DesktopPlaybookPromptSequence(conversationID, requestID string, pc PlaybookCase) []DesktopEvent {
+	const source = "scene"
+	events := []DesktopEvent{
+		rendererEvent(DesktopEvent{"eventCode": "web_element_click", "pageName": "playbook_list",
+			"elementId": "playbook_sceneFilter", "elementName": pc.CategoryID, "source": source}),
+		rendererEvent(DesktopEvent{"eventCode": "web_element_click", "pageName": "playbook_list",
+			"elementId": "playbookCard_" + pc.ID, "elementName": pc.Title, "source": source}),
+		rendererEvent(DesktopEvent{"eventCode": "web_element_click", "pageName": "playbook_detail",
+			"elementId": "playbook_ctaClick", "elementName": pc.Title, "source": source}),
 	}
-	events = append(events,
-		DesktopEvent{
-			"eventCode": "web_element_click", "pageName": "playbook_detail",
-			"elementId": "playbook_ctaClick", "elementName": caseName, "source": "discover",
-		},
-		DesktopEvent(func() map[string]any {
-			m := map[string]any{"eventCode": "playbook_cta_click", "source": "discover", "position": 0}
-			for k, v := range payload {
-				m[k] = v
-			}
-			return m
-		}()),
-		DesktopEvent(func() map[string]any {
-			m := map[string]any{"eventCode": "playbook_prompt_send", "conversationId": conversationID, "requestId": requestID}
-			for k, v := range payload {
-				m[k] = v
-			}
-			return m
-		}()),
-	)
-	return events
+	payload := func(code string) DesktopEvent {
+		return DesktopEvent{
+			"eventCode": code, "id": pc.ID, "name": pc.Title, "type": pc.Type,
+			"categoryId": pc.CategoryID, "categoryName": pc.CategoryName,
+			"skills": "", "skillNames": "", "source": source,
+		}
+	}
+	cta := rendererEvent(payload("playbook_cta_click"))
+	cta["position"] = pc.Position
+	recommendType := pc.CategoryName
+	if recommendType == "" {
+		recommendType = pc.Type
+	}
+	// 推荐类事件的 mode 被上报服务改成首页模式（mapQueryRecommendPayload：sceneMode），
+	// 案例没指定 task_mode 时首页停在默认的工作模式，即 work。
+	recommend := rendererEvent(DesktopEvent{
+		"eventCode": "query_recommend_prompt_send", "batchId": "", "recommendId": pc.ID, "queryId": pc.ID,
+		"type": recommendType, "query": pc.Title, "position": 0,
+	})
+	recommend["mode"] = "work"
+	events = append(events, cta, recommend)
+	chat := DesktopChatSequence(conversationID, requestID, NewRequestID(), "fast-model", "fast-model")
+	for _, ev := range chat {
+		if ev["eventCode"] == "chat_request_send" {
+			ev["inputLength"] = pc.PromptLength // 发出去的就是案例提示词
+		}
+	}
+	events = append(events, chat...)
+	send := payload("playbook_prompt_send")
+	for k, v := range map[string]any{
+		"promptLength": pc.PromptLength, "isOfficial": 1,
+		"conversationId": conversationID, "requestId": requestID,
+		"ext1": "discover", "queryId": pc.ID,
+	} {
+		send[k] = v
+	}
+	return append(events, send)
 }
 
 // DesktopDesignCanvasSequence 构造「设计创意画布」事件组（实测 create_canvas 计数）：

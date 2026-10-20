@@ -648,6 +648,9 @@ type Client struct {
 	// 1h TTL + 5min 负缓存），见 global_models.go。按实例持有，测试新建 Client 即隔离。
 	globalModels fetchGlobalModelsCache
 
+	// static 官方静态站点内容的缓存（灵感案例、首页模板），见 playbook.go。
+	static staticCache
+
 	// SanitizeFingerprints 出站请求体黑名单指纹脱敏开关（默认 true；false 完全还原）。
 	// 面板保存配置热改 + chat 热路径并发读写，用 atomic.Bool 消除数据竞争。
 	SanitizeFingerprints atomic.Bool
@@ -692,6 +695,10 @@ type Client struct {
 	// WebBaseCN 官网（workbuddy.cn）域：部分「任务领奖」类接口只在此域提供
 	// （Web 成长中心用；copilot.tencent.com 的同名路径返回 400）。
 	WebBaseCN string
+	// PlaybookBase 灵感案例的静态站点，空为官方地址（见 playbook.go；测试用）。
+	PlaybookBase string
+	// ScenesBase 首页模板列表所在的目录，空为官方地址（见 scenes.go；测试用）。
+	ScenesBase string
 
 	// ChatBaseGlobal / BillingBaseGlobal 国际版（global realm）上游 base。
 	// 空 = 缺省默认 https://www.workbuddy.ai（D5）。
