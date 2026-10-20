@@ -2,7 +2,8 @@ name: go-binaries
 
 # 可运行二进制与镜像的构建/发布：
 #   - 先构建面板前端（web/ → internal/panel/dist，含类型检查 / ESLint / 单元测试），产物供后续任务 go:embed
-#   - test 跑 gofmt / go vet / golangci-lint / go test；二进制、Release 和镜像（docker-ghcr.yml）都排在它之后，检查没过不发布
+#   - commits 按 docs/commits.md 检查这次推送的提交信息；test 跑 gofmt / go vet / golangci-lint / go test。
+#     二进制、Release 和镜像（docker-ghcr.yml）都排在这两项之后，检查没过不发布
 #   - PR        → 测试 + 五平台编译验证（产物仅存 artifact，不发布）
 #   - push main → 同上 + 覆盖固定的「最新构建」Release（tag latest 跟随 main 移动）；
 #                 这次推送升了版本号（appVersion 对应的 vX.Y.Z 标签还不存在）时，再打标签、建正式 Release
@@ -24,6 +25,7 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "scripts/**"
+      - ".githooks/**"
       - "*.sh"
       - ".github/workflows/go-binaries.yml"
       - ".github/workflows/docker-ghcr.yml"
@@ -58,8 +60,35 @@ jobs:
           path: internal/panel/dist
           retention-days: 7
 
+  # 提交信息：只沿 main 的第一父提交查，合并进来的上游提交不查。强推后推送前的提交已不在历史里，
+  # 就退到最近的版本标签之后再查；新建分支或找不到标签时只查最新一个
+  commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 检查提交信息
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ -n "$BASE" ]]; then
+            from=$BASE
+          elif [[ -n "$BEFORE" && ! "$BEFORE" =~ ^0+$ ]] && git merge-base --is-ancestor "$BEFORE" "$HEAD" 2>/dev/null; then
+            from=$BEFORE
+          else
+            from=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$HEAD^" 2>/dev/null || true)
+          fi
+          if [[ -n "$from" ]]; then
+            scripts/commit-msg.sh --commits "$from..$HEAD"
+          else
+            scripts/commit-msg.sh --commits --max-count=1 "$HEAD"
+          fi
+
   test:
-    needs: web
+    needs: [web, commits]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

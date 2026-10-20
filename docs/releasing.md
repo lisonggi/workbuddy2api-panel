@@ -25,7 +25,7 @@
 
 1. 改完代码，按上表定好新版本号，改 `cmd/server/main.go` 的 `appVersion`。
 2. 在 `docs/CHANGELOG.md` 顶部加这一版的条目（格式见下节），日期写推送当天。
-3. 提交并推送到 `main`。CI 依次跑 `gofmt` 检查、`go vet`、`golangci-lint` 和 `go test`（命令见[从源码构建](deployment.md#从源码构建)），任何一步失败都不打标签、不建 Release、不推镜像；`go test` 还会核对 `appVersion` 与更新日志最新一版一致。
+3. 提交并推送到 `main`，提交信息按[提交规则](commits.md)写，发版提交是 `chore(release): x.y.z`。CI 先检查这次推送的提交信息，再依次跑 `gofmt` 检查、`go vet`、`golangci-lint` 和 `go test`（命令见[从源码构建](deployment.md#从源码构建)），任何一步失败都不打标签、不建 Release、不推镜像；`go test` 还会核对 `appVersion` 与更新日志最新一版一致。
 
 推送后 CI 自动完成：
 

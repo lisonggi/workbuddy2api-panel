@@ -159,6 +159,7 @@ flowchart LR
 | [项目来源与上游同步](docs/upstream.md) | 项目沿革、相对原始项目新增的能力、同步记录 |
 | [更新日志](docs/CHANGELOG.md) | 每个版本的新增、变更与修复 |
 | [发版与版本号](docs/releasing.md) | 版本号规则、发版流程、更新日志的格式 |
+| [提交规则](docs/commits.md) | 提交信息格式、type 与 scope、CI 检查与本地钩子 |
 
 ## 致谢
 

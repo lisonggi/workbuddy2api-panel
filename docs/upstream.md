@@ -22,7 +22,7 @@ git grep -lz 'github.com/linguo2625469/workbuddy2api-panel' -- '*.go' \
   | xargs -0 -r sed -i 's#github.com/linguo2625469/workbuddy2api-panel#github.com/yreidev/workbuddy2api-panel#g'
 gofmt -l ./cmd ./internal   # 换路径可能改变 import 排序
 go build ./... && go test ./...
-git commit
+git commit   # 标题写 chore(upstream): 同步上游 <上游短 SHA>，正文列上游的主要改动，见提交规则
 ```
 
 ## 相对原始项目新增的能力
