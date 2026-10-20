@@ -10,12 +10,12 @@
 //	 "total":{"remain":N,"used":N,"size":N,"accounts":N,"ok":N,"failed":N},
 //	 "accounts":[{"uid","nickname","remain","used","size","packages","ok","error?"}]}
 //
-// 接口与聚合逻辑：POST codebuddy.cn/v2/billing/meter/get-user-resource，聚合所有 package 的
-// Cycle* 字段，TotalDosage 作 size 下限。
+// 接口与聚合逻辑：走 internal/upstream 的官方查法——个人号并发请求
+// get-user-resource-summary / paid-packages / free-packages（按 *Precise 字段算额度），
+// 企业号走 /v2/billing/meter/get-enterprise-user-usage；国际版由 Client 按账号域选 base。
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +25,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 // billingBaseCN 国内版计费域：官方产品入口（1.1.2 以前是 www.codebuddy.cn，积分查询 10-20 实测一致）。
@@ -34,25 +37,10 @@ const billingBaseCN = "https://www.workbuddy.cn"
 // www.codebuddy.cn 不认 workbuddy.ai 的 token（实测 401，workbuddy.ai 同 token 为 code=0）。
 const billingBaseGlobal = "https://www.workbuddy.ai"
 
-// billingBaseFor 按账号 realm 选择计费域。
-//
-// 判定口径与 internal/auth.Realm() 一致：显式 realm=global 或 domain 落在
-// workbuddy.ai 家族，都按国际版处理。cmd/credit 早先对所有账号硬编码 CN 域，
-// 导致 global 账号余额查询恒返回 401（面板显示的是池内缓存值，不是实时的）。
-func billingBaseFor(af *authFile) string {
-	if strings.EqualFold(strings.TrimSpace(af.Auth.Realm), "global") {
-		return billingBaseGlobal
-	}
-	d := strings.ToLower(strings.TrimSpace(af.Auth.Domain))
-	if d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai") {
-		return billingBaseGlobal
-	}
-	return billingBaseCN
-}
-
 type authFile struct {
 	Auth struct {
 		AccessToken string `json:"accessToken"`
+		ExpiresAt   int64  `json:"expiresAt"`
 		Domain      string `json:"domain"`
 		Realm       string `json:"realm"`
 	} `json:"auth"`
@@ -70,126 +58,50 @@ type accountResult struct {
 	Used     *int64 `json:"used"`
 	Size     *int64 `json:"size"`
 	Packages int    `json:"packages,omitempty"`
-	OK       bool   `json:"ok"`
-	Error    string `json:"error,omitempty"`
+	// Unlimited 企业号不限量（上游 limitNum=-1）：remain/used/size 留空，不计入总计。
+	Unlimited bool   `json:"unlimited,omitempty"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
 }
 
-type resourcePackage struct {
-	CapacityRemain      int64 `json:"CapacityRemain"`
-	CapacityUsed        int64 `json:"CapacityUsed"`
-	CapacitySize        int64 `json:"CapacitySize"`
-	CycleCapacityRemain int64 `json:"CycleCapacityRemain"`
-	CycleCapacityUsed   int64 `json:"CycleCapacityUsed"`
-	CycleCapacitySize   int64 `json:"CycleCapacitySize"`
+// credentialAuth 把凭证文件转成 upstream 用的 *auth.Auth。realm 按文件里的显式值，
+// 缺省按 domain 推断（与 internal/auth 同口径）；没有到期时间或已过期时按远期处理，
+// 保证查询过程不会把它当成过期 token。
+func credentialAuth(af *authFile) *auth.Auth {
+	a := &auth.Auth{
+		AccessToken:  af.Auth.AccessToken,
+		Domain:       af.Auth.Domain,
+		UID:          af.Account.UID,
+		EnterpriseID: af.Account.EnterpriseID,
+		Nickname:     af.Account.Nickname,
+		ExpiresAt:    af.Auth.ExpiresAt,
+	}
+	if a.ExpiresAt <= time.Now().Unix() {
+		a.ExpiresAt = time.Now().Add(24 * time.Hour).Unix()
+	}
+	// BackfillRealmFor 只接受 cn/global；文件里写了别的值时保持缺省，让 Realm() 按 domain 回落。
+	_, _ = auth.BackfillRealmFor(a, auth.ResolveRealm(strings.ToLower(strings.TrimSpace(af.Auth.Realm)), af.Auth.Domain))
+	return a
 }
 
-// packageRemainUsed 与 billing.go:203-258 一致
-func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
-	if a.CycleCapacitySize > 0 {
-		remain = a.CycleCapacityRemain
-		size = a.CycleCapacitySize
-		if remain < 0 {
-			remain = 0
+// queryCredits 查一个账号的积分。个人号用逐包构成（packages 计数），
+// 企业额度不在资源包体系里，改查企业用量接口，packages 恒 0；不限量（total<0）时 unlimited 为真。
+func queryCredits(up *upstream.Client, a *auth.Auth) (remain, used, size int64, packs int, unlimited bool, err error) {
+	if a.IsEnterprise() {
+		var total int64
+		if remain, total, err = up.UserResource(a); err != nil {
+			return 0, 0, 0, 0, false, err
 		}
-		if remain > size {
-			remain = size
+		if total < 0 {
+			return 0, 0, 0, 0, true, nil
 		}
-		used = size - remain
-		if a.CycleCapacityUsed > used {
-			used = a.CycleCapacityUsed
-			if size >= used {
-				remain = size - used
-			}
-		}
-		return remain, used, size
+		return remain, total - remain, total, 0, false, nil
 	}
-	remain = a.CapacityRemain
-	used = a.CapacityUsed
-	size = a.CapacitySize
-	if used == 0 && size > remain {
-		used = size - remain
+	var ps []upstream.CreditPackage
+	if ps, remain, size, err = up.CreditPackages(a); err != nil {
+		return 0, 0, 0, 0, false, err
 	}
-	return remain, used, size
-}
-
-func fetchUserResource(af *authFile, client *http.Client) (remain, used, size int64, packs int, err error) {
-	now := time.Now()
-	body, _ := json.Marshal(map[string]any{
-		"PageNumber":               1,
-		"PageSize":                 100,
-		"ProductCode":              "p_tcaca",
-		"Status":                   []int{0, 3},
-		"PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"),
-		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
-	})
-	base := billingBaseFor(af)
-	// global 域无 /v2 前缀（与 internal/upstream 的 billingMeterPaths 同口径）。
-	path := "/v2/billing/meter/get-user-resource"
-	if base == billingBaseGlobal {
-		path = "/billing/meter/get-user-resource"
-	}
-	req, err := http.NewRequest(http.MethodPost, base+path, bytes.NewReader(body))
-	if err != nil {
-		return 0, 0, 0, 0, err
-	}
-	req.Header.Set("Authorization", "Bearer "+af.Auth.AccessToken)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	if af.Account.UID != "" {
-		req.Header.Set("X-User-Id", af.Account.UID)
-	}
-	if af.Account.EnterpriseID != "" {
-		req.Header.Set("X-Enterprise-Id", af.Account.EnterpriseID)
-		req.Header.Set("X-Tenant-Id", af.Account.EnterpriseID)
-	}
-	if af.Auth.Domain != "" {
-		req.Header.Set("X-Domain", af.Auth.Domain)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, 0, 0, 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return 0, 0, 0, 0, fmt.Errorf("http %d", resp.StatusCode)
-	}
-	var env struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
-		Data struct {
-			Response struct {
-				Data struct {
-					TotalDosage int64             `json:"TotalDosage"`
-					Accounts    []resourcePackage `json:"Accounts"`
-				} `json:"Data"`
-			} `json:"Response"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	if env.Code != 0 {
-		return 0, 0, 0, 0, fmt.Errorf("code=%d %s", env.Code, env.Msg)
-	}
-	for _, a := range env.Data.Response.Data.Accounts {
-		r, u, s := packageRemainUsed(a)
-		remain += r
-		used += u
-		size += s
-	}
-	packs = len(env.Data.Response.Data.Accounts)
-	if size > 0 {
-		if derived := size - remain; derived > used {
-			used = derived
-		}
-	}
-	if dosage := env.Data.Response.Data.TotalDosage; dosage > size {
-		size = dosage
-		if derived := size - remain; derived > used {
-			used = derived
-		}
-	}
-	return remain, used, size, packs, nil
+	return remain, size - remain, size, len(ps), false, nil
 }
 
 // exitFunc 供测试替换（默认 os.Exit；测试换成 panic 以进程内捕获退出码）。
@@ -211,6 +123,13 @@ func run(args []string, stdout io.Writer, client *http.Client) int {
 	files, _ := filepath.Glob(filepath.Join(authDir, "workbuddy-*.json"))
 	sort.Strings(files)
 
+	up := &upstream.Client{
+		HTTP:              client,
+		BillingBaseCN:     billingBaseCN,
+		BillingBaseGlobal: billingBaseGlobal,
+		GlobalEnabled:     true,
+	}
+
 	accounts := make([]accountResult, 0, len(files))
 	for _, f := range files {
 		var af authFile
@@ -224,10 +143,14 @@ func run(args []string, stdout io.Writer, client *http.Client) int {
 			accounts = append(accounts, res)
 			continue
 		}
-		remain, used, size, packs, err := fetchUserResource(&af, client)
-		if err != nil {
+		remain, used, size, packs, unlimited, err := queryCredits(up, credentialAuth(&af))
+		switch {
+		case err != nil:
 			res.Error = err.Error()
-		} else {
+		case unlimited:
+			res.Unlimited = true
+			res.OK = true
+		default:
 			res.Remain = &remain
 			res.Used = &used
 			res.Size = &size
@@ -281,7 +204,7 @@ func printPretty(accounts []accountResult, totalRemain, totalUsed, totalSize int
 	withBalance := 0
 	var failed []string
 	for _, a := range accounts {
-		if a.OK && a.Remain != nil && *a.Remain > 0 {
+		if a.OK && (a.Unlimited || a.Remain != nil && *a.Remain > 0) {
 			withBalance++
 		}
 		if !a.OK {
