@@ -4,20 +4,20 @@
 
 # WorkBuddy2API Panel
 
-**把腾讯 WorkBuddy 账号变成 OpenAI 兼容 API，出站请求照官方客户端逐项对齐**
+**把腾讯 WorkBuddy 账号变成 OpenAI 兼容 API，Claude Code、Codex 直接接入，出站请求照官方客户端逐项对齐**
 
-请求头对齐官方桌面端 5.8.3 · 主备入口与 HTTPDNS 自动切换 · 国内 / 国际双域合池 · 企业号用上 Claude · 积分任务全自动 · 面板一键更新
+Claude Code / Codex 直连 · 模型路由 · 请求头对齐官方桌面端 5.8.3 · 主备入口与 HTTPDNS 自动切换 · 国内 / 国际双域合池 · 企业号用上 Claude · 积分任务全自动 · 面板一键更新
 
 [![构建](https://img.shields.io/github/actions/workflow/status/yreidev/workbuddy2api-panel/go-binaries.yml?branch=main&style=flat-square&label=build)](https://github.com/yreidev/workbuddy2api-panel/actions/workflows/go-binaries.yml)
 [![版本](https://img.shields.io/github/v/release/yreidev/workbuddy2api-panel?style=flat-square&label=release)](https://github.com/yreidev/workbuddy2api-panel/releases/latest)
-[![测试覆盖率](https://img.shields.io/badge/coverage-98.7%25-brightgreen?style=flat-square)](docs/deployment.md#从源码构建)
+[![测试覆盖率](https://img.shields.io/badge/coverage-98.5%25-brightgreen?style=flat-square)](docs/deployment.md#从源码构建)
 [![Docker 镜像](https://img.shields.io/badge/ghcr.io-latest-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/yreidev/workbuddy2api-panel/pkgs/container/workbuddy2api-panel)
 [![下载最新构建](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-%E6%9C%80%E6%96%B0%E6%9E%84%E5%BB%BA-0DBD8B?style=flat-square&logo=github)](https://github.com/yreidev/workbuddy2api-panel/releases/tag/latest)
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go&logoColor=white)](go.mod)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go&logoColor=white)](go.mod)
 [![OpenAI 兼容](https://img.shields.io/badge/API-OpenAI%20%E5%85%BC%E5%AE%B9-412991?style=flat-square)](docs/api.md)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-[快速开始](#快速开始) · [和原版比](#和原版比多了什么) · [功能亮点](#功能亮点) · [接入客户端](#接入客户端) · [文档](#文档) · [致谢](#致谢)
+[快速开始](#快速开始) · [和原版比](#和原版比多了什么) · [功能亮点](#功能亮点) · [接入客户端](#接入客户端) · [Claude Code](#claude-code) · [Codex](#codex) · [文档](#文档) · [致谢](#致谢)
 
 </div>
 
@@ -37,6 +37,7 @@ GitHub 上叫 workbuddy2api-panel 的仓库有好几个。本仓库是在原版 
 
 | | 本仓库 | 原版 |
 |---|---|---|
+| **Claude Code / Codex** | 原生提供 Anthropic Messages（`/v1/messages`）和 Responses（`/v1/responses`），填地址和密钥就能用；模型路由把它们的默认模型名改到上游模型，客户端不用配模型 | 只有 `/v1/chat/completions` |
 | **出站请求** | 照官方桌面端 5.8.3 安装包逐项对齐 UA、请求头、会话 id 和链路头，每一项的依据都写在[官方客户端对照](docs/official-client.md) | UA 停在 WorkBuddy 5.5.2，还带着官方已经不发的 Origin、Referer 等旧请求头 |
 | **网络容错** | 主入口出错切备用入口，DNS 失败或网关错误换 HTTPDNS 候选 IP，按入口熔断，规则照官方 | 单一入口，没有失败切换 |
 | **对话隐私** | 默认告诉上游不许拿你的对话做模型优化（`X-Private-Data`），面板里可改 | 不发 |
@@ -46,7 +47,7 @@ GitHub 上叫 workbuddy2api-panel 的仓库有好几个。本仓库是在原版 
 | **成长中心** | 照官方桌面端用登录码换官网 Cookie 走网页接口，任务事件字段照 5.8.3 逐个核对 | 没有网页登录态 |
 | **管理面板** | React + HeroUI 重写，手机端、明暗主题、凭证导出与批量导出 | 原生 JS 面板 |
 | **升级** | 面板提醒新版本，一键更新，新版跑不稳自动退回 | 没有一键更新 |
-| **工程质量** | 178 个测试文件，断网全量可跑，覆盖率 98.7%；CI 跑 gofmt、go vet、golangci-lint 和提交规则检查，提交全部签名 | 68 个测试文件 |
+| **工程质量** | 180 个测试文件，断网全量可跑，覆盖率 98.5%；CI 跑 gofmt、go vet、golangci-lint 和提交规则检查，提交全部签名 | 68 个测试文件 |
 
 ## 功能亮点
 
@@ -55,9 +56,10 @@ GitHub 上叫 workbuddy2api-panel 的仓库有好几个。本仓库是在原版 
   - 主入口出错时自动切备用入口，DNS 失败或网关错误换 HTTPDNS 候选 IP，切换规则照官方。
   - 默认不允许上游拿你的对话做模型优化。
 
-- 🔌 **OpenAI 兼容，零改造接入**
-  - 提供 `/v1/chat/completions` 与 `/v1/models`。
-  - 流式、非流式、工具调用、图片输入、推理档位都支持。
+- 🔌 **OpenAI、Claude Code、Codex 都能直接接**
+  - 提供 `/v1/chat/completions` 与 `/v1/models`，流式、非流式、工具调用、图片输入、推理档位都支持。
+  - Claude Code 走 `/v1/messages`，Codex 走 `/v1/responses`，和普通对话共用同一套选号、换号与日志。
+  - 模型路由：客户端发来上游没有的模型名（比如 Claude Code 的默认模型）时按规则改用上游模型，在面板里配。
 - 🔄 **多账号池，坏了自动换**
   - 按实测成本、剩余积分、闲置时长加权选号。
   - 限流、余额不足、登录失效分别处置，出错自动换号重试。
@@ -114,7 +116,7 @@ docker run -d --name workbuddy2api --restart unless-stopped \
 
 ## 接入客户端
 
-任何支持 OpenAI 兼容接口的客户端都可以：Cherry Studio、Chatbox、Open WebUI、各类 SDK 与编程工具，填 Base URL 和 API Key 即可。
+任何支持 OpenAI 兼容接口的客户端都可以：Cherry Studio、Chatbox、Open WebUI、各类 SDK 与编程工具，填 Base URL 和 API Key 即可。Claude Code、Codex 的接法见下面两小节。
 
 ```bash
 curl http://localhost:7863/v1/chat/completions \
@@ -135,6 +137,40 @@ print(resp.choices[0].message.content)
 ```
 
 可用模型以 `/v1/models` 或面板「模型与档位」为准。模型名不带前缀时默认走国内版，`global:gpt-5.5` 这样加前缀走国际版。
+
+### Claude Code
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:7863   # 不带 /v1
+export ANTHROPIC_AUTH_TOKEN=sk-...                # 网关的 api_key
+claude
+```
+
+也可以写进 `~/.claude/settings.json` 的 `env` 里长期生效。模型有两种配法，任选其一：
+
+- **在面板配模型路由（推荐）**：「模型与档位 → 模型路由」点「添加 Claude Code 三档」，给 opus、sonnet、haiku 各选一个上游模型。客户端什么都不用改，`/model` 切档位就是切规则；
+- **在客户端指定**：`export ANTHROPIC_MODEL=glm-5.2`，或分别设 `ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL`、`ANTHROPIC_DEFAULT_HAIKU_MODEL`。
+
+上游模型的上下文比 Claude 小时，把 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 设成该模型的上下文长度（Claude Code 最低只认 100000），让它提前压缩对话。Anthropic 不为「Claude Code 接非 Claude 模型」提供支持，遇到问题请在本仓库反馈。
+
+### Codex
+
+在 `~/.codex/config.toml` 里加一个提供方：
+
+```toml
+model_provider = "wb2api"
+# model = "glm-5.2"   # 配了模型路由可以不写，用 Codex 默认的模型名再由网关改写
+
+[model_providers.wb2api]
+name = "WorkBuddy2API"
+base_url = "http://localhost:7863/v1"
+env_key = "WB2API_KEY"   # 从这个环境变量读网关的 api_key
+wire_api = "responses"
+```
+
+然后 `export WB2API_KEY=sk-...` 再运行 `codex`。`model_provider` 只能写在用户目录的配置里，项目里的 `.codex/config.toml` 会忽略它。
+
+两个入口的翻译细节、模型路由的匹配规则见 [API 参考](docs/api.md#claude-code-与-codex-入口)。
 
 ## 常用配置
 
@@ -175,7 +211,7 @@ flowchart LR
 | [网关与选号](docs/gateway.md) | 选号策略、跨域负载均衡、会话粘性、错误处置、提示词与内容审核、工具调用还原 |
 | [定时任务与积分任务](docs/tasks.md) | 签到、成长任务一键完成、任务中心、连登、旅行、暂停选号、企业版账号 |
 | [Web 管理面板](docs/panel.md) | 各视图功能、时间范围、调用来源、更新提醒与一键更新、面板接口、安全响应头 |
-| [API 参考](docs/api.md) | 对外端点、模型名、健康检查、请求日志、上游接口 |
+| [API 参考](docs/api.md) | 对外端点、Claude Code 与 Codex 入口、模型名与模型路由、健康检查、请求日志、上游接口 |
 | [官方客户端对照](docs/official-client.md) | 出站请求按官方桌面端对齐的依据、未对齐项、官方升级后怎么核对 |
 | [安全与合规](docs/security.md) | 凭证保管、网络暴露、日志敏感度、使用边界 |
 | [常见问题](docs/faq.md) | 权限报错、6004 限额、内容审核误拦、账号恢复等 |
@@ -199,7 +235,7 @@ flowchart LR
 
 - **开源依赖**：
   - 前端：[HeroUI](https://github.com/heroui-inc/heroui)、[React](https://github.com/facebook/react)、[TanStack Query 与 Router](https://github.com/TanStack)、[Recharts](https://github.com/recharts/recharts)、[Tailwind CSS](https://github.com/tailwindlabs/tailwindcss)、[Gravity UI Icons](https://github.com/gravity-ui/icons)、[Vite](https://github.com/vitejs/vite)。
-  - 后端：[go-redis](https://github.com/redis/go-redis)、[andybalholm/brotli](https://github.com/andybalholm/brotli)、[klauspost/compress](https://github.com/klauspost/compress)。
+  - 后端：[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（Claude Code、Codex 入口的协议翻译层）、[go-redis](https://github.com/redis/go-redis)、[andybalholm/brotli](https://github.com/andybalholm/brotli)、[klauspost/compress](https://github.com/klauspost/compress)。
 - **图标**：来自 [DGZSbot/ai-icon](https://github.com/DGZSbot/ai-icon)。
 
 ## 使用声明

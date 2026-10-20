@@ -1,4 +1,4 @@
-// 模型与档位：实时查询上游模型目录（国内版、国际版两个域），展示积分倍率、思考档位、上下文与输出上限。
+// 模型与档位：上方是模型路由规则；下方实时查询上游模型目录（国内版、国际版两个域），展示积分倍率、思考档位、上下文与输出上限。
 // 输出上限列若有 scripts/probe_max_tokens.py 的实测结果，标注钳制情况；没有则显示上游声称值。
 import { useMemo, useState, type ReactNode } from 'react'
 import {
@@ -14,6 +14,7 @@ import { qk, useModels, useProbes } from '../../lib/queries'
 import type { Model, Probe } from '../../lib/types'
 import { BusyButton, Empty, Loaded } from '../../components/Feedback'
 import { InfoTip, Panel } from '../../components/Panel'
+import { ModelRoutes } from './ModelRoutes'
 
 function probeDays(ts?: string): number | null {
   if (!ts) return null
@@ -168,97 +169,100 @@ export function ModelsPage() {
   }
 
   return (
-    <Panel
-      title="模型能力"
-      desc={
-        <>
-          max_tokens 已可正常透传最大输出；官方返回的最大输出仅供参考，不保证完全正确。
-          {list.length > 0 && <> {list.length} 个模型 · 已刷新降级缓存{hit ? ' · ' + hit + ' 个有实测上限' : ''}</>}
-        </>
-      }
-      actions={<BusyButton size="sm" variant="secondary" busy={models.isFetching} onPress={refresh}>重新获取</BusyButton>}
-      contentClassName="flex flex-col gap-3"
-    >
-      <div className="flex flex-wrap items-center gap-3">
-        <SearchField aria-label="搜索模型" value={filter.q} onChange={(v) => set('q', v)} className="w-full sm:w-72">
-          <SearchField.Group>
-            <SearchField.SearchIcon />
-            <SearchField.Input placeholder="搜索 ID / 名称 / 厂商 / 描述" />
-            <SearchField.ClearButton />
-          </SearchField.Group>
-        </SearchField>
-        <ToggleButtonGroup aria-label="按域筛选" size="sm" selectionMode="single" disallowEmptySelection
-          selectedKeys={[filter.realm]} onSelectionChange={(k) => set('realm', ([...k][0] as RealmFilter) ?? 'all')}>
-          <ToggleButton id="all">全部</ToggleButton>
-          <ToggleButton id="cn"><ToggleButtonGroup.Separator />国内版</ToggleButton>
-          <ToggleButton id="global"><ToggleButtonGroup.Separator />国际版</ToggleButton>
-        </ToggleButtonGroup>
-        <ToggleButtonGroup aria-label="按能力筛选" size="sm" selectionMode="multiple"
-          selectedKeys={filter.caps} onSelectionChange={(k) => set('caps', [...k] as Capability[])}>
-          <ToggleButton id="tools">工具调用</ToggleButton>
-          <ToggleButton id="vision"><ToggleButtonGroup.Separator />视觉</ToggleButton>
-          <ToggleButton id="reasoning"><ToggleButtonGroup.Separator />思考</ToggleButton>
-          <ToggleButton id="default"><ToggleButtonGroup.Separator />默认模型</ToggleButton>
-        </ToggleButtonGroup>
-        <Pick label="按思考档位筛选" value={filter.effort} options={EFFORTS} onChange={(v) => set('effort', v)} className="w-32" />
-        <Pick label="按价格筛选" value={filter.promo} options={PROMOS} onChange={(v) => set('promo', v)} className="w-40" />
-        <Pick label="排序" value={sort} options={SORTS} onChange={setSort} className="w-40" />
-        {list.length > 0 && (
-          <span className={`text-sm sm:ml-auto ${shown.length !== list.length ? 'text-warning' : 'text-muted'}`}>
-            {shown.length !== list.length ? `命中 ${shown.length} / ${list.length} 个模型` : `${list.length} 个模型`}
-          </span>
-        )}
-        {(filtered || sort !== 'default') && (
-          <Button size="sm" variant="ghost" onPress={() => { setFilter(EMPTY_MODEL_FILTER); setSort('default') }}>重置</Button>
-        )}
-      </div>
-      <Loaded query={models} rows={8}>
-        {() => shown.length === 0 ? (
-          <Empty title={list.length ? '没有符合条件的模型' : '上游未返回模型'} />
-        ) : isDesktop ? (
-          <Table variant="secondary">
-            <Table.ScrollContainer>
-              <Table.Content aria-label="模型能力" className="min-w-[860px]">
-                <Table.Header>
-                  <Table.Column isRowHeader>模型</Table.Column>
-                  <Table.Column>积分倍率</Table.Column>
-                  <Table.Column>默认档</Table.Column>
-                  <Table.Column>支持的思考档位</Table.Column>
-                  <Table.Column>上下文长度</Table.Column>
-                  <Table.Column>最大输出</Table.Column>
-                </Table.Header>
-                <Table.Body>
-                  {shown.map((m) => (
-                    <Table.Row key={m.id} id={m.id}>
-                      <Table.Cell><div className="max-w-72"><ModelName m={m} /></div></Table.Cell>
-                      <Table.Cell><RateCell m={m} /></Table.Cell>
-                      <Table.Cell>{m.default_effort ? <Chip size="sm" variant="soft" color="success">{m.default_effort}</Chip> : <span className="text-muted">—</span>}</Table.Cell>
-                      <Table.Cell><div className="max-w-56"><Efforts m={m} /></div></Table.Cell>
-                      <Table.Cell className="tabular-nums">{ctx(m)}</Table.Cell>
-                      <Table.Cell><OutputCell m={m} pr={probeFor(pr, m.id)} /></Table.Cell>
-                    </Table.Row>
-                  ))}
-                </Table.Body>
-              </Table.Content>
-            </Table.ScrollContainer>
-          </Table>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {shown.map((m) => (
-              <Card key={m.id} variant="secondary" className="gap-3 p-4">
-                <ModelName m={m} />
-                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-                  <dt className="text-muted">积分倍率</dt><dd><RateCell m={m} /></dd>
-                  <dt className="text-muted">默认档</dt><dd>{m.default_effort || '—'}</dd>
-                  <dt className="text-muted">思考档位</dt><dd><Efforts m={m} /></dd>
-                  <dt className="text-muted">上下文</dt><dd className="tabular-nums">{ctx(m)}</dd>
-                  <dt className="text-muted">最大输出</dt><dd><OutputCell m={m} pr={probeFor(pr, m.id)} /></dd>
-                </dl>
-              </Card>
-            ))}
-          </div>
-        )}
-      </Loaded>
-    </Panel>
+    <div className="flex flex-col gap-4">
+      <ModelRoutes />
+      <Panel
+        title="模型能力"
+        desc={
+          <>
+            max_tokens 已可正常透传最大输出；官方返回的最大输出仅供参考，不保证完全正确。
+            {list.length > 0 && <> {list.length} 个模型 · 已刷新降级缓存{hit ? ' · ' + hit + ' 个有实测上限' : ''}</>}
+          </>
+        }
+        actions={<BusyButton size="sm" variant="secondary" busy={models.isFetching} onPress={refresh}>重新获取</BusyButton>}
+        contentClassName="flex flex-col gap-3"
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <SearchField aria-label="搜索模型" value={filter.q} onChange={(v) => set('q', v)} className="w-full sm:w-72">
+            <SearchField.Group>
+              <SearchField.SearchIcon />
+              <SearchField.Input placeholder="搜索 ID / 名称 / 厂商 / 描述" />
+              <SearchField.ClearButton />
+            </SearchField.Group>
+          </SearchField>
+          <ToggleButtonGroup aria-label="按域筛选" size="sm" selectionMode="single" disallowEmptySelection
+            selectedKeys={[filter.realm]} onSelectionChange={(k) => set('realm', ([...k][0] as RealmFilter) ?? 'all')}>
+            <ToggleButton id="all">全部</ToggleButton>
+            <ToggleButton id="cn"><ToggleButtonGroup.Separator />国内版</ToggleButton>
+            <ToggleButton id="global"><ToggleButtonGroup.Separator />国际版</ToggleButton>
+          </ToggleButtonGroup>
+          <ToggleButtonGroup aria-label="按能力筛选" size="sm" selectionMode="multiple"
+            selectedKeys={filter.caps} onSelectionChange={(k) => set('caps', [...k] as Capability[])}>
+            <ToggleButton id="tools">工具调用</ToggleButton>
+            <ToggleButton id="vision"><ToggleButtonGroup.Separator />视觉</ToggleButton>
+            <ToggleButton id="reasoning"><ToggleButtonGroup.Separator />思考</ToggleButton>
+            <ToggleButton id="default"><ToggleButtonGroup.Separator />默认模型</ToggleButton>
+          </ToggleButtonGroup>
+          <Pick label="按思考档位筛选" value={filter.effort} options={EFFORTS} onChange={(v) => set('effort', v)} className="w-32" />
+          <Pick label="按价格筛选" value={filter.promo} options={PROMOS} onChange={(v) => set('promo', v)} className="w-40" />
+          <Pick label="排序" value={sort} options={SORTS} onChange={setSort} className="w-40" />
+          {list.length > 0 && (
+            <span className={`text-sm sm:ml-auto ${shown.length !== list.length ? 'text-warning' : 'text-muted'}`}>
+              {shown.length !== list.length ? `命中 ${shown.length} / ${list.length} 个模型` : `${list.length} 个模型`}
+            </span>
+          )}
+          {(filtered || sort !== 'default') && (
+            <Button size="sm" variant="ghost" onPress={() => { setFilter(EMPTY_MODEL_FILTER); setSort('default') }}>重置</Button>
+          )}
+        </div>
+        <Loaded query={models} rows={8}>
+          {() => shown.length === 0 ? (
+            <Empty title={list.length ? '没有符合条件的模型' : '上游未返回模型'} />
+          ) : isDesktop ? (
+            <Table variant="secondary">
+              <Table.ScrollContainer>
+                <Table.Content aria-label="模型能力" className="min-w-[860px]">
+                  <Table.Header>
+                    <Table.Column isRowHeader>模型</Table.Column>
+                    <Table.Column>积分倍率</Table.Column>
+                    <Table.Column>默认档</Table.Column>
+                    <Table.Column>支持的思考档位</Table.Column>
+                    <Table.Column>上下文长度</Table.Column>
+                    <Table.Column>最大输出</Table.Column>
+                  </Table.Header>
+                  <Table.Body>
+                    {shown.map((m) => (
+                      <Table.Row key={m.id} id={m.id}>
+                        <Table.Cell><div className="max-w-72"><ModelName m={m} /></div></Table.Cell>
+                        <Table.Cell><RateCell m={m} /></Table.Cell>
+                        <Table.Cell>{m.default_effort ? <Chip size="sm" variant="soft" color="success">{m.default_effort}</Chip> : <span className="text-muted">—</span>}</Table.Cell>
+                        <Table.Cell><div className="max-w-56"><Efforts m={m} /></div></Table.Cell>
+                        <Table.Cell className="tabular-nums">{ctx(m)}</Table.Cell>
+                        <Table.Cell><OutputCell m={m} pr={probeFor(pr, m.id)} /></Table.Cell>
+                      </Table.Row>
+                    ))}
+                  </Table.Body>
+                </Table.Content>
+              </Table.ScrollContainer>
+            </Table>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {shown.map((m) => (
+                <Card key={m.id} variant="secondary" className="gap-3 p-4">
+                  <ModelName m={m} />
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+                    <dt className="text-muted">积分倍率</dt><dd><RateCell m={m} /></dd>
+                    <dt className="text-muted">默认档</dt><dd>{m.default_effort || '—'}</dd>
+                    <dt className="text-muted">思考档位</dt><dd><Efforts m={m} /></dd>
+                    <dt className="text-muted">上下文</dt><dd className="tabular-nums">{ctx(m)}</dd>
+                    <dt className="text-muted">最大输出</dt><dd><OutputCell m={m} pr={probeFor(pr, m.id)} /></dd>
+                  </dl>
+                </Card>
+              ))}
+            </div>
+          )}
+        </Loaded>
+      </Panel>
+    </div>
   )
 }

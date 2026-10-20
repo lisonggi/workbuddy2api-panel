@@ -50,6 +50,33 @@ func TestVerifyBearerWithoutHeaderStillCompares(t *testing.T) {
 	}
 }
 
+func TestVerifyAPIKey(t *testing.T) {
+	cases := []struct {
+		name          string
+		key           string
+		authz, apiKey string
+		want          bool
+	}{
+		{"x-api-key 正确", "sk-abc", "", "sk-abc", true},
+		{"x-api-key 错误", "sk-abc", "", "sk-wrong", false},
+		{"空 key 放行 x-api-key", "", "", "whatever", true},
+		{"Bearer 正确", "sk-abc", "Bearer sk-abc", "", true},
+		{"两个头都带时只看 Authorization", "sk-abc", "Bearer sk-wrong", "sk-abc", false},
+		{"都不带", "sk-abc", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := req(c.authz)
+			if c.apiKey != "" {
+				r.Header.Set("X-Api-Key", c.apiKey)
+			}
+			if got := VerifyAPIKey(r, c.key); got != c.want {
+				t.Errorf("VerifyAPIKey(key=%q, authz=%q, x-api-key=%q) = %v, want %v", c.key, c.authz, c.apiKey, got, c.want)
+			}
+		})
+	}
+}
+
 func TestDigestIsFixedLength(t *testing.T) {
 	// 不同长度输入摘要后应等长（这是常量时间比较的前提）
 	if len(digest("")) != len(digest("a-much-longer-secret-value")) {

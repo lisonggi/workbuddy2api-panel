@@ -120,6 +120,19 @@
 | `pool.degrade_cooldown` / `pool.degrade_cooldown_max` | `10m` / `2h` | 连败出池时长与上限 |
 | `pool.idle_weight_per_hour` / `pool.idle_weight_max` | `0.5` / `5.0` | 闲置补偿：每闲置一小时加的权重与上限 |
 
+### 模型路由
+
+`model_routes` 是一个有序数组，每条 `{"match": "...", "target": "..."}`：客户端发来的模型名不在上游目录里时，从上往下找第一条 `match` 匹配的规则，改用它的 `target`。只认 `*` 通配，不区分大小写；带 `cn:` / `global:` 前缀的名字不改，`target` 可以带前缀。默认没有规则。完整行为见 [API 参考](api.md#模型路由)。
+
+```json
+"model_routes": [
+  {"match": "claude-*haiku*", "target": "deepseek-v4-flash"},
+  {"match": "claude-*", "target": "glm-5.2"}
+]
+```
+
+`match`、`target` 不能为空，`target` 不能带 `*`，否则启动和面板保存都会报错。一般在面板「模型与档位 → 模型路由」里编辑，保存即生效。
+
 ### 会话粘性与 Redis
 
 | 字段 | 默认 | 说明 |
@@ -168,7 +181,7 @@
 
 ## 热生效与写回规则
 
-- **立即生效**：`api_key`、`cooldown.soft_rate`、`features.*`、`logging.request_client_info`、`panel.*`、`pool.*`、`schedule.*`。
+- **立即生效**：`api_key`、`cooldown.soft_rate`、`features.*`、`logging.request_client_info`、`panel.*`、`pool.*`、`schedule.*`、`model_routes`。
 - **需要重启**：`listen`、`auth_dir`、`state_file`、`server.read_timeout`、`upstream.*`、`prompt.*`、`upstash.*`、`session_sticky.*`，以及请求归档的开关、保留天数与容量。面板在保存后会提示具体是哪几项。
 - 面板写回配置时做**深合并 + 原子替换**：只更新表单里出现的键，你手写的其他键（包括程序不认识的键）原样保留。
 - 时长字段使用 Go 的写法，如 `600s`、`30m`、`2h`、`168h`。

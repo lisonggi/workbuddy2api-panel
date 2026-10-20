@@ -86,8 +86,9 @@ func TestBareModelEntries(t *testing.T) {
 // crossRealmUpstream 假上游：两个域各自的 chat / 模型目录 host，记录每次 chat 打到哪个域。
 // 目录按 Authorization 区分：国内版号拉到 cnModels，国际版号拉到 globalModels。
 type crossRealmUpstream struct {
-	mu    sync.Mutex
-	chats []string // 每次 chat 请求的 host
+	mu     sync.Mutex
+	chats  []string // 每次 chat 请求的 host
+	models []string // 每次 chat 请求体里的模型名
 }
 
 func (u *crossRealmUpstream) client(t *testing.T, cnModels, globalModels []string) *upstream.Client {
@@ -107,8 +108,14 @@ func (u *crossRealmUpstream) client(t *testing.T, cnModels, globalModels []strin
 			body, ct := "", "application/json"
 			switch {
 			case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+				var req struct {
+					Model string `json:"model"`
+				}
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &req)
 				u.mu.Lock()
 				u.chats = append(u.chats, r.URL.Host)
+				u.models = append(u.models, req.Model)
 				u.mu.Unlock()
 				body, ct = sseOK, "text/event-stream"
 			case r.Header.Get("Authorization") == "Bearer at-global":
@@ -125,6 +132,16 @@ func (u *crossRealmUpstream) client(t *testing.T, cnModels, globalModels []strin
 		GlobalEnabled:     true,
 	}
 	return c
+}
+
+// lastModel 最近一次 chat 打到上游的模型名。
+func (u *crossRealmUpstream) lastModel() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if len(u.models) == 0 {
+		return ""
+	}
+	return u.models[len(u.models)-1]
 }
 
 func (u *crossRealmUpstream) lastChat() string {

@@ -877,3 +877,23 @@ func TestServerReadTimeout(t *testing.T) {
 		t.Error("unparsable read_timeout should fail fast")
 	}
 }
+
+// TestModelRoutes 模型路由：去两端空白；match / target 空着、target 带 * 都在加载时报错。
+func TestModelRoutes(t *testing.T) {
+	c, err := ParseConfig([]byte(`{"model_routes":[{"match":" claude-* ","target":" glm-5.2"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.ModelRoutes) != 1 || c.ModelRoutes[0].Match != "claude-*" || c.ModelRoutes[0].Target != "glm-5.2" {
+		t.Errorf("routes=%+v", c.ModelRoutes)
+	}
+	for raw, want := range map[string]string{
+		`{"model_routes":[{"match":"a","target":"b"},{"match":" ","target":"b"}]}`: "model_routes[1]",
+		`{"model_routes":[{"match":"a"}]}`:                                         "都不能为空",
+		`{"model_routes":[{"match":"a","target":"glm-*"}]}`:                        "不能带 *",
+	} {
+		if _, err := ParseConfig([]byte(raw)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err=%v want %q", raw, err, want)
+		}
+	}
+}

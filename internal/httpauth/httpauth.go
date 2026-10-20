@@ -36,6 +36,20 @@ func VerifyBearer(r *http.Request, key string) bool {
 	return subtle.ConstantTimeCompare(digest(tok), digest(key)) == 1
 }
 
+// VerifyAPIKey 同 VerifyBearer，另认 Anthropic SDK 默认的 x-api-key 头
+// （Claude Code 设 ANTHROPIC_API_KEY 时只发这个头）。带了 Authorization 头时只看它。
+func VerifyAPIKey(r *http.Request, key string) bool {
+	if r.Header.Get("Authorization") == "" {
+		if tok := r.Header.Get("X-Api-Key"); tok != "" {
+			if key == "" {
+				return true
+			}
+			return subtle.ConstantTimeCompare(digest(tok), digest(key)) == 1
+		}
+	}
+	return VerifyBearer(r, key)
+}
+
 // digest 返回 s 的 SHA-256（定长 32 字节，供常量时间比较）。
 func digest(s string) []byte {
 	sum := sha256.Sum256([]byte(s))

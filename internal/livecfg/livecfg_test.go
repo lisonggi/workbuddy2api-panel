@@ -1,6 +1,7 @@
 package livecfg
 
 import (
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -15,9 +16,10 @@ func TestNewAndLoad(t *testing.T) {
 		RecordClientInfo:     true,
 		CrossRealm:           true,
 		UpdateCheck:          true,
+		ModelRoutes:          []ModelRoute{{Match: "claude-*", Target: "glm-5.2"}},
 	}
 	h := New(want)
-	if got := h.Load(); got != want {
+	if got := h.Load(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Load = %+v，应为 %+v", got, want)
 	}
 }
@@ -35,11 +37,11 @@ func TestStoreReplacesSnapshot(t *testing.T) {
 // TestNilAndZeroHolderLoad nil Holder 与未 Store 的零值 Holder 都返回零值快照，不 panic。
 func TestNilAndZeroHolderLoad(t *testing.T) {
 	var nilHolder *Holder
-	if got := nilHolder.Load(); got != (Snapshot{}) {
+	if got := nilHolder.Load(); !reflect.DeepEqual(got, Snapshot{}) {
 		t.Errorf("nil Holder = %+v，应为零值", got)
 	}
 	var zero Holder
-	if got := zero.Load(); got != (Snapshot{}) {
+	if got := zero.Load(); !reflect.DeepEqual(got, Snapshot{}) {
 		t.Errorf("零值 Holder = %+v，应为零值", got)
 	}
 }

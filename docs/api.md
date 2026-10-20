@@ -1,9 +1,11 @@
 # API 参考
 
-网关对外只暴露 OpenAI 兼容接口和几个运维端点。客户端把 Base URL 设成 `http://<主机>:7863/v1`、API Key 填 `api_key` 即可。
+网关对外暴露 OpenAI 兼容接口、给 Claude Code 用的 Anthropic Messages 接口、给 Codex 用的 Responses 接口，以及几个运维端点。OpenAI 兼容客户端把 Base URL 设成 `http://<主机>:7863/v1`、API Key 填 `api_key` 即可；Claude Code、Codex 的接法见 README 的[接入客户端](../README.md#接入客户端)。
 
 - [端点](#端点)
+- [Claude Code 与 Codex 入口](#claude-code-与-codex-入口)
 - [模型名](#模型名)
+- [模型路由](#模型路由)
 - [健康检查](#健康检查)
 - [请求日志](#请求日志)
 - [上游接口](#上游接口)
@@ -13,13 +15,36 @@
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
 | `POST /v1/chat/completions` | Bearer | OpenAI 兼容对话补全，支持流式与非流式、工具调用、图片输入、推理参数。网关不限制请求体大小，超限由上游返回 |
-| `GET /v1/models` | Bearer | 模型列表，见下节 |
+| `POST /v1/messages` | Bearer 或 `x-api-key` | Anthropic Messages 格式（Claude Code），见[下节](#claude-code-与-codex-入口) |
+| `POST /v1/messages/count_tokens` | Bearer 或 `x-api-key` | 按字数估算输入 token，不发上游 |
+| `POST /v1/responses` | Bearer | OpenAI Responses 格式（Codex） |
+| `GET /v1/models` | Bearer | 模型列表，见[模型名](#模型名) |
 | `GET /status` | Bearer | 账号状态汇总与每个账号的详情（积分、冷却、熔断、在途、粘性），以及按「域 + 模型」聚合的限额视图 `model_locks` |
 | `GET /healthz` | 无 | 健康检查：有可用账号返回 200，否则 503 |
 | `GET /readyz` | 无 | 就绪检查：平时 200，收到停止信号后 503 |
 | `/panel/` | 面板内输入 | Web 管理面板；接口见[面板接口](panel.md#面板接口) |
 
-鉴权规则：`api_key` 非空时校验 `Authorization: Bearer <api_key>`；`api_key` 为空时全部放行。`/healthz`、`/readyz` 始终不鉴权。每个响应都带 `X-Request-Id`。
+鉴权规则：`api_key` 非空时校验 `Authorization: Bearer <api_key>`；两个 `/v1/messages` 端点在没有 `Authorization` 头时也认 `x-api-key: <api_key>`（Claude Code 用 `ANTHROPIC_API_KEY` 时发这个头）；`api_key` 为空时全部放行。`/healthz`、`/readyz` 始终不鉴权。每个响应都带 `X-Request-Id`。
+
+## Claude Code 与 Codex 入口
+
+`/v1/messages` 和 `/v1/responses` 先把请求翻译成 OpenAI 对话格式，再走和 `/v1/chat/completions` 完全相同的流程：选号、换号重试、会话粘性、出站请求对齐、用量与请求日志都一样；上游的回复再翻译回客户端的格式，流式逐帧转换。请求日志里这两类请求的路径照实记成 `/v1/messages`、`/v1/responses`。
+
+协议翻译直接用 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的翻译层（`sdk/translator`），实际效果：
+
+| 客户端发的 | 到上游变成 |
+|---|---|
+| Claude Code 的 `thinking`（含 `adaptive`）与 `output_config.effort` | `reasoning_effort`；超出模型支持范围时网关再按模型目录降级 |
+| Claude Code 的 `cache_control`、`metadata.user_id`、`context_management`、思考块 | 丢掉（上游是 OpenAI 格式，没有对应字段） |
+| Codex 的 `store`、`include`、`prompt_cache_key`、内置 `web_search` 工具 | 丢掉 |
+| Codex 的自定义工具 `apply_patch` | 函数工具（参数 `input` 是字符串），回复里再还原成 `custom_tool_call` |
+| `developer` 角色 | `user` 角色 |
+
+错误按客户端协议返回：Claude Code 收到 `{"type":"error","error":{...}}`（状态码映射到 `invalid_request_error`、`authentication_error`、`rate_limit_error`、`overloaded_error` 等），Codex 收到 OpenAI 格式；流开始后的上游错误变成 Claude 的 `event: error` 或 Responses 的 `response.failed`。
+
+模型名不在上游目录里、也没有[路由规则](#模型路由)命中时，直接返回 404 并说明该设哪个变量，不拿每个号去试。目录还没拉到时放行，交给上游判断。
+
+`/v1/messages/count_tokens` 只做估算：只数 `system`、`messages`、`tools` 里的文本，CJK 字符每字 1 个 token，其余每 4 字节 1 个。Claude Code 用它显示上下文占用，不影响计费。
 
 ## 模型名
 
@@ -32,6 +57,18 @@
 | `cn:glm-5.2` | 只在国内版账号里选 |
 | `global:gpt-5.5` | 只在国际版账号里选 |
 | `glm-5.2` | 默认走国内版；打开 `pool.cross_realm` 后按两域模型目录合池，见[跨域负载均衡](gateway.md#跨域负载均衡) |
+
+## 模型路由
+
+Claude Code、Codex 不配模型时发的是自家官方模型名（如 Claude Code 的 `claude-sonnet-4-6`），上游目录里多半没有。面板「模型与档位 → 模型路由」可以配一张规则表（存在 `config.json` 的 [`model_routes`](configuration.md#模型路由)），三个对话端点都按它改写：
+
+- 只改上游目录里没有的名字。目录里有的直通，规则写成 `*` 兜底也不会动到它；
+- 带 `cn:` / `global:` 前缀的名字是明确指定，不改；目标可以带前缀；
+- 从上往下找第一条匹配的规则，只认 `*` 通配，不区分大小写；
+- 国内版目录拉不到时判断不了，不改，原样交给上游；
+- 命中时日志打一行 `model route <原名> -> <目标>`；目标写错（不在目录里）时，Claude Code / Codex 入口返回 404 并指出是哪条规则。
+
+客户端界面上显示的仍是它自己的模型名，实际用的是规则目标。
 
 ## 健康检查
 

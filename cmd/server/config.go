@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
 	"github.com/yreidev/workbuddy2api-panel/internal/prompt"
 )
 
@@ -21,6 +22,11 @@ type Config struct {
 	APIKey    string `json:"api_key"`    // 空 = 不鉴权
 	AuthDir   string `json:"auth_dir"`   // ./auths
 	StateFile string `json:"state_file"` // ./data/state.json
+
+	// ModelRoutes 模型路由：客户端发来的模型名不在上游目录里时，从上往下找第一条 match
+	// 匹配的规则（只认 * 通配，不区分大小写），改用它的 target。三个对话入口都生效，
+	// 带 cn: / global: 前缀的名字不改；target 可以带前缀。缺省为空（不路由）。热生效。
+	ModelRoutes []livecfg.ModelRoute `json:"model_routes"`
 
 	Panel struct {
 		// PackageDetailLimit 积分构成页单账号默认展示的最近到期包数；<=0 回落 5。
@@ -616,7 +622,25 @@ func (c *Config) normalize() error {
 	if err := c.validateScheduleHours(); err != nil {
 		return err
 	}
+	if err := c.normalizeModelRoutes(); err != nil {
+		return err
+	}
 	return c.normalizePrompt()
+}
+
+// normalizeModelRoutes 去掉两端空白并校验：match、target 都不能为空，target 不能带通配。
+func (c *Config) normalizeModelRoutes() error {
+	for i := range c.ModelRoutes {
+		rt := &c.ModelRoutes[i]
+		rt.Match, rt.Target = strings.TrimSpace(rt.Match), strings.TrimSpace(rt.Target)
+		if rt.Match == "" || rt.Target == "" {
+			return fmt.Errorf("model_routes[%d]: match 和 target 都不能为空", i)
+		}
+		if strings.Contains(rt.Target, "*") {
+			return fmt.Errorf("model_routes[%d]: target %q 不能带 *", i, rt.Target)
+		}
+	}
+	return nil
 }
 
 // normalizePrompt 校验 prompt.mode 并按 file 加载提示词文本（custom/append 模式）。

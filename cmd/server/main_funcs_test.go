@@ -362,7 +362,8 @@ func TestSaveConfig(t *testing.T) {
   "logging": {"request_client_info": true},
   "pool": {"cross_realm": true, "credit_floor": 9, "expiring_soon": "30m"},
   "panel": {"update_check": true},
-  "upstream": {"timeout_seconds": 45, "model_optimization": true}
+  "upstream": {"timeout_seconds": 45, "model_optimization": true},
+  "model_routes": [{"match": " claude-*haiku* ", "target": "cn:glm-5.2 "}]
 }`
 		got, err := saveConfig([]byte(incoming), path, live, p, up, sch)
 		if err != nil {
@@ -395,6 +396,9 @@ func TestSaveConfig(t *testing.T) {
 		if snap.APIKey != "new-key" || snap.SoftCooldown != 90*time.Second ||
 			!snap.SanitizeFingerprints || !snap.RecordClientInfo || !snap.CrossRealm || !snap.UpdateCheck {
 			t.Fatalf("live 快照热生效不对: %+v", snap)
+		}
+		if want := []livecfg.ModelRoute{{Match: "claude-*haiku*", Target: "cn:glm-5.2"}}; !reflect.DeepEqual(snap.ModelRoutes, want) {
+			t.Fatalf("模型路由未热更新（应去掉两端空白）: %+v", snap.ModelRoutes)
 		}
 		if !up.SanitizeFingerprints.Load() {
 			t.Fatal("up.SanitizeFingerprints 未热更新")

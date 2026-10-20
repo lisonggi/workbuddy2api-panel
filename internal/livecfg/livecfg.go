@@ -21,6 +21,13 @@ type Snapshot struct {
 	RecordClientInfo     bool          // 请求日志是否记录调用来源（客户端 IP / UA）
 	CrossRealm           bool          // 跨域负载均衡：不带前缀的模型名在国内版 + 国际版合池选号
 	UpdateCheck          bool          // 面板定时检查新版本（读 GitHub 上的更新日志）
+	ModelRoutes          []ModelRoute  // 模型路由规则：按顺序匹配，只改写模型目录里没有的名字
+}
+
+// ModelRoute 一条模型路由：客户端发来的模型名匹配 Match（只认 * 通配，不区分大小写）时改用 Target。
+type ModelRoute struct {
+	Match  string `json:"match"`
+	Target string `json:"target"`
 }
 
 // Holder 原子持有当前快照。

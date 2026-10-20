@@ -19,7 +19,7 @@
 | Docker 镜像 | 服务器、NAS，免克隆免构建 | Docker；镜像只有 `linux/amd64` |
 | Docker Compose | 想改源码再部署、或习惯 compose 管理 | Docker + Compose，需要克隆仓库 |
 | 单文件二进制 | Windows / macOS / Linux，不想装 Docker | 无；面板前端已打进二进制 |
-| 从源码构建 | 开发调试 | Go 1.22+、Node.js 22+ |
+| 从源码构建 | 开发调试 | Go 1.26+、Node.js 22+ |
 
 所有方式都只需要两个可写目录：`auths/`（账号凭证）和 `data/`（池状态、用量、请求归档）。
 
@@ -101,7 +101,7 @@ tar xzf wb2api-panel-linux-amd64.tar.gz
 # 1. 构建面板前端（Node.js 22+）：类型检查 + ESLint + 单元测试 + 打包到 internal/panel/dist
 (cd web && npm ci && npm run build)
 
-# 2. 检查并运行网关（Go 1.22+）：格式、静态检查、测试，CI 跑的也是这几条
+# 2. 检查并运行网关（Go 1.26+）：格式、静态检查、测试，CI 跑的也是这几条
 git ls-files -z '*.go' | xargs -0 gofmt -l   # 没有输出才算通过，有输出就 gofmt -w 这些文件
 go vet ./...
 golangci-lint run   # v2.14.0，只开 vet、staticcheck、unused、ineffassign，配置见 .golangci.yml
@@ -111,7 +111,7 @@ go run ./cmd/server -config config.json
 
 Go 测试不连外网、不碰真实账号：上游、Redis（用 miniredis）、自更新下载都是测试里起的本机假服务。
 
-CI 用的是 `go.mod` 里写的 Go 1.22.5，不是最新版。新旧版本的 `gofmt` 偶尔排得不一样（比如一组行尾注释里有一行特别长时怎么对齐），本地用新版检查通过、CI 仍可能报格式错误。用 `GOTOOLCHAIN=go1.22.5 go fmt ./...` 按 CI 的版本排一遍；两个版本排法冲突时，把那条长注释挪到上一行。
+CI 用的是 `go.mod` 里写的 Go 1.26.0，不是最新版。新旧版本的 `gofmt` 偶尔排得不一样（比如一组行尾注释里有一行特别长时怎么对齐），本地用新版检查通过、CI 仍可能报格式错误。用 `GOTOOLCHAIN=go1.26.0 go fmt ./...` 按 CI 的版本排一遍；两个版本排法冲突时，把那条长注释挪到上一行。
 
 前端产物 `internal/panel/dist` 不进版本库，`go build` 时经 `go:embed` 打进二进制。没构建前端也能编译通过，只是打开面板会看到「前端还没有构建」的提示，网关和 `/panel/api/*` 不受影响。
 

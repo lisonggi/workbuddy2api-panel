@@ -344,6 +344,7 @@ type requestTraceKey struct{}
 type requestTrace struct {
 	id    string
 	start time.Time
+	path  string // 入口路径（聊天、Claude Code、Codex 三个入口共用这套记账）
 	stat  *chatStat
 	// 调用来源，进入 handler 时一次性采集（见 ServeHTTP / captureClientInfo）。
 	clientIP  string
@@ -400,8 +401,11 @@ func (t *requestTrace) event(status int) reqlog.Event {
 	e := reqlog.Event{
 		Time:      t.start,
 		RequestID: t.id,
-		Path:      "/v1/chat/completions",
+		Path:      t.path,
 		Status:    status,
+	}
+	if e.Path == "" {
+		e.Path = "/v1/chat/completions"
 	}
 	duration := time.Since(t.start)
 	e.DurationMs = duration.Milliseconds()
