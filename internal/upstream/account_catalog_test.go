@@ -204,26 +204,30 @@ func TestServesModel(t *testing.T) {
 	}
 }
 
-// TestGlobalEnterpriseChatHeader 国际版企业号对话带企业 ID，个人号照旧声明无企业。
+// TestGlobalEnterpriseChatHeader 国际版企业号对话带企业 ID（和同值的 X-Tenant-Id），个人号两个都不发，
+// 也不声明「无企业」：官方对话请求从不带 X-No-Enterprise-Id。
 func TestGlobalEnterpriseChatHeader(t *testing.T) {
 	auth.SetGlobalEnabled(true)
 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
 	c := testClient(nil)
 	for _, tc := range []struct {
-		name       string
-		a          *auth.Auth
-		ent, noEnt string
+		name string
+		a    *auth.Auth
+		ent  string
 	}{
-		{"国际版企业号", &auth.Auth{UID: "g1", EnterpriseID: "ent-g", AccessToken: "at", Domain: "www.workbuddy.ai"}, "ent-g", ""},
-		{"国际版个人号", &auth.Auth{UID: "g2", AccessToken: "at", Domain: "www.workbuddy.ai"}, "", "1"},
+		{"国际版企业号", &auth.Auth{UID: "g1", EnterpriseID: "ent-g", AccessToken: "at", Domain: "www.workbuddy.ai"}, "ent-g"},
+		{"国际版个人号", &auth.Auth{UID: "g2", AccessToken: "at", Domain: "www.workbuddy.ai"}, ""},
 	} {
 		req := httptest.NewRequest("POST", "https://global.example/v2/chat/completions", nil)
 		c.ChatHeaders(req, tc.a, "", ChatMeta{})
 		if got := req.Header.Get("X-Enterprise-Id"); got != tc.ent {
 			t.Errorf("%s: X-Enterprise-Id=%q want %q", tc.name, got, tc.ent)
 		}
-		if got := req.Header.Get("X-No-Enterprise-Id"); got != tc.noEnt {
-			t.Errorf("%s: X-No-Enterprise-Id=%q want %q", tc.name, got, tc.noEnt)
+		if got := req.Header.Get("X-Tenant-Id"); got != tc.ent {
+			t.Errorf("%s: X-Tenant-Id=%q want %q", tc.name, got, tc.ent)
+		}
+		if got := req.Header.Values("X-No-Enterprise-Id"); len(got) != 0 {
+			t.Errorf("%s: X-No-Enterprise-Id=%q 不应发", tc.name, got)
 		}
 		if req.Header.Get("X-Domain") != "www.workbuddy.ai" {
 			t.Errorf("%s: X-Domain 应固定为国际版域", tc.name)

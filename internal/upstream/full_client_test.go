@@ -457,23 +457,14 @@ func TestFull7HeaderVersionHelpers(t *testing.T) {
 	}
 }
 
+// 没有 token / uid 时对应的头就不发，也不补 X-No-*：官方对话请求从不带 X-No-*。
 func TestFull7ChatHeadersMissingFields(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://x/", nil)
 	(&Client{}).ChatHeaders(req, &auth.Auth{}, "", ChatMeta{})
-	if got := req.Header.Get("X-No-Authorization"); got != "1" {
-		t.Fatalf("X-No-Authorization = %q", got)
-	}
-	if got := req.Header.Get("X-No-User-Id"); got != "1" {
-		t.Fatalf("X-No-User-Id = %q", got)
-	}
-}
-
-func TestFull7InjectGlobalChatHeadersSkipsNonGlobal(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodPost, "https://x/", nil)
-	(&Client{}).injectGlobalChatHeaders(req, nil)
-	(&Client{}).injectGlobalChatHeaders(req, cnAuth())
-	if got := req.Header.Get("X-Domain"); got != "" {
-		t.Fatalf("非 global 不应注入 X-Domain: %q", got)
+	for _, k := range []string{"Authorization", "X-User-Id", "X-No-Authorization", "X-No-User-Id", "X-Domain"} {
+		if v, ok := req.Header[http.CanonicalHeaderKey(k)]; ok {
+			t.Fatalf("%s 不应发: %q", k, v)
+		}
 	}
 }
 
@@ -510,12 +501,14 @@ func TestFull7ValidTraceIDEdges(t *testing.T) {
 
 func TestFull7AttributionSaaS(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://x/", nil)
-	(&Client{ClientName: "SaaS"}).injectAttribution(req, nil)
+	(&Client{ClientName: "SaaS"}).ChatHeaders(req, &auth.Auth{}, "", ChatMeta{})
 	if got := req.Header.Get("X-Product"); got != "SaaS" {
 		t.Fatalf("X-Product = %q", got)
 	}
-	if got := req.Header.Get("X-IDE-Name"); got != "" {
-		t.Fatalf("SaaS 不应设 X-IDE-Name: %q", got)
+	for _, k := range []string{"X-IDE-Name", "X-IDE-Type", "X-IDE-Version", "X-Agent-Purpose"} {
+		if got := req.Header.Get(k); got != "" {
+			t.Fatalf("SaaS 不应设 %s: %q", k, got)
+		}
 	}
 }
 
