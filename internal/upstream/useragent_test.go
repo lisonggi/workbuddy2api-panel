@@ -48,7 +48,7 @@ func TestUserAgentDefaultEmptyKeepsClientUA(t *testing.T) {
 			call: func(c *Client) error {
 				return c.ReportChatActivity(&auth.Auth{AccessToken: "at", UID: "u1"}, "cid", "")
 			},
-			wantUA: "WorkBuddy/5.5.4",
+			wantUA: billingUAWorkBuddy,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -159,12 +159,13 @@ func TestFetchModelsUsesConfiguredUA(t *testing.T) {
 
 // --- A 段：UA 对齐官方 WorkBuddy 三段式 ---
 
+// 国内版桌面端 5.8.3 内置 CLI 2.161.0；国内版后台服务的 UA 两段同名，与 CLI 的一样。
 const (
-	defaultUAString      = "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1"
+	defaultUAString      = "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"
 	explicitString       = "MyCustomAgent/3.1"
-	clientVerUAString    = "WorkBuddy/6.0.0 WorkBuddy/6.0.0 CLI/2.137.1"
-	billingUAWorkBuddy   = "WorkBuddy/5.5.4"
-	billingUACustomVer   = "WorkBuddy/6.0.0"
+	clientVerUAString    = "WorkBuddy/6.0.0 WorkBuddy/6.0.0 CLI/2.161.0"
+	billingUAWorkBuddy   = "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"
+	billingUACustomVer   = "WorkBuddy/6.0.0 WorkBuddy/6.0.0 CLI/2.161.0"
 	billingUAAgentString = "BillingAgent/1"
 )
 
@@ -249,11 +250,11 @@ func TestUserAgentClientVersionOverride(t *testing.T) {
 	}
 }
 
-// TestBillingUA_WhenClientNameSet billing/checkin 路径：client_name 非空时用单段
-// `WorkBuddy/<clientVersion>`（不带 CLI 段，对齐官方 banner/check-in 显式头组）。
+// TestBillingUA_WhenClientNameSet billing/checkin 路径：client_name 非空时用桌面端后台服务的 UA
+// （`<applicationName>/<ver> WorkBuddy/<ver> CLI/<cli>`）。
 func TestBillingUA_WhenClientNameSet(t *testing.T) {
 	a := &auth.Auth{AccessToken: "at", UID: "u1"}
-	// 默认 client_version → WorkBuddy/5.5.4
+	// 默认 client_version → 5.8.3
 	c := &Client{
 		HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
 			if got := r.Header.Get("User-Agent"); got != billingUAWorkBuddy {
@@ -268,7 +269,7 @@ func TestBillingUA_WhenClientNameSet(t *testing.T) {
 	if _, _, err := c.UserResource(a); err != nil {
 		t.Errorf("userResource: %v", err)
 	}
-	// 自定义 client_version → WorkBuddy/6.0.0
+	// 自定义 client_version → 6.0.0
 	c2 := &Client{
 		HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
 			if got := r.Header.Get("User-Agent"); got != billingUACustomVer {
@@ -284,7 +285,7 @@ func TestBillingUA_WhenClientNameSet(t *testing.T) {
 	if _, _, err := c2.UserResource(a); err != nil {
 		t.Errorf("userResource v2: %v", err)
 	}
-	// 显式 user_agent 仍优先于 billingUA
+	// 显式 user_agent 仍优先于后台服务的默认 UA
 	c3 := &Client{
 		HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
 			if got := r.Header.Get("User-Agent"); got != billingUAAgentString {
@@ -303,7 +304,7 @@ func TestBillingUA_WhenClientNameSet(t *testing.T) {
 }
 
 // TestBillingUA_WhenClientNameEmpty client_name 空 = 默认对齐官方桌面端：
-// billing UA 单段 WorkBuddy/<clientVersion>；显式 client_name="SaaS" 才不设 UA。
+// billing UA 为桌面端后台服务的三段式；显式 client_name="SaaS" 才不设 UA。
 func TestBillingUA_WhenClientNameEmpty(t *testing.T) {
 	a := &auth.Auth{AccessToken: "at", UID: "u1"}
 	var ua string
@@ -320,16 +321,16 @@ func TestBillingUA_WhenClientNameEmpty(t *testing.T) {
 	if _, _, err := c.UserResource(a); err != nil {
 		t.Errorf("userResource: %v", err)
 	}
-	if ua != "WorkBuddy/6.0.0" {
-		t.Errorf("billing UA = %q want WorkBuddy/6.0.0 (default desktop fingerprint)", ua)
+	if ua != billingUACustomVer {
+		t.Errorf("billing UA = %q want %s (default desktop fingerprint)", ua, billingUACustomVer)
 	}
-	if got := c.billingUA(); got != "WorkBuddy/6.0.0" {
-		t.Errorf("billingUA() = %q want WorkBuddy/6.0.0", got)
+	if got := c.daemonUserAgent(a); got != billingUACustomVer {
+		t.Errorf("daemonUserAgent() = %q want %s", got, billingUACustomVer)
 	}
 	// 显式 SaaS 还原旧行为（不设 UA）。
 	c.ClientName = "SaaS"
-	if got := c.billingUA(); got != "" {
-		t.Errorf("billingUA() SaaS = %q want empty", got)
+	if got := c.daemonUserAgent(a); got != "" {
+		t.Errorf("daemonUserAgent() SaaS = %q want empty", got)
 	}
 }
 

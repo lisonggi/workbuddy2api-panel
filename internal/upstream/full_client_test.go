@@ -434,7 +434,7 @@ func TestFull7HeaderVersionHelpers(t *testing.T) {
 	if got := (&Client{}).cliVersion(); got != defaultCliVersion {
 		t.Fatalf("默认 cliVersion = %q", got)
 	}
-	if got := (&Client{}).defaultWorkBuddyUAFor(nil); !strings.Contains(got, "CLI/"+defaultCliVersion) {
+	if got := (&Client{}).defaultCLIUA(nil); !strings.Contains(got, "CLI/"+defaultCliVersion) {
 		t.Fatalf("默认 UA = %q", got)
 	}
 }
@@ -492,7 +492,7 @@ func TestFull7ValidTraceIDEdges(t *testing.T) {
 
 func TestFull7AttributionSaaS(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://x/", nil)
-	(&Client{ClientName: "SaaS"}).injectAttribution(req)
+	(&Client{ClientName: "SaaS"}).injectAttribution(req, nil)
 	if got := req.Header.Get("X-Product"); got != "SaaS" {
 		t.Fatalf("X-Product = %q", got)
 	}

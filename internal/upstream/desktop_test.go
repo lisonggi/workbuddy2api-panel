@@ -12,6 +12,9 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
+// testDesktopUA 任务中心桌面端请求的 UA：国内版桌面端 5.8.3、内置 CLI 2.161.0（跟随网关其余请求）。
+const testDesktopUA = "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"
+
 // TestReportDesktopEventFingerprint 断言桌面指纹上报：走 chatBase、UA 为桌面形状、
 // 事件数组自动注入 workbuddy-desktop 公共指纹（覆盖同名业务键）。
 func TestReportDesktopEventFingerprint(t *testing.T) {
@@ -42,8 +45,8 @@ func TestReportDesktopEventFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("report desktop: %v", err)
 	}
-	if gotUA != desktopUA {
-		t.Errorf("UA=%q want %q", gotUA, desktopUA)
+	if gotUA != testDesktopUA {
+		t.Errorf("UA=%q want %q", gotUA, testDesktopUA)
 	}
 	if len(got) != 1 {
 		t.Fatalf("events=%d want 1", len(got))
@@ -100,13 +103,12 @@ func TestDesktopChatSequenceShape(t *testing.T) {
 // TestSetAppearanceTheme 断言主题设置端点形状（点亮 Hp_Appearance 的 API）。
 func TestSetAppearanceTheme(t *testing.T) {
 	var got map[string]any
+	var gotHeader http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/user-asset/appearance/set" {
 			t.Errorf("path=%s want /v2/user-asset/appearance/set", r.URL.Path)
 		}
-		if r.Header.Get("User-Agent") != desktopUA {
-			t.Errorf("UA=%q want desktop UA", r.Header.Get("User-Agent"))
-		}
+		gotHeader = r.Header.Clone()
 		raw, _ := io.ReadAll(r.Body)
 		json.Unmarshal(raw, &got)
 		w.Write([]byte(`{"code":0,"msg":"OK"}`))
@@ -114,8 +116,28 @@ func TestSetAppearanceTheme(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL}
-	if err := c.SetAppearanceTheme(&auth.Auth{AccessToken: "at", UID: "u1"}, "theme-tkmw7j"); err != nil {
+	a := &auth.Auth{AccessToken: "at", UID: "u1", Domain: "www.codebuddy.cn"}
+	if err := c.SetAppearanceTheme(a, "theme-tkmw7j"); err != nil {
 		t.Fatalf("set theme: %v", err)
+	}
+	if gotHeader.Get("User-Agent") != testDesktopUA {
+		t.Errorf("UA=%q want desktop UA", gotHeader.Get("User-Agent"))
+	}
+	for k, want := range map[string]string{
+		"Authorization":    "Bearer at",
+		"Content-Type":     "application/json",
+		"User-Agent":       testDesktopUA,
+		"X-Domain":         "www.codebuddy.cn",
+		"X-Product":        "SaaS",
+		"X-Requested-With": "XMLHttpRequest",
+		"X-User-Id":        "u1",
+	} {
+		if got := gotHeader.Get(k); got != want {
+			t.Errorf("%s = %q，应为 %q", k, got, want)
+		}
+	}
+	if got := gotHeader.Get("X-Request-ID"); !hex32.MatchString(got) {
+		t.Errorf("X-Request-ID = %q，应为 32 位十六进制", got)
 	}
 	if got["kind"] != "theme" || got["resource_key"] != "theme-tkmw7j" {
 		t.Errorf("body=%v want kind=theme resource_key=theme-tkmw7j", got)
@@ -167,7 +189,7 @@ func TestReportDesktopEventHeadersAndOverride(t *testing.T) {
 	f := newUpFake(t)
 	f.on(http.MethodPost, desktopReportPath, 200, `{"code":0,"msg":"OK"}`)
 	c := upClient(f)
-	a := &auth.Auth{AccessToken: "at", UID: "u-9", Nickname: "昵称"}
+	a := &auth.Auth{AccessToken: "at", UID: "u-9", Nickname: "昵称", Domain: "www.codebuddy.cn"}
 	err := c.ReportDesktopEvent(a, DesktopEvent{
 		"eventCode": "chat_message_response", "machineId": "real-machine", "qimei36": "q-36",
 	})
@@ -176,21 +198,22 @@ func TestReportDesktopEventHeadersAndOverride(t *testing.T) {
 	}
 	r := f.seen()[0]
 	for k, want := range map[string]string{
-		"Authorization": "Bearer at",
-		"User-Agent":    desktopUA,
-		"X-Domain":      upBase,
-		"X-Product":     "SaaS",
-		"X-User-Id":     "u-9",
+		"Authorization":    "Bearer at",
+		"Accept":           "application/json, text/plain, */*",
+		"Content-Type":     "application/json;charset=UTF-8",
+		"User-Agent":       testDesktopUA,
+		"X-Domain":         "www.codebuddy.cn",
+		"X-Product":        "SaaS",
+		"X-Requested-With": "XMLHttpRequest",
+		"X-User-Id":        "u-9",
 	} {
 		if got := r.header.Get(k); got != want {
 			t.Errorf("%s = %q，应为 %q", k, got, want)
 		}
 	}
-	if r.header.Get("X-Request-ID") == "" {
-		t.Error("X-Request-ID 缺失")
-	}
-	if !strings.Contains(r.header.Get("Content-Type"), "application/json") {
-		t.Errorf("Content-Type = %q", r.header.Get("Content-Type"))
+	// 官方 CommonHeaderHttpInterceptor 的 X-Request-ID：32 位十六进制，不是十进制时间戳。
+	if got := r.header.Get("X-Request-ID"); !hex32.MatchString(got) {
+		t.Errorf("X-Request-ID = %q，应为 32 位十六进制", got)
 	}
 	var events []map[string]any
 	if err := json.Unmarshal(r.body, &events); err != nil {
@@ -421,7 +444,9 @@ func TestMarketExpertList(t *testing.T) {
 			{"expert_id":"ex_2","expert_type":"team","display_name_zh":"团队","profession_zh":"综合","version":"","categories":[]}
 		]}}`)
 		c := upClient(f)
-		experts, err := c.MarketExpertList(upAuth(), "agent")
+		a := upAuth()
+		a.Domain = "www.codebuddy.cn"
+		experts, err := c.MarketExpertList(a, "agent")
 		if err != nil {
 			t.Fatalf("MarketExpertList: %v", err)
 		}
@@ -434,15 +459,20 @@ func TestMarketExpertList(t *testing.T) {
 			t.Errorf("请求 = %s %s", r.method, r.path)
 		}
 		for k, want := range map[string]string{
-			"Authorization": "Bearer at",
-			"User-Agent":    desktopUA,
-			"X-Domain":      upBase,
-			"X-Product":     "SaaS",
-			"X-User-Id":     "u-1",
+			"Authorization":    "Bearer at",
+			"Content-Type":     "application/json",
+			"User-Agent":       testDesktopUA,
+			"X-Domain":         "www.codebuddy.cn",
+			"X-Product":        "SaaS",
+			"X-Requested-With": "XMLHttpRequest",
+			"X-User-Id":        "u-1",
 		} {
 			if got := r.header.Get(k); got != want {
 				t.Errorf("%s = %q，应为 %q", k, got, want)
 			}
+		}
+		if got := r.header.Get("X-Request-ID"); !hex32.MatchString(got) {
+			t.Errorf("X-Request-ID = %q，应为 32 位十六进制", got)
 		}
 		var body map[string]any
 		if err := json.Unmarshal(r.body, &body); err != nil {
@@ -527,7 +557,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 		for k, want := range map[string]string{
 			"Authorization":       "Bearer at",
 			"Accept":              "text/event-stream",
-			"User-Agent":          desktopUA,
+			"User-Agent":          testDesktopUA,
 			"X-Domain":            upBase,
 			"X-Product":           "SaaS",
 			"X-User-Id":           "u-1",
@@ -536,7 +566,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 			"X-Agent-Type":        "main",
 			"X-IDE-Name":          "WorkBuddy",
 			"X-IDE-Type":          "WorkBuddy",
-			"X-IDE-Version":       "5.5.6",
+			"X-IDE-Version":       "5.8.3",
 			"x-codebuddy-request": "1",
 			"X-Expert-Id":         "ex_1",
 		} {

@@ -96,8 +96,7 @@ func (c *Client) growthJSONMP(a *auth.Auth, method, path string, body any) (json
 	if err != nil {
 		return nil, err
 	}
-	c.BillingHeaders(req, a)
-	req.Header.Set("X-Client-Platform", mpPlatform)
+	c.miniProgramHeaders(req, a)
 	return c.doJSON(req)
 }
 
@@ -117,8 +116,7 @@ func (c *Client) ClaimRewardMP(a *auth.Auth, taskCode string) (credit, energy in
 	if err != nil {
 		return 0, 0, err
 	}
-	c.BillingHeaders(req, a)
-	req.Header.Set("X-Client-Platform", mpPlatform)
+	c.miniProgramHeaders(req, a)
 	data, err := c.doJSON(req)
 	if err != nil {
 		// chat 域对该路径 400（部分任务/租户形态）→ Web 域降级（已实测可领）。

@@ -1877,7 +1877,7 @@ func (c *Client) CreditPackages(a *auth.Auth) ([]CreditPackage, int64, int64, er
 		"PackageEndTimeRangeBegin": now.Format(packageEndLayout),
 		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format(packageEndLayout),
 	}
-	data, err := c.billingMeterJSON(a, c.billingMeterPaths(a), http.MethodPost, body)
+	data, err := c.billingMeterJSON(a, c.billingMeterPaths(a), http.MethodPost, body, withBillingLanguage(a))
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -2135,7 +2135,7 @@ func (c *Client) UserResourceDetailedWithExpiry(a *auth.Auth, soon time.Duration
 	var data json.RawMessage
 	err = c.retryBillingTransient(func() error {
 		var e error
-		data, e = c.billingMeterJSON(a, c.billingMeterPaths(a), http.MethodPost, body)
+		data, e = c.billingMeterJSON(a, c.billingMeterPaths(a), http.MethodPost, body, withBillingLanguage(a))
 		return e
 	})
 	if err != nil {
@@ -2244,7 +2244,7 @@ func packageRemainUsed(a respAccount) (remain, used, size int64) {
 // 让该账号整天漏签；「已签到」等业务错误不重试。
 func (c *Client) DailyCheckin(a *auth.Auth) error {
 	return c.retryBillingTransient(func() error {
-		_, err := c.billingMeterJSON(a, c.checkinMeterPaths(a), http.MethodPost, map[string]any{})
+		_, err := c.billingMeterJSON(a, c.checkinMeterPaths(a), http.MethodPost, map[string]any{}, c.withDeviceToken(a))
 		return err
 	})
 }

@@ -38,7 +38,7 @@ func TestClaimTrialSuccess(t *testing.T) {
 	if r.header.Get("Authorization") != "Bearer "+globalAuth().AccessTokenValue() {
 		t.Errorf("Authorization = %q", r.header.Get("Authorization"))
 	}
-	if r.header.Get("Content-Type") != "application/json" || r.header.Get("Accept") != "application/json" {
+	if r.header.Get("Content-Type") != "application/json" || r.header.Get("Accept") != "application/json, text/plain, */*" {
 		t.Errorf("内容头 = %v", r.header)
 	}
 }

@@ -24,7 +24,9 @@ const reportPath = "/v2/report"
 // billingJSON 发 billing 域（billingBase，codebuddy.cn）请求并解信封；body 为 nil 时不带请求体。
 // 与 travel.go 的 growthJSON 对称（growth 域走 chatBase + BillingHeaders；billing 域走 billingBase）。
 // report/checkin 等 billing 端点共用：请求头统一 BillingHeaders，信封与错误语义同 doJSON。
-func (c *Client) billingJSON(a *auth.Auth, method, path string, body any) (json.RawMessage, error) {
+// extra 在 BillingHeaders 之后逐个调用，补个别接口才带的头（积分的 Accept-Language、签到的
+// X-Device-Token）。
+func (c *Client) billingJSON(a *auth.Auth, method, path string, body any, extra ...func(*http.Request)) (json.RawMessage, error) {
 	var rdr io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -38,16 +40,19 @@ func (c *Client) billingJSON(a *auth.Auth, method, path string, body any) (json.
 		return nil, err
 	}
 	c.BillingHeaders(req, a)
+	for _, f := range extra {
+		f(req)
+	}
 	return c.doJSON(req)
 }
 
 // billingMeterJSON 仅对 /billing/meter 族端点（get-user-resource / daily-checkin）
 // 按 realm 走双路径 fallback：global 先无 /v2 前缀，ErrNotFound 时二次换有 /v2 前缀
 // （上游新旧路径分叉）；cn 单路径（有 /v2）现状不变。仅 global realm 才有多路径。
-func (c *Client) billingMeterJSON(a *auth.Auth, paths []string, method string, body any) (json.RawMessage, error) {
+func (c *Client) billingMeterJSON(a *auth.Auth, paths []string, method string, body any, extra ...func(*http.Request)) (json.RawMessage, error) {
 	var lastErr error
 	for i, path := range paths {
-		data, err := c.billingJSON(a, method, path, body)
+		data, err := c.billingJSON(a, method, path, body, extra...)
 		if err == nil {
 			return data, nil
 		}
@@ -59,6 +64,16 @@ func (c *Client) billingMeterJSON(a *auth.Auth, paths []string, method string, b
 		}
 	}
 	return nil, lastErr
+}
+
+// withBillingLanguage 积分包查询才带的 Accept-Language（见 billingAcceptLanguage）。
+func withBillingLanguage(a *auth.Auth) func(*http.Request) {
+	return func(req *http.Request) { req.Header.Set("Accept-Language", billingAcceptLanguage(a)) }
+}
+
+// withDeviceToken 签到才带的 X-Device-Token（官方 getCheckinRequestHeaders）。
+func (c *Client) withDeviceToken(a *auth.Auth) func(*http.Request) {
+	return func(req *http.Request) { c.injectDeviceToken(req, a) }
 }
 
 // billingRetryDelay 签到/余额等维护类计费调用瞬时错误重试的间隔基数。

@@ -9,6 +9,10 @@
 //	X-Domain: copilot.tencent.com, X-Product: SaaS, X-User-Id: <uid>
 //	Body: [ {...event...} ]                           ← 数组
 //
+// 1.1.2 起国内版 chatBase 默认改为官方主入口 www.workbuddy.cn；X-Domain 取登录域
+// （chatDomain，host 形式，不带 https://），不再跟着请求域走，
+// 专家列表与空上报 10-20 生产实测两个域名结果一致。
+//
 // 每个事件除业务字段外必带桌面指纹（ideName/ideType=WorkBuddy、
 // extName=workbuddy-desktop 等）。实测点亮记录：
 //   - RichMeow_Chat（桌面端对话1次）：agent_task_created + 成功的
@@ -39,11 +43,15 @@ import (
 const (
 	desktopReportPath    = "/v2/report"
 	desktopAppearanceSet = "/v2/user-asset/appearance/set"
-	// desktopUA 实测桌面客户端 UA（5.5.6 内嵌 CLI 2.137.1）。
-	desktopUA = "WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1"
 )
 
-// desktopBase 桌面端 /v2/report 与 user-asset 走 chatBase（copilot.tencent.com）。
+// desktopUA 任务中心这几条桌面端请求的 UA。请求形状照 5.5.6 桌面端实抓（当时 UA 为
+// `WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1`），版本跟随网关其余请求（defaultDaemonUA），
+// 免得同一个号出现两个客户端版本；X-IDE-Version 与事件里的 ideVersion 同样跟随。
+// 不受 user_agent 覆盖影响（同以前）。
+func (c *Client) desktopUA(a *auth.Auth) string { return c.defaultDaemonUA(a) }
+
+// desktopBase 桌面端 /v2/report 与 user-asset 走 chatBase（国内版 www.workbuddy.cn）。
 func (c *Client) desktopBase(a *auth.Auth) string { return c.chatBase(a) }
 
 // deriveID 由 uid 稳定派生一个 36 位 hex 设备标识（machineId/qimei36 复用），
@@ -112,16 +120,10 @@ func (c *Client) ReportDesktopEvent(a *auth.Auth, events ...DesktopEvent) error 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	req.Header.Set("Accept", "application/json, text/plain, */*")
+	// 官方上报服务 StandardEventService.send 显式把 Content-Type 设成带 charset 的写法，
+	// 其余头由官方请求框架给（frameworkHeaders）。
+	c.frameworkHeaders(req, a, c.desktopUA(a))
 	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
-	req.Header.Set("User-Agent", desktopUA)
-	req.Header.Set("X-Domain", c.desktopBase(a))
-	req.Header.Set("X-Product", "SaaS")
-	req.Header.Set("X-Request-ID", deriveID(a, "req")+fmt.Sprintf("%d", time.Now().UnixNano()%1e6))
-	if a.UID != "" {
-		req.Header.Set("X-User-Id", a.UID)
-	}
 	_, err = c.doJSON(req)
 	return err
 }
@@ -200,7 +202,7 @@ func DesktopChatSequence(conversationID, requestID, messageID, modelID, modelNam
 	}
 }
 
-// SetAppearanceTheme 应用外观主题（实测：POST copilot.tencent.com/v2/user-asset/appearance/set，
+// SetAppearanceTheme 应用外观主题（实测：POST <chatBase>/v2/user-asset/appearance/set，
 // 和品主题 resource_key 为 "theme-tkmw7j"，浅色 "light"、深色 "dark"）。纯 API set 不计
 // Hp_Appearance 分（需客户端切主题后真实活跃），保留供调色/还原与后续验证用。
 func (c *Client) SetAppearanceTheme(a *auth.Auth, resourceKey string) error {
@@ -213,14 +215,8 @@ func (c *Client) SetAppearanceTheme(a *auth.Auth, resourceKey string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
-	req.Header.Set("User-Agent", desktopUA)
-	req.Header.Set("X-Product", "SaaS")
-	if a.UID != "" {
-		req.Header.Set("X-User-Id", a.UID)
-	}
+	// 官方桌面端 axios 对对象请求体只发 application/json，框架的默认值正好一致。
+	c.frameworkHeaders(req, a, c.desktopUA(a))
 	_, err = c.doJSON(req)
 	return err
 }
@@ -391,14 +387,7 @@ func (c *Client) MarketExpertList(a *auth.Auth, expertType string) ([]MarketExpe
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", desktopUA)
-	req.Header.Set("X-Domain", c.chatBase(a))
-	req.Header.Set("X-Product", "SaaS")
-	if a.UID != "" {
-		req.Header.Set("X-User-Id", a.UID)
-	}
+	c.frameworkHeaders(req, a, c.desktopUA(a))
 	var out struct {
 		Experts []MarketExpert `json:"experts"`
 	}
@@ -441,7 +430,7 @@ func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string) (conversat
 	h.Set("Authorization", "Bearer "+a.AccessTokenValue())
 	h.Set("Content-Type", "application/json")
 	h.Set("Accept", "text/event-stream")
-	h.Set("User-Agent", desktopUA)
+	h.Set("User-Agent", c.desktopUA(a))
 	h.Set("X-Domain", c.chatBase(a))
 	h.Set("X-Product", "SaaS")
 	h.Set("X-User-Id", a.UID)
@@ -451,7 +440,7 @@ func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string) (conversat
 	h.Set("X-Agent-Type", "main")
 	h.Set("X-IDE-Name", "WorkBuddy")
 	h.Set("X-IDE-Type", "WorkBuddy")
-	h.Set("X-IDE-Version", "5.5.6")
+	h.Set("X-IDE-Version", c.clientVersion(a))
 	h.Set("x-codebuddy-request", "1")
 	if expertID != "" {
 		h.Set("X-Expert-Id", expertID)

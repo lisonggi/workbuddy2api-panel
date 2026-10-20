@@ -12,14 +12,20 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/session"
 )
 
+// 官方取值依据：WorkBuddy 桌面端安装包（国内版 WorkBuddy-darwin-arm64-5.8.3、国际版 5.8.4，
+// 都内置 CLI @tencent-ai/codebuddy-code 2.161.0）。对话、刷新令牌、模型目录由内置 CLI 发；积分、
+// 签到、成长任务、旅行、上报由桌面端后台服务发。两者用同一套请求框架，UA 段序不同。
 const (
-	// defaultClientVersion 出站 WorkBuddy 客户端版本段（UA 的 `WorkBuddy/<ver>` 与
-	// 白名单头组的 X-IDE-Version）。对齐官方 WorkBuddy Desktop 分发包版本（5.5.4）。
-	// config upstream.client_version 可覆盖（空 = 内置默认）。
-	defaultClientVersion = "5.5.4"
-	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。对齐官方内置 CLI（2.137.1）。
+	// defaultClientVersionCN / defaultClientVersionGlobal 两域桌面端版本（UA 与 X-IDE-Version）。
+	// config upstream.client_version 可覆盖（两域共用一个值，空 = 内置默认）。
+	defaultClientVersionCN     = "5.8.3"
+	defaultClientVersionGlobal = "5.8.4"
+	// defaultCliVersion 桌面端内置 CLI 的版本（UA 的 `CLI/<ver>` 段），两域相同。
 	// config upstream.cli_version 可覆盖（空 = 内置默认）。
-	defaultCliVersion = "2.137.1"
+	defaultCliVersion = "2.161.0"
+	// deploymentType 两域 product.json 的 deploymentType。官方请求框架的 ProductEndpointHttpInterceptor
+	// 把它作为 X-Product 加到经过框架的每个请求上（对话、刷新令牌、模型目录、积分等都在内）。
+	deploymentType = "SaaS"
 
 	originRefererCN     = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
@@ -34,13 +40,15 @@ func originRefererFor(a *auth.Auth) string {
 	return originRefererCN
 }
 
-// clientVersion 生效的 WorkBuddy 客户端版本：Client.ClientVersion 非空则取之，
-// 否则内置默认 defaultClientVersion。
-func (c *Client) clientVersion() string {
+// clientVersion 生效的桌面端版本：Client.ClientVersion 非空则取之，否则按账号域取内置默认。
+func (c *Client) clientVersion(a *auth.Auth) string {
 	if c != nil && c.ClientVersion != "" {
 		return c.ClientVersion
 	}
-	return defaultClientVersion
+	if a != nil && a.IsGlobal() {
+		return defaultClientVersionGlobal
+	}
+	return defaultClientVersionCN
 }
 
 // cliVersion 生效的 CLI 版本：Client.CliVersion 非空则取之，否则内置默认 defaultCliVersion。
@@ -51,40 +59,49 @@ func (c *Client) cliVersion() string {
 	return defaultCliVersion
 }
 
-// defaultWorkBuddyUAFor 组装默认客户端出站 UA（官方桌面端 RestOperations 层形状）：
-// `WorkBuddy/<clientVersion> <platform>/<clientVersion> CLI/<cliVersion>`。
-// 平台段（第二段）品牌按 realm 切换——CN 用 applicationName 同值 `WorkBuddy`，
-// global 用官方国际版 productName `WorkBuddy AI`（intl 项目逆向证据：
-// `WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2`）。
-// global 账号送错平台段（`WorkBuddy` 非 `WorkBuddy AI`）可能触发上游 403 code 11140
-// "request illegal" 风控。官方无任何 UA 随机化，故默认确定性。
-func (c *Client) defaultWorkBuddyUAFor(a *auth.Auth) string {
-	platform := "WorkBuddy"
+// applicationNameFor 两域桌面端 product.json 的 applicationName：国内版 "WorkBuddy"，国际版
+// "workbuddy-ai"（productName 是 "WorkBuddy AI"，UA 里用的是 applicationName）。
+func applicationNameFor(a *auth.Auth) string {
 	if a != nil && a.IsGlobal() {
-		platform = "WorkBuddy AI"
+		return "workbuddy-ai"
 	}
-	return "WorkBuddy/" + c.clientVersion() + " " + platform + "/" + c.clientVersion() + " CLI/" + c.cliVersion()
+	return "WorkBuddy"
 }
 
-// userAgent 返回当前出站 UA（客户端出站路径：chat/refresh/FetchModels）。
-// 优先级：Client.UserAgent（config user_agent）显式覆盖 > 按账号 realm 的默认 WorkBuddy 三段式。
-// 显式覆盖兼容既有覆盖逻辑：用户配了即以用户值为准（自定义品牌/版本），
-// 未配则走官方桌面端默认形态（global 换 `WorkBuddy AI` 平台段）。
+// defaultCLIUA 内置 CLI 的 UA（UserAgentHttpInterceptor）：
+// `<platform>/<ver> <applicationName>/<ver> CLI/<cli>`，platform 由桌面端固定传 "WorkBuddy"。
+// 国内版 `WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0`，国际版 `WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0`。
+func (c *Client) defaultCLIUA(a *auth.Auth) string {
+	v := c.clientVersion(a)
+	return "WorkBuddy/" + v + " " + applicationNameFor(a) + "/" + v + " CLI/" + c.cliVersion()
+}
+
+// defaultDaemonUA 桌面端后台服务的 UA（WorkbuddyUserAgentHttpInterceptor）：applicationName 段在前，
+// `<applicationName>/<ver> WorkBuddy/<ver> CLI/<cli>`。国内版两段同名，与 CLI 的 UA 一样。
+func (c *Client) defaultDaemonUA(a *auth.Auth) string {
+	v := c.clientVersion(a)
+	return applicationNameFor(a) + "/" + v + " WorkBuddy/" + v + " CLI/" + c.cliVersion()
+}
+
+// userAgent 内置 CLI 发的请求（对话、刷新令牌、模型目录）的 UA。
+// config user_agent 显式覆盖优先（两类请求共用这一个值）。
 func (c *Client) userAgent(a *auth.Auth) string {
 	if c != nil && c.UserAgent != "" {
 		return c.UserAgent
 	}
-	return c.defaultWorkBuddyUAFor(a)
+	return c.defaultCLIUA(a)
 }
 
-// billingUA 白名单类（billing/checkin/banner）出站 UA：单段 `WorkBuddy/<clientVersion>`
-// （官方 banner 显式覆写形态，不带 CLI 段）。默认生效（伪造官方桌面端指纹）；
-// 显式 client_name="SaaS" 才不设 UA（还原旧行为，Go 默认 UA）。
-func (c *Client) billingUA() string {
-	if c == nil || c.attributionClientName() == "SaaS" {
+// daemonUserAgent 桌面端后台服务发的请求（积分、签到、成长任务、旅行、上报）的 UA。
+// config user_agent 显式覆盖优先；显式 client_name="SaaS"（旧行为）时不设 UA。
+func (c *Client) daemonUserAgent(a *auth.Auth) string {
+	if c != nil && c.UserAgent != "" {
+		return c.UserAgent
+	}
+	if c.attributionClientName() == "SaaS" {
 		return ""
 	}
-	return "WorkBuddy/" + c.clientVersion()
+	return c.defaultDaemonUA(a)
 }
 
 // resolveDeviceToken 解析本次请求的 X-Device-Token 取值。
@@ -103,7 +120,8 @@ func (c *Client) resolveDeviceToken(a *auth.Auth) string {
 	return ""
 }
 
-// injectDeviceToken 在 req 注入 X-Device-Token 头（仅当取到非空 token）。
+// injectDeviceToken 在 req 注入 X-Device-Token 头（仅当取到非空 token）。官方只在签到
+// （getCheckinRequestHeaders）和登录前的 auth/state 上带它，对话和其他请求都不带。
 func (c *Client) injectDeviceToken(req *http.Request, a *auth.Auth) {
 	if tok := c.resolveDeviceToken(a); tok != "" {
 		req.Header.Set("X-Device-Token", tok)
@@ -174,6 +192,52 @@ func (c *Client) injectCodeBuddyRequest(req *http.Request) {
 	req.Header.Set("X-CodeBuddy-Request", "1")
 }
 
+// frameworkHeaders 官方请求框架（restOperations）给非对话请求加的头：axios 的 Accept、框架默认的
+// X-Requested-With，以及各拦截器补的头——CommonHeaderHttpInterceptor 的 X-Request-ID（32 位
+// 十六进制，每个请求新生成）、ProductEndpointHttpInterceptor 的 X-Product、UA、
+// AuthenticationHttpInterceptor 的账号头（Authorization、X-User-Id、企业号的 X-Enterprise-Id 与同值的
+// X-Tenant-Id、X-Domain）。
+// Content-Type 只在 GET 以外的请求上设（官方 GET 不带，POST 都带 JSON 体；网关几个不带体的 POST
+// 不是桌面端的接口，保持以前也带的样子）。官方不发的 Origin / Referer / Accept-Language /
+// X-CodeBuddy-Request / X-Machine-ID / X-Session-ID 一概不发；需要的个别请求（积分的
+// Accept-Language、签到的 X-Device-Token、刷新的 X-Refresh-Token）由调用方另加。ua 为空不设 UA。
+func (c *Client) frameworkHeaders(req *http.Request, a *auth.Auth, ua string) {
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	if req.Header.Get("X-Request-ID") == "" {
+		req.Header.Set("X-Request-ID", session.NewMessageID())
+	}
+	req.Header.Set("X-Product", deploymentType)
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	if at := a.AccessTokenValue(); at != "" {
+		req.Header.Set("Authorization", "Bearer "+at)
+	}
+	if a.UID != "" {
+		req.Header.Set("X-User-Id", a.UID)
+	}
+	if a.IsEnterprise() {
+		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
+	}
+	if d := chatDomain(a); d != "" {
+		req.Header.Set("X-Domain", d)
+	}
+}
+
+// billingAcceptLanguage 积分包查询的 Accept-Language：官方按界面语言只发 "zh" 或 "en"
+// （resolveBillingAcceptLanguage），国内版取 zh、国际版取 en。
+func billingAcceptLanguage(a *auth.Auth) string {
+	if a != nil && a.IsGlobal() {
+		return "en"
+	}
+	return "zh"
+}
+
 // ChatMeta 一次 chat 出站的会话头族元数据（issue #35：后台按 X-Conversation-Request-ID
 // 聚合请求，官方客户端一次 user send 内所有 tool call/重试/换号复用同一个 ID）。
 // handler 在轮转循环外生成 conversationID / conversationRequestID，循环内每次出站
@@ -227,7 +291,7 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 		c.injectGlobalChatHeaders(req, a)
 	}
 	// 用量归属头：默认伪造 WorkBuddy 桌面端指纹（client_name="SaaS" 还原旧行为）。
-	c.injectAttribution(req)
+	c.injectAttribution(req, a)
 	// 客户端 IP 透传（仅 PassthroughIP=true 且本次请求带 IP）。
 	c.injectClientIP(req, clientIP)
 	// 设备风控头：auth 每号 > config 全局 > 文件兜底；空则不注入。
@@ -247,6 +311,15 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	}
 	// 会话头族（对话/请求/消息/B3 链路），见 injectConversationHeaders。
 	c.injectConversationHeaders(req, meta)
+}
+
+// chatDomain chat 出站的 X-Domain：国际版固定 www.workbuddy.ai（与国际版登录域相同，不回退
+// 登录会话原值——对齐 intl 项目出站头）；国内版取登录域，没有就不发。
+func chatDomain(a *auth.Auth) string {
+	if a.IsGlobal() {
+		return "www.workbuddy.ai"
+	}
+	return a.DomainValue()
 }
 
 // injectGlobalChatHeaders global 账号的 chat 专属声明头，对齐 intl 项目
@@ -342,7 +415,7 @@ func (c *Client) attributionClientName() string {
 // + X-IDE-Name/Type/Product="WorkBuddy" + X-IDE-Version=client_version，上游用量归因
 // 不再出现 client/agentPurpose 为空的「网关特征」。显式 ClientName="SaaS" 还原旧行为
 // （仅 X-Product="SaaS"，不设 X-IDE-*）；配其他值则四头跟随该值。
-func (c *Client) injectAttribution(req *http.Request) {
+func (c *Client) injectAttribution(req *http.Request, a *auth.Auth) {
 	name := c.attributionClientName()
 	if name == "SaaS" {
 		req.Header.Set("X-Product", "SaaS")
@@ -351,7 +424,7 @@ func (c *Client) injectAttribution(req *http.Request) {
 	req.Header.Set("X-Agent-Purpose", "conversation")
 	req.Header.Set("X-IDE-Name", name)
 	req.Header.Set("X-IDE-Type", name)
-	req.Header.Set("X-IDE-Version", c.clientVersion())
+	req.Header.Set("X-IDE-Version", c.clientVersion(a))
 	req.Header.Set("X-Product", name)
 }
 
@@ -384,21 +457,28 @@ func ExtractClientIP(r *http.Request) string {
 	return ""
 }
 
-// BillingHeaders billing 接口请求头。
-// UA 语义：默认**不设置**（保持现状，Go 客户端自带默认 UA）；仅当显式配置
-// c.UserAgent 非空才覆盖——避免默认路径给 billing 引入新的 UA 指纹。
+// BillingHeaders 桌面端后台服务发的请求（积分、签到、成长任务、旅行、上报、补偿）的请求头：
+// 官方请求框架的形状（frameworkHeaders）+ 后台服务的 UA。
 func (c *Client) BillingHeaders(req *http.Request, a *auth.Auth) {
-	// AccessToken 加锁快照（同 ChatHeaders：keepalive 可在 a.mu 内改写）。
+	c.frameworkHeaders(req, a, c.daemonUserAgent(a))
+}
+
+// miniProgramHeaders 小程序限定任务（X-Client-Platform 为小程序）的请求头，保持 1.1.2 以前的
+// 形状：没有小程序的包可对照，改了反而多一个没验证过的变量。
+func (c *Client) miniProgramHeaders(req *http.Request, a *auth.Auth) {
 	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	c.injectCodeBuddyRequest(req)
-	// Accept-Language 按 realm 切（D5，billing 域未走 CommonHeaders，单独注入）。
-	req.Header.Set("Accept-Language", acceptLanguageFor(a))
+	req.Header.Set("X-CodeBuddy-Request", "1")
+	if a.IsGlobal() {
+		req.Header.Set("Accept-Language", "en-US")
+	} else {
+		req.Header.Set("Accept-Language", "zh-CN")
+	}
 	if c != nil && c.UserAgent != "" {
 		req.Header.Set("User-Agent", c.UserAgent)
-	} else if ua := c.billingUA(); ua != "" {
-		req.Header.Set("User-Agent", ua)
+	} else if c.attributionClientName() != "SaaS" {
+		req.Header.Set("User-Agent", "WorkBuddy/"+c.clientVersion(a))
 	}
 	if a.UID != "" {
 		req.Header.Set("X-User-Id", a.UID)
@@ -410,17 +490,20 @@ func (c *Client) BillingHeaders(req *http.Request, a *auth.Auth) {
 	if d := a.DomainValue(); d != "" {
 		req.Header.Set("X-Domain", d)
 	}
-	// 设备风控头：billing 域（report/travel/balance/checkin）同样注入。
 	c.injectDeviceToken(req, a)
+	req.Header.Set("X-Client-Platform", mpPlatform)
 }
 
-// RefreshHeaders refresh 端点专属头（X-Refresh-Token 只允许出现在这里）。
+// RefreshHeaders 刷新令牌的请求头（X-Refresh-Token 只允许出现在这里）。官方内置 CLI 的
+// refreshSession：请求框架的头 + X-Domain（登录域，没有就用产品入口域）+ X-Refresh-Token +
+// X-Auth-Refresh-Source: plugin。
 func (c *Client) RefreshHeaders(req *http.Request, a *auth.Auth) {
-	c.CommonHeaders(req, a)
-	req.Header.Set("X-Refresh-Token", a.RefreshToken)
-	if a.EnterpriseID != "" {
-		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+	c.frameworkHeaders(req, a, c.userAgent(a))
+	d := chatDomain(a)
+	if d == "" {
+		d = "www.workbuddy.cn" // 国内版产品入口 https://www.workbuddy.cn 的 authority
 	}
-	// X-Auth-Refresh-Source 对齐官方客户端 refresh 渠道标识 "plugin"（D3）。
+	req.Header.Set("X-Domain", d)
+	req.Header.Set("X-Refresh-Token", a.RefreshToken)
 	req.Header.Set("X-Auth-Refresh-Source", "plugin")
 }
