@@ -464,7 +464,8 @@ func ParseRateReset(body string) (time.Time, bool) {
 //     误判为限流会让该死号留在池中反复被选中；且此层 marker 是精确词（12153 等），
 //     比限流层的大范围子串更具体，具体优先于宽泛。
 //  3. accountFaultMarkers —— 账号级授权/配额故障（11140 request illegal auth 风控、
-//     14017 trial not activated register 未完成）。必须先于 status==429 判定：
+//     14017 trial not activated register 未完成）。11128 文案同为 request illegal，
+//     但它是请求拦截、与账号无关，在本层之前先判为 ErrContentBlocked。必须先于 status==429 判定：
 //     14017 常带 429 状态码，若落到 status==429 会误归 soft_rate（"限流"语义不符：
 //     限流可指数退避等自愈，账号级故障等不来）。11140 的 model 级限流变体
 //     （rate-limiting 文案）因 marker 不含该文案而天然落到 softRateMarkers 层，
@@ -506,6 +507,12 @@ func Classify(status int, body string) ErrKind {
 		if strings.Contains(body, m) {
 			return ErrSessionDead
 		}
+	}
+	// 11128 是上游的请求拦截（内容指纹、角色白名单、缺会话头等），文案也是 "request illegal"，
+	// 但和账号状态无关，必须先于 accountFaultMarkers 判：以前落到账号故障，被当成 11140
+	// 封号直接禁用（10-19 生产：国际版缺 X-Conversation-ID 被拦，三个好号全被禁用）。
+	if codeMarker(lower, "11128") {
+		return ErrContentBlocked
 	}
 	for _, m := range accountFaultMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) || strings.Contains(body, m) {

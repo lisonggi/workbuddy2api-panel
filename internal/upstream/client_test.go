@@ -40,6 +40,9 @@ func TestClassify(t *testing.T) {
 		// 内容策略拦截（HTTP 400 + 审核文案）：误报信号，不罚账号，走降级重试。
 		{400, `Illegal API invocation from an unapproved channel`, ErrContentBlocked},
 		{400, `{"code":11128,"msg":"blocked by security policy"}`, ErrContentBlocked},
+		// 11128 + request illegal 是请求被拦截（10-19 生产：国际版缺 X-Conversation-ID），
+		// 不是 11140 那种账号授权封禁，不能落到账号故障去禁用账号。
+		{400, `{"code":11128,"msg":"request illegal","displayMsg":{"en":"Request blocked. Please send it again"}}`, ErrContentBlocked},
 		{400, `unapproved channel`, ErrContentBlocked},
 		// 通用 4xx（非审核文案）：仍判 ErrClient，只换号不罚。
 		{400, `bad request`, ErrClient},
