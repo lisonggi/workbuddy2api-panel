@@ -43,7 +43,7 @@ func (f *runRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	f.paths = append(f.paths, r.URL.Path)
 	f.mu.Unlock()
 	switch r.URL.Path {
-	case "/v3/config", "/console/enterprises/personal/models":
+	case "/v3/config":
 		body := `{"code":0,"data":{"models":[{"id":"glm-5.2","maxInputTokens":1000000,"maxOutputTokens":131072,` +
 			`"reasoning":{"supportedEfforts":["high","xhigh"],"defaultEffort":"high"}}],` +
 			`"agents":[{"name":"cli","models":["glm-5.2"]}]}}`

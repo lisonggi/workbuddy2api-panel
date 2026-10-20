@@ -21,16 +21,25 @@ func TestPanelModelsEnterpriseOnly(t *testing.T) {
 	var tokens []string
 	up := &upstream.Client{
 		HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-			if !strings.HasSuffix(r.URL.Path, "/v3/config") && !strings.HasSuffix(r.URL.Path, "/console/enterprises/personal/models") {
+			isV3 := strings.HasSuffix(r.URL.Path, "/v3/config")
+			if !isV3 && !strings.HasSuffix(r.URL.Path, "/console/enterprises/ent-1/config/models") {
 				return &http.Response{StatusCode: 404, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 			}
-			if strings.HasSuffix(r.URL.Path, "/v3/config") {
-				mu.Lock()
-				tokens = append(tokens, r.Header.Get("Authorization"))
-				mu.Unlock()
+			enterprise := r.Header.Get("X-User-Id") != "" && r.Header.Get("X-Enterprise-Id") != ""
+			if !isV3 {
+				// 企业模型目录：data 直接是模型数组，只收 tags 含 chat 的。
+				models := `{"id":"shared","tags":["chat"]}`
+				if enterprise {
+					models += `,{"id":"claude-x","tags":["chat"]}`
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(`{"code":0,"data":[` + models + `]}`))}, nil
 			}
+			mu.Lock()
+			tokens = append(tokens, r.Header.Get("Authorization"))
+			mu.Unlock()
 			models, ids := `{"id":"shared","isDefault":true}`, `"shared"`
-			if r.Header.Get("X-User-Id") != "" && r.Header.Get("X-Enterprise-Id") != "" {
+			if enterprise {
 				models, ids = `{"id":"shared"},{"id":"claude-x","isDefault":true}`, `"shared","claude-x"`
 			}
 			body := `{"code":0,"data":{"models":[` + models + `],"agents":[{"name":"cli","models":[` + ids + `]}]}}`

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
@@ -102,7 +103,8 @@ func TestUserAgentOverrideAllOutbound(t *testing.T) {
 		if got := r.Header.Get("User-Agent"); got != ua {
 			t.Errorf("Refresh UA = %q want %q", got, ua)
 		}
-		return jsonResp(200, `{"code":0,"data":{"accessToken":"nat","refreshToken":"nrt"}}`), nil
+		// 同一个响应体同时应答刷新与刷新后的取账号（uid 与账号一致）。
+		return jsonResp(200, `{"code":0,"data":{"accessToken":"nat","refreshToken":"nrt","uid":"u1"}}`), nil
 	})
 	if err := c.RefreshToken(a); err != nil {
 		t.Errorf("refresh: %v", err)
@@ -201,7 +203,7 @@ func TestUserAgentExplicitOverride(t *testing.T) {
 			if got := r.Header.Get("User-Agent"); got != explicitString {
 				t.Errorf("UA = %q want %q (path=%s)", got, explicitString, r.URL.Path)
 			}
-			return jsonResp(200, `{"code":0,"data":{"accessToken":"nat","refreshToken":"nrt"}}`), nil
+			return jsonResp(200, `{"code":0,"data":{"accessToken":"nat","refreshToken":"nrt","uid":"u1"}}`), nil
 		})},
 		ChatHTTP:      &http.Client{Transport: uaCaptureTransport{ua: new(string)}},
 		ChatBaseCN:    "https://chat.example",
@@ -301,11 +303,16 @@ func TestBillingUA_WhenClientNameSet(t *testing.T) {
 // billing UA 为桌面端后台服务的三段式；显式 client_name="SaaS" 才不设 UA。
 func TestBillingUA_WhenClientNameEmpty(t *testing.T) {
 	a := &auth.Auth{AccessToken: "at", UID: "u1"}
-	var ua string
+	var (
+		mu sync.Mutex // 积分的三个接口并发请求
+		ua string
+	)
 	const fullResp = `{"code":0,"data":{"response":{"data":{"accounts":[{"PackageName":"x","CycleCapacitySize":100,"CycleCapacityUsed":0}]}}}}`
 	c := &Client{
 		HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+			mu.Lock()
 			ua = r.Header.Get("User-Agent")
+			mu.Unlock()
 			return jsonResp(200, fullResp), nil
 		})},
 		ChatBaseCN:    "https://chat.example",
