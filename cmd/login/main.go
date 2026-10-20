@@ -10,7 +10,7 @@
 //
 // --realm 默认 cn。按 realm 切换上游端点与 Origin/Referer：
 //
-//	cn     → https://copilot.tencent.com（Origin: https://www.codebuddy.cn）
+//	cn     → https://www.workbuddy.cn（Origin: https://www.codebuddy.cn）
 //	global → https://www.workbuddy.ai（Origin: https://www.workbuddy.ai）
 //
 // state 落盘带 realm，poll 读回校验与命令行 --realm 一致（防混域）。
@@ -33,10 +33,11 @@ import (
 	auth2 "github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
-// 上游常量：CN → copilot.tencent.com（Origin 为 codebuddy.cn）；global → www.workbuddy.ai
-// （base 与 Origin/Referer 同域）。端点 URL 由 realmConfig 按 realm 动态拼出，不再硬编码。
+// 上游常量：CN → 官方产品入口 www.workbuddy.cn（Origin 为 codebuddy.cn；1.1.2 以前是
+// copilot.tencent.com，两者 10-20 实测一致）；global → www.workbuddy.ai（base 与 Origin/Referer
+// 同域）。端点 URL 由 realmConfig 按 realm 动态拼出，不再硬编码。
 const (
-	upstreamBaseCN      = "https://copilot.tencent.com"
+	upstreamBaseCN      = "https://www.workbuddy.cn"
 	upstreamBaseGlobal  = "https://www.workbuddy.ai"
 	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
 	originRefererCN     = "https://www.codebuddy.cn"
@@ -53,7 +54,7 @@ var stateFile = filepath.Join(os.TempDir(), "wb2api-login-state.json")
 var exitFunc = os.Exit
 
 // realmConfig 按 realm 返回上游 base 与 Origin/Referer origin：global →
-// (www.workbuddy.ai, www.workbuddy.ai)；cn/非法/缺省 → (copilot.tencent.com, codebuddy.cn)。
+// (www.workbuddy.ai, www.workbuddy.ai)；cn/非法/缺省 → (www.workbuddy.cn, codebuddy.cn)。
 func realmConfig(realm string) (base, origin string) {
 	if realm == realmGlobal {
 		return upstreamBaseGlobal, originRefererGlobal

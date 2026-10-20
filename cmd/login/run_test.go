@@ -126,7 +126,7 @@ func TestRunURLCNAndGlobal(t *testing.T) {
 			t.Fatalf("state 文件 = %s (%v)", raw, err)
 		}
 		reqs := fake.requests()
-		if len(reqs) != 1 || reqs[0].method != http.MethodPost || reqs[0].host != "copilot.tencent.com" ||
+		if len(reqs) != 1 || reqs[0].method != http.MethodPost || reqs[0].host != "www.workbuddy.cn" ||
 			reqs[0].path != "/v2/plugin/auth/state" || reqs[0].origin != originRefererCN {
 			t.Fatalf("请求不对: %+v", reqs)
 		}

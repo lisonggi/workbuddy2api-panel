@@ -5,7 +5,7 @@ import (
 )
 
 // TestLoginEndpoints realm→端点映射：global 三端点全在 workbuddy.ai 域，
-// cn/空/非法值 → copilot.tencent.com（零回归兜底）。
+// cn/空/非法值 → www.workbuddy.cn（零回归兜底）。
 func TestLoginEndpoints(t *testing.T) {
 	cases := []struct {
 		realm      string
@@ -13,9 +13,9 @@ func TestLoginEndpoints(t *testing.T) {
 		wantOrigin string
 	}{
 		{"global", "https://www.workbuddy.ai/v2/plugin/auth/state?platform=CLI", "https://www.workbuddy.ai"},
-		{"cn", "https://copilot.tencent.com/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
-		{"", "https://copilot.tencent.com/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
-		{"weird", "https://copilot.tencent.com/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
+		{"cn", "https://www.workbuddy.cn/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
+		{"", "https://www.workbuddy.cn/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
+		{"weird", "https://www.workbuddy.cn/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
 	}
 	for _, c := range cases {
 		t.Run(c.realm, func(t *testing.T) {
@@ -33,9 +33,9 @@ func TestLoginEndpoints(t *testing.T) {
 					t.Errorf("global token/account endpoints should be workbuddy.ai: %q %q", tok, acct)
 				}
 			} else {
-				if tok[:len("https://copilot.tencent.com")] != "https://copilot.tencent.com" ||
-					acct[:len("https://copilot.tencent.com")] != "https://copilot.tencent.com" {
-					t.Errorf("cn token/account endpoints should be copilot.tencent.com: %q %q", tok, acct)
+				if tok[:len("https://www.workbuddy.cn")] != "https://www.workbuddy.cn" ||
+					acct[:len("https://www.workbuddy.cn")] != "https://www.workbuddy.cn" {
+					t.Errorf("cn token/account endpoints should be www.workbuddy.cn: %q %q", tok, acct)
 				}
 			}
 		})

@@ -680,10 +680,13 @@ type Client struct {
 	// DeviceTokenFile 设备 token 文件路径兜底（宿主落盘的桌面端 token，5 分钟读取缓存）。
 	DeviceTokenFile string
 
+	// ChatBaseCN / BillingBaseCN 国内版上游 base，默认都是官方产品入口 https://www.workbuddy.cn
+	// （桌面端 product.json 的 endpoint；copilot.tencent.com 是官方的备用入口）。1.1.2 以前分别是
+	// copilot.tencent.com 与 www.codebuddy.cn，两者与主入口的只读接口、对话、登录 10-20 生产实测一致。
 	ChatBaseCN    string
 	BillingBaseCN string
 	// WebBaseCN 官网（workbuddy.cn）域：部分「任务领奖」类接口只在此域提供
-	// （Web 成长中心用；CLI 域 copilot.tencent.com 的同名路径返回 400）。
+	// （Web 成长中心用；copilot.tencent.com 的同名路径返回 400）。
 	WebBaseCN string
 
 	// ChatBaseGlobal / BillingBaseGlobal 国际版（global realm）上游 base。
@@ -705,9 +708,9 @@ func New() *Client {
 	c := &Client{
 		HTTP:          &http.Client{Timeout: 120 * time.Second, Transport: tr},
 		ChatHTTP:      &http.Client{Timeout: 0, Transport: tr}, // 无总时长；首字节由 ResponseHeaderTimeout 管
-		ChatBaseCN:    "https://copilot.tencent.com",
-		BillingBaseCN: "https://www.codebuddy.cn",
-		WebBaseCN:     "https://www.workbuddy.cn",
+		ChatBaseCN:    cnProductEndpoint,
+		BillingBaseCN: cnProductEndpoint,
+		WebBaseCN:     cnProductEndpoint,
 		// GlobalEnabled 缺省 true（与 config global.enabled 缺省 true 一致；纯 CN 部署行为不变：
 		// CN 账号恒判 cn，global base 只在 realm=global 的账号上被使用）。
 		GlobalEnabled: true,
@@ -726,6 +729,9 @@ func (c *Client) chatHTTP() *http.Client {
 
 // defaultGlobalBase 缺省 global base（D5：config 未覆盖时默认 workbuddy.ai）。
 const defaultGlobalBase = "https://www.workbuddy.ai"
+
+// cnProductEndpoint 国内版官方产品入口（桌面端 5.8.3 product.json 的 endpoint），国内版所有请求的默认 base。
+const cnProductEndpoint = "https://www.workbuddy.cn"
 
 // globalChatBase 生效的 global chat base：Client.ChatBaseGlobal 非空取之，否则默认。
 func (c *Client) globalChatBase() string {
@@ -863,7 +869,7 @@ func (c *Client) webBase(a *auth.Auth) string {
 	if c.WebBaseCN != "" {
 		return c.WebBaseCN
 	}
-	return "https://www.workbuddy.cn"
+	return cnProductEndpoint
 }
 
 // doJSON 发请求并解信封；HTTP 非 2xx 或业务 code != 0 时返回带 body 片段的 *Error。

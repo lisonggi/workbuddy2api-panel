@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	loginCNHost     = "copilot.tencent.com"
+	loginCNHost     = "www.workbuddy.cn"
 	loginGlobalHost = "www.workbuddy.ai"
 
 	loginStatePath   = "/v2/plugin/auth/state"

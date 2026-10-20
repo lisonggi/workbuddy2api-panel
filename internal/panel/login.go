@@ -23,8 +23,10 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
+// upstreamBaseCN 国内版登录走官方产品入口（1.1.2 以前是 copilot.tencent.com，发起授权与轮询
+// 10-20 生产实测两个域名一致，授权页随之换成 www.workbuddy.cn）。
 const (
-	upstreamBaseCN      = "https://copilot.tencent.com"
+	upstreamBaseCN      = "https://www.workbuddy.cn"
 	upstreamBaseGlobal  = "https://www.workbuddy.ai"
 	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
 	originRefererCN     = "https://www.codebuddy.cn"
