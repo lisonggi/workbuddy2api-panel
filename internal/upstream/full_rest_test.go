@@ -396,18 +396,6 @@ func TestFull7SaveLockedEmptyPath(t *testing.T) {
 	m.mu.Unlock()
 }
 
-// --- cache_key.go ----------------------------------------------------------
-
-// TestFull7InjectPromptCacheKeyMarshalUnreachable 说明 cache_key.go:58 的
-// json.Marshal 错误分支走不到：obj 只由 json.Unmarshal 产生并只新增字符串键，
-// 不存在非法 Marshal 的值。保留一个正常用例确保该函数主路径仍被执行。
-func TestFull7InjectPromptCacheKeyMainPath(t *testing.T) {
-	out := InjectPromptCacheKey([]byte(`{"model":"m","messages":[]}`), "uid-1", "conv-1")
-	if !strings.Contains(string(out), `"prompt_cache_key":"wb2a-`) {
-		t.Fatalf("out = %q", out)
-	}
-}
-
 // --- idle.go ---------------------------------------------------------------
 
 func TestFull7IdleTickFloor(t *testing.T) {

@@ -806,24 +806,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	//     找回（session/turns.go）；建不出轮级键时退化成会话级或本请求级随机——
 	//     轮转内捕获一次即共享；
 	//   - messageID 在 ChatHeaders 内每条消息生成（消息级独立，无需外部可见）。
-	//   - cacheKeySeed：prompt_cache_key 的会话源。客户端没给 conversation_id 时
-	//     （Anthropic / Claude Code 流量）回退到会话键，否则 prompt_cache_key 退化成
-	//     每账号一个常量，同号所有客户端挤同一个前缀缓存槽、互相覆盖。
 	//   - conversationSeed：客户端没给 conversation_id 时出站 X-Conversation-ID 的派生源。
 	//     不直接用会话键：会话键只由 system + 首条 user 决定，开头相同的两段不相干对话
 	//     会撞成同一个值；派生源再加上第一条助手回复（见 session.ConversationSeed），
 	//     ChatHeaders 拼上账号 uid 算出 id。对话第一个请求没有回复，用轮次 id。
-	//
-	// 会话键只进 prompt_cache_key，不进 X-Conversation-ID：派生键只由 system + 首条
-	// user 决定，两段不相干的对话开头相同（如都没有 system、首句都是「你好」）就会
-	// 撞成同一个值。前缀缓存按内容逐字匹配，撞键不会带出别人的内容；X-Conversation-ID
-	// 则会让上游把两段对话当成同一个会话。
 	convID := session.ResolveConversationID(body)
-	cacheKeySeed := convID
-	if cacheKeySeed == "" {
-		cacheKeySeed = sessKey
-	}
-	chatMeta := upstream.ChatMeta{ConversationID: convID, CacheKeySeed: cacheKeySeed}
+	chatMeta := upstream.ChatMeta{ConversationID: convID}
 	if convID == "" {
 		chatMeta.ConversationSeed = convSeed
 	}

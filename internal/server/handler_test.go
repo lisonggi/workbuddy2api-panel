@@ -1882,7 +1882,7 @@ func TestChatMarkupRepairStrictModeRejectsUndeclaredTool(t *testing.T) {
 // TestChatConversationIDFromFirstReply 客户端没给 conversation_id 时的出站 X-Conversation-ID：
 // 对话第一个请求用本轮的轮次 id；历史里有了第一条助手回复后，按「system + 首条 user + 首条回复 +
 // 账号」算出固定值，之后多轮不变；开头逐字相同、第一条回复不同的两段对话各用各的。客户端给的
-// conversation_id 原样透传，客户端自己带的 prompt_cache_key 照转。
+// conversation_id 原样透传。网关不再自动补 prompt_cache_key，客户端自己带的照转。
 func TestChatConversationIDFromFirstReply(t *testing.T) {
 	var mu sync.Mutex
 	var convIDs, turnIDs, cacheKeys []string
@@ -1949,6 +1949,11 @@ func TestChatConversationIDFromFirstReply(t *testing.T) {
 	}
 	if convIDs[4] != "conv-client" {
 		t.Fatalf("客户端的 conversation_id 应原样透传: got %q", convIDs[4])
+	}
+	for i := 0; i < 4; i++ {
+		if cacheKeys[i] != "<无>" {
+			t.Fatalf("第 %d 次：网关不应自动补 prompt_cache_key，got %q", i+1, cacheKeys[i])
+		}
 	}
 	if cacheKeys[4] != "client-key" {
 		t.Fatalf("客户端自带的 prompt_cache_key 应原样转发: got %q", cacheKeys[4])

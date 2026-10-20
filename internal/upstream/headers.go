@@ -181,7 +181,6 @@ func (c *Client) injectCodeBuddyRequest(req *http.Request) {
 // messageID（消息级，每条独立）由 ChatHeaders 内部生成，无需外部可见。
 type ChatMeta struct {
 	ConversationID        string // X-Conversation-ID：客户端给的会话 id；空则由 ChatHeaders 按 ConversationSeed 或轮次 id 补
-	CacheKeySeed          string // prompt_cache_key 的会话哈希源（可含网关会话键，不发头）；空则用 ConversationID
 	ConversationSeed      string // 客户端没给会话 id 时的派生源（session.ConversationSeed）；空 = 对话第一个请求
 	ConversationRequestID string // X-Conversation-Request-ID / X-Root-Request-ID：聚合主键，必发
 	TraceID               string // X-Trace-ID：入站透传值，空则回落 conversationRequestID
