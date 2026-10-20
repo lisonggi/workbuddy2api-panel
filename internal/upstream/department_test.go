@@ -1,7 +1,7 @@
 package upstream
 
-// department_test.go 企业号的部门全名：刷新后照官方 mergeCurrentAccountDetails 合并、部门全名
-// 变了算刷新失败；有值时桌面端请求带 X-Department-Info。
+// department_test.go 企业号的部门全名：登录取账号时读进来、刷新后照官方 mergeCurrentAccountDetails
+// 合并、部门全名变了算刷新失败；有值时桌面端请求带 X-Department-Info。
 
 import (
 	"net/http"
@@ -40,6 +40,16 @@ func TestDepartmentHeader(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLoginFetchAccountDepartment 登录取账号时读出 departmentFullName。
+func TestLoginFetchAccountDepartment(t *testing.T) {
+	f := newUpFake(t)
+	f.on(http.MethodGet, loginTestAccountCN, 200, `{"code":0,"data":{"uid":"u-1","enterpriseId":"ent-1","departmentFullName":"研发部"}}`)
+	acct, err := loginTestClient(f).LoginFetchAccount("cn", "st-1", LoginToken{AccessToken: "at-1"}, LoginTrace{})
+	if err != nil || derefStr(acct.DepartmentFullName) != "研发部" {
+		t.Fatalf("取账号: %+v %v", acct, err)
 	}
 }
 

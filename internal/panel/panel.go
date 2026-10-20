@@ -144,7 +144,8 @@ const loginTTL = 15 * time.Minute
 // loginSession 进行中的 OAuth 会话：创建时刻 + realm（cn/global，用于落盘与端点切换）。
 type loginSession struct {
 	created time.Time
-	realm   string // "cn" / "global"，缺省 cn
+	realm   string              // "cn" / "global"，缺省 cn
+	trace   upstream.LoginTrace // 这次登录的链路（发起授权时生成，轮询、取账号沿用）
 }
 
 // New 构建面板。

@@ -1,41 +1,79 @@
 package panel
 
 import (
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
 	"testing"
 )
 
-// TestLoginEndpoints realm→端点映射：global 三端点全在 workbuddy.ai 域，
-// cn/空/非法值 → www.workbuddy.cn（零回归兜底）。
-func TestLoginEndpoints(t *testing.T) {
+// loginRealmRecorder 记录登录请求的完整 URL（方法 + 地址 + 查询参数）与头，按路径回假响应：
+// auth/state 回 state+authUrl，auth/token 回业务码 11217（等待中），别的路径按成功信封回。
+type loginRealmRecorder struct {
+	mu      sync.Mutex
+	urls    []string
+	headers []http.Header
+}
+
+func (r *loginRealmRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	r.urls = append(r.urls, req.Method+" "+req.URL.String())
+	r.headers = append(r.headers, req.Header.Clone())
+	r.mu.Unlock()
+	body := `{"code":0,"data":{"state":"st","authUrl":"https://auth.example/x"}}`
+	if strings.HasSuffix(req.URL.Path, "/auth/token") {
+		body = `{"code":11217,"msg":"login ing"}`
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}, nil
+}
+
+// TestLoginRealmRoutes 面板登录按 realm 选域：global → workbuddy.ai、platform=workbuddy-ai；
+// cn/空/非法值 → workbuddy.cn、platform=workbuddy。发起授权与轮询令牌的完整 URL 都断言。
+func TestLoginRealmRoutes(t *testing.T) {
 	cases := []struct {
-		realm      string
-		wantState  string
-		wantOrigin string
+		name      string
+		body      string
+		wantRealm string
+		host      string
+		platform  string
 	}{
-		{"global", "https://www.workbuddy.ai/v2/plugin/auth/state?platform=CLI", "https://www.workbuddy.ai"},
-		{"cn", "https://www.workbuddy.cn/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
-		{"", "https://www.workbuddy.cn/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
-		{"weird", "https://www.workbuddy.cn/v2/plugin/auth/state?platform=CLI", "https://www.codebuddy.cn"},
+		{"cn", `{}`, "cn", "www.workbuddy.cn", "workbuddy"},
+		{"global", `{"realm":"global"}`, "global", "www.workbuddy.ai", "workbuddy-ai"},
+		{"非法 realm 回落 cn", `{"realm":"weird"}`, "cn", "www.workbuddy.cn", "workbuddy"},
 	}
 	for _, c := range cases {
-		t.Run(c.realm, func(t *testing.T) {
-			st, tok, acct, origin := loginEndpoints(c.realm)
-			if st != c.wantState {
-				t.Errorf("realm=%q state=%q want %q", c.realm, st, c.wantState)
+		t.Run(c.name, func(t *testing.T) {
+			rec := &loginRealmRecorder{}
+			p, _, _ := newLoginPanel(t)
+			p.cfg.Upstream.HTTP = &http.Client{Transport: rec}
+			resp := loginStartOK(t, p, c.body)
+			if fmt.Sprint(resp["realm"]) != c.wantRealm {
+				t.Fatalf("realm=%v want %s", resp["realm"], c.wantRealm)
 			}
-			if origin != c.wantOrigin {
-				t.Errorf("realm=%q origin=%q want %q", c.realm, origin, c.wantOrigin)
+			wantStateURL := "POST https://" + c.host + "/v2/plugin/auth/state?platform=" + c.platform
+			if len(rec.urls) != 1 || rec.urls[0] != wantStateURL {
+				t.Fatalf("发起授权 URL = %v，want %s", rec.urls, wantStateURL)
 			}
-			// token/account 端点必与 state 同 base。
-			if c.realm == "global" {
-				if tok[:len("https://www.workbuddy.ai")] != "https://www.workbuddy.ai" ||
-					acct[:len("https://www.workbuddy.ai")] != "https://www.workbuddy.ai" {
-					t.Errorf("global token/account endpoints should be workbuddy.ai: %q %q", tok, acct)
-				}
-			} else {
-				if tok[:len("https://www.workbuddy.cn")] != "https://www.workbuddy.cn" ||
-					acct[:len("https://www.workbuddy.cn")] != "https://www.workbuddy.cn" {
-					t.Errorf("cn token/account endpoints should be www.workbuddy.cn: %q %q", tok, acct)
+			state := fmt.Sprint(resp["state"])
+			prec := loginPollState(p, state)
+			autoWantCode(t, prec, http.StatusOK)
+			if got := autoDecode(t, prec); got["done"] != false {
+				t.Fatalf("11217 应 done=false: %v", got)
+			}
+			wantTokenURL := "GET https://" + c.host + "/v2/plugin/auth/token?state=" + state
+			if len(rec.urls) != 2 || rec.urls[1] != wantTokenURL {
+				t.Fatalf("轮询令牌 URL = %v，want %s", rec.urls, wantTokenURL)
+			}
+			// 面板登录请求不带旧 CLI 的 Origin/Referer。
+			for _, h := range rec.headers {
+				if h.Get("Origin") != "" || h.Get("Referer") != "" {
+					t.Fatalf("登录请求不应带 Origin/Referer: %v", h)
 				}
 			}
 		})

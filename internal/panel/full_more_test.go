@@ -166,19 +166,15 @@ func TestImportGlobalBranches(t *testing.T) {
 // 登录
 // ---------------------------------------------------------------------------
 
-// doJSON：非法 URL 与传输层错误。
-func TestLoginDoJSONTransportErrors(t *testing.T) {
-	if _, _, err := doJSON(http.MethodGet, "http://exa\x00mple/", "", nil, originRefererCN); err == nil {
-		t.Fatal("非法 URL 应报错")
-	}
-	old := loginHTTP
-	loginHTTP = &http.Client{Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+// 发起授权的传输层错误 → 502，错误原因带进文案。
+func TestLoginStartTransportError(t *testing.T) {
+	p, _, _ := newLoginPanel(t)
+	p.cfg.Upstream.HTTP = &http.Client{Transport: rtFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("dial boom")
 	})}
-	t.Cleanup(func() { loginHTTP = old })
-	if _, _, err := doJSON(http.MethodGet, "https://copilot.tencent.com/x", "", nil, originRefererCN); err == nil ||
-		!strings.Contains(err.Error(), "dial boom") {
-		t.Fatalf("err=%v", err)
+	rec := postJSON(t, p, "/panel/api/login/start", `{}`)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "dial boom") {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
 }
 

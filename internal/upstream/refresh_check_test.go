@@ -147,3 +147,17 @@ func TestRefreshAccountCheckNoUID(t *testing.T) {
 		t.Errorf("没有 domain 时 X-Domain = %q，应为 www.workbuddy.cn", got)
 	}
 }
+
+// TestLoginGlobalSnapshotFailureIgnored 国际版登录后取账号列表失败只记日志，登录照常完成。
+func TestLoginGlobalSnapshotFailureIgnored(t *testing.T) {
+	f := newUpFake(t)
+	f.on(http.MethodGet, loginTestAccountGlobal, 200, loginTestAcctBody)
+	f.on(http.MethodGet, "/v2/plugin/accounts", 500, `{"code":500,"msg":"boom"}`)
+	acct, err := loginTestClient(f).LoginFetchAccount("global", "st-1", LoginToken{AccessToken: "at-1"}, LoginTrace{})
+	if err != nil || acct.UID != "u-1" {
+		t.Fatalf("取账号列表失败不应影响登录: %+v %v", acct, err)
+	}
+	if n := f.count(http.MethodGet, "/v2/plugin/accounts"); n != 1 {
+		t.Errorf("应取账号列表 1 次，实际 %d", n)
+	}
+}

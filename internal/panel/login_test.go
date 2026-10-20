@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -25,9 +26,10 @@ const (
 	loginCNHost     = "www.workbuddy.cn"
 	loginGlobalHost = "www.workbuddy.ai"
 
-	loginStatePath   = "/v2/plugin/auth/state"
-	loginTokenPath   = "/v2/plugin/auth/token"
-	loginAccountPath = "/v2/plugin/login/account"
+	loginStatePath         = "/v2/plugin/auth/state"
+	loginTokenPath         = "/v2/plugin/auth/token"
+	loginAccountPathCN     = "/v2/plugin/account"
+	loginAccountPathGlobal = "/v2/plugin/login/account"
 
 	checkinPathCN        = "/v2/billing/meter/daily-checkin"
 	resourcePathCN       = upstreamtest.FreePath
@@ -37,7 +39,7 @@ const (
 	globalTrialPath      = "/billing/ide/trial"
 )
 
-// newLoginPanel 空号池面板 + 假上游；loginHTTP 同时指向假 Transport。
+// newLoginPanel 空号池面板 + 假上游（登录请求走 p.cfg.Upstream.HTTP 的假 Transport）。
 func newLoginPanel(t *testing.T) (*Panel, *autoUpstream, string) {
 	t.Helper()
 	up := &autoUpstream{t: t, route: map[string]autoHandler{}}
@@ -56,9 +58,6 @@ func newLoginPanel(t *testing.T) (*Panel, *autoUpstream, string) {
 		},
 		AuthDir: dir,
 	})
-	old := loginHTTP
-	loginHTTP = &http.Client{Transport: up}
-	t.Cleanup(func() { loginHTTP = old })
 	return p, up, dir
 }
 
@@ -71,7 +70,15 @@ func loginRouteToken(up *autoUpstream, host, data string) {
 	up.on(http.MethodGet, host, loginTokenPath, "", autoOK(autoEnvelope(data)))
 }
 func loginRouteAccount(up *autoUpstream, host, data string) {
-	up.on(http.MethodGet, host, loginAccountPath, "", autoOK(autoEnvelope(data)))
+	path := loginAccountPathCN
+	if host == loginGlobalHost {
+		path = loginAccountPathGlobal
+	}
+	up.on(http.MethodGet, host, path, "", autoOK(autoEnvelope(data)))
+	if host == loginGlobalHost {
+		// 国际版取到账号后官方再取一次账号列表（getAccountSnapshot），结果不影响登录。
+		up.on(http.MethodGet, host, "/v2/plugin/accounts", "", autoOK(autoEnvelope(`{"accounts":[]}`)))
+	}
 }
 
 // loginResourceBody 个人余额响应：官方逐包列表（data.Accounts[]，额度读 *Precise 字符串）。
@@ -119,7 +126,9 @@ func TestLoginStart(t *testing.T) {
 		p, up, _ := newLoginPanel(t)
 		loginRouteState(up, loginGlobalHost, "st-global-1", "https://auth.example/g")
 		resp := loginStartOK(t, p, `{"realm":"global"}`)
-		if resp["realm"] != "global" || resp["state"] != "st-global-1" || resp["url"] != "https://auth.example/g" {
+		// 授权页地址按官方 openAuthUrl 追加 version（国际版只加这一个）。
+		if u, _ := resp["url"].(string); resp["realm"] != "global" || resp["state"] != "st-global-1" ||
+			!strings.HasPrefix(u, "https://auth.example/g?version=") || strings.Contains(u, "loginSessionId") {
 			t.Fatalf("global 发起结果不对: %v", resp)
 		}
 		if got := len(up.requestsTo(http.MethodPost, loginGlobalHost, loginStatePath, "")); got != 1 {
@@ -144,7 +153,33 @@ func TestLoginStart(t *testing.T) {
 		}
 	})
 
-	t.Run("请求头按 commonHeaders", func(t *testing.T) {
+	t.Run("轮询沿用发起时的登录链路", func(t *testing.T) {
+		p, up, _ := newLoginPanel(t)
+		loginRouteState(up, loginCNHost, "st-cn", "https://auth.example/c")
+		up.on(http.MethodGet, loginCNHost, loginTokenPath, "", autoOK(`{"code":11217,"msg":"login ing"}`))
+		resp := loginStartOK(t, p, `{}`)
+		u, err := url.Parse(fmt.Sprint(resp["url"]))
+		if err != nil {
+			t.Fatalf("授权页地址: %v", err)
+		}
+		sid := u.Query().Get("loginSessionId")
+		if sid == "" || u.Query().Get("login_owner_id") == "" || u.Query().Get("traceparent") == "" {
+			t.Fatalf("国内版授权页应带登录观测参数: %q", u)
+		}
+		autoWantCode(t, loginPollState(p, "st-cn"), http.StatusOK)
+		reqs := up.requestsTo(http.MethodGet, loginCNHost, loginTokenPath, "")
+		if len(reqs) != 1 {
+			t.Fatalf("应轮询 1 次，实际 %d", len(reqs))
+		}
+		trace := strings.ReplaceAll(sid, "-", "")
+		state := up.requestsTo(http.MethodPost, loginCNHost, loginStatePath, "")[0].Header
+		if reqs[0].Header.Get("X-Trace-ID") != trace || state.Get("X-Trace-ID") != trace ||
+			!strings.HasPrefix(reqs[0].Header.Get("traceparent"), "00-"+trace+"-") {
+			t.Fatalf("发起与轮询应在同一条 trace（%s）: 发起 %q 轮询 %q", trace, state.Get("X-Trace-ID"), reqs[0].Header.Get("X-Trace-ID"))
+		}
+	})
+
+	t.Run("请求头按官方登录形状", func(t *testing.T) {
 		p, up, _ := newLoginPanel(t)
 		loginRouteState(up, loginCNHost, "st-cn", "https://auth.example/c")
 		loginStartOK(t, p, `{}`)
@@ -153,10 +188,24 @@ func TestLoginStart(t *testing.T) {
 			t.Fatalf("应有 1 次 state 请求，实际 %d", len(reqs))
 		}
 		h := reqs[0].Header
-		if h.Get("Origin") != originRefererCN || h.Get("Referer") != originRefererCN+"/" ||
-			h.Get("User-Agent") != clientUA || h.Get("Content-Type") != "application/json" ||
-			h.Get("X-Requested-With") != "XMLHttpRequest" {
-			t.Fatalf("请求头不符合 commonHeaders: %v", h)
+		// 旧 CLI 的指纹头不再发；登录前的 X-No-* 与官方请求框架的公共头照发。
+		if h.Get("Origin") != "" || h.Get("Referer") != "" || h.Get("X-User-Id") != "" ||
+			h.Get("X-Enterprise-Id") != "" || h.Get("X-Tenant-Id") != "" {
+			t.Fatalf("不应带 Origin/Referer/账号头: %v", h)
+		}
+		if h.Get("Content-Type") != "application/json" ||
+			h.Get("Accept") != "application/json, text/plain, */*" ||
+			h.Get("X-Requested-With") != "XMLHttpRequest" || h.Get("X-Product") != "SaaS" ||
+			h.Get("X-No-Authorization") != "true" || h.Get("X-No-User-Id") != "true" ||
+			h.Get("X-No-Enterprise-Id") != "true" || h.Get("X-No-Department-Info") != "true" ||
+			h.Get("X-Custom-Channel-Id") != "unknown" || h.Get("X-Domain") != loginCNHost {
+			t.Fatalf("发起授权的头不对: %v", h)
+		}
+		if ua := h.Get("User-Agent"); !strings.Contains(ua, "WorkBuddy/5.8.3") || !strings.Contains(ua, "CLI/") {
+			t.Fatalf("国内版后台服务 UA 不对: %q", ua)
+		}
+		if id := h.Get("X-Request-ID"); len(id) != 32 {
+			t.Fatalf("X-Request-ID 应为 32 位 hex: %q", id)
 		}
 	})
 
@@ -214,6 +263,21 @@ func TestLoginPollPending(t *testing.T) {
 	t.Run("token 接口还在等", func(t *testing.T) {
 		p, up, _ := newLoginPanel(t)
 		seedLogin(p, "st-cn", "cn")
+		up.on(http.MethodGet, loginCNHost, loginTokenPath, "", autoOK(`{"code":11217,"msg":"login ing"}`))
+		rec := loginPollState(p, "st-cn")
+		autoWantCode(t, rec, http.StatusOK)
+		resp := autoDecode(t, rec)
+		if resp["done"] != false {
+			t.Fatalf("等待中应 done=false: %v", resp)
+		}
+		if msg, _ := resp["message"].(string); !strings.Contains(msg, "11217") {
+			t.Fatalf("message 应带上游等待原因: %v", resp)
+		}
+	})
+
+	t.Run("token 业务错误照旧当等待", func(t *testing.T) {
+		p, up, _ := newLoginPanel(t)
+		seedLogin(p, "st-cn", "cn")
 		up.on(http.MethodGet, loginCNHost, loginTokenPath, "", autoOK(`{"code":1,"msg":"login ing"}`))
 		rec := loginPollState(p, "st-cn")
 		autoWantCode(t, rec, http.StatusOK)
@@ -222,7 +286,7 @@ func TestLoginPollPending(t *testing.T) {
 			t.Fatalf("等待中应 done=false: %v", resp)
 		}
 		if msg, _ := resp["message"].(string); !strings.Contains(msg, "code=1") {
-			t.Fatalf("message 应带上游等待原因: %v", resp)
+			t.Fatalf("message 应带上游错误: %v", resp)
 		}
 	})
 
@@ -297,7 +361,7 @@ func TestLoginPollCNPersonalSuccess(t *testing.T) {
 	autoWantSequence(t, up.requests(),
 		"POST "+loginCNHost+loginStatePath,
 		"GET "+loginCNHost+loginTokenPath,
-		"GET "+loginCNHost+loginAccountPath,
+		"GET "+loginCNHost+loginAccountPathCN,
 		"POST "+autoBillingHost+upstreamtest.CheckinStatusPath,
 		"POST "+autoBillingHost+checkinPathCN,
 		"POST "+autoBillingHost+resourcePathCN,
@@ -309,11 +373,11 @@ func TestLoginPollCNPersonalSuccess(t *testing.T) {
 	autoWantCode(t, loginPollState(p, state), http.StatusNotFound)
 }
 
-// 国内企业号成功：跳过签到，照常查企业额度。
+// 国内企业号成功：跳过签到，照常查企业额度；部门全名落盘，查额度带 X-Department-Info。
 func TestLoginPollCNEnterpriseSuccess(t *testing.T) {
 	p, up, dir := newLoginPanel(t)
 	loginRouteToken(up, loginCNHost, `{"accessToken":"at-ent","refreshToken":"rt-ent","expiresIn":3600,"domain":"copilot.tencent.com"}`)
-	loginRouteAccount(up, loginCNHost, `{"uid":"u-ent","enterpriseId":"corp-9","nickname":"企业号"}`)
+	loginRouteAccount(up, loginCNHost, `{"uid":"u-ent","enterpriseId":"corp-9","nickname":"企业号","departmentFullName":"研发部"}`)
 	up.on(http.MethodPost, autoBillingHost, enterpriseUsagePath, "", autoOK(autoEnvelope(`{"credit":20,"limitNum":100}`)))
 	seedLogin(p, "st-ent", "cn")
 
@@ -326,11 +390,15 @@ func TestLoginPollCNEnterpriseSuccess(t *testing.T) {
 	if got := len(up.requestsTo(http.MethodPost, autoBillingHost, checkinPathCN, "")); got != 0 {
 		t.Fatalf("企业号不应签到，实际 %d 次", got)
 	}
-	if got := len(up.requestsTo(http.MethodPost, autoBillingHost, enterpriseUsagePath, "")); got != 1 {
-		t.Fatalf("应查一次企业额度，实际 %d", got)
+	usage := up.requestsTo(http.MethodPost, autoBillingHost, enterpriseUsagePath, "")
+	if len(usage) != 1 {
+		t.Fatalf("应查一次企业额度，实际 %d", len(usage))
 	}
-	if a := loadAuth(t, dir, "u-ent"); a.EnterpriseID != "corp-9" {
-		t.Fatalf("企业 ID 未落盘: %+v", a)
+	if a := loadAuth(t, dir, "u-ent"); a.EnterpriseID != "corp-9" || a.DepartmentFullName != "研发部" {
+		t.Fatalf("企业 ID / 部门全名未落盘: %+v", a)
+	}
+	if got := usage[0].Header.Get("X-Department-Info"); got != "研发部" {
+		t.Errorf("查企业额度的 X-Department-Info = %q", got)
 	}
 }
 

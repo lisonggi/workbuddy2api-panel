@@ -19,7 +19,10 @@ type loginRT func(*http.Request) (*http.Response, error)
 
 func (f loginRT) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-type loginRec struct{ method, host, path, origin string }
+type loginRec struct {
+	method, host, path, query string
+	header                    http.Header
+}
 
 type loginFake struct {
 	mu      sync.Mutex
@@ -29,7 +32,7 @@ type loginFake struct {
 
 func (f *loginFake) RoundTrip(r *http.Request) (*http.Response, error) {
 	f.mu.Lock()
-	f.recs = append(f.recs, loginRec{r.Method, r.URL.Host, r.URL.Path, r.Header.Get("Origin")})
+	f.recs = append(f.recs, loginRec{r.Method, r.URL.Host, r.URL.Path, r.URL.RawQuery, r.Header.Clone()})
 	f.mu.Unlock()
 	status, body := f.handler(r)
 	return &http.Response{
@@ -96,8 +99,12 @@ func loginFakeClient(t *testing.T) *loginFake {
 			return 200, `{"code":0,"data":{"state":"st-1","authUrl":"https://auth.example/authorize?x=1"}}`
 		case "/v2/plugin/auth/token":
 			return 200, `{"code":0,"data":{"accessToken":"at-1","refreshToken":"rt-1","expiresIn":3600,"domain":"www.codebuddy.cn"}}`
+		case "/v2/plugin/account":
+			return 200, `{"code":0,"data":{"uid":"u1","enterpriseId":"ent-1","nickname":"一号"}}`
 		case "/v2/plugin/login/account":
 			return 200, `{"code":0,"data":{"uid":"u1","enterpriseId":"ent-1","nickname":"一号"}}`
+		case "/v2/plugin/accounts":
+			return 200, `{"code":0,"data":{"accounts":[{"uid":"u1"}]}}`
 		default:
 			t.Errorf("未登记的请求: %s %s", r.Method, r.URL.Path)
 			return 400, `{"code":400}`
@@ -114,7 +121,8 @@ func TestRunURLCNAndGlobal(t *testing.T) {
 		if fatal {
 			t.Fatalf("不应 fatal: %s", errb)
 		}
-		if strings.TrimSpace(out) != "https://auth.example/authorize?x=1" {
+		// 授权页地址按官方 openAuthUrl 修饰：version 与国内版的登录观测参数。
+		if !strings.HasPrefix(strings.TrimSpace(out), "https://auth.example/authorize?x=1&version=5.8.3&traceparent=") {
 			t.Fatalf("stdout=%q", out)
 		}
 		raw, err := os.ReadFile(statePath)
@@ -125,10 +133,30 @@ func TestRunURLCNAndGlobal(t *testing.T) {
 		if err := json.Unmarshal(raw, &st); err != nil || st.State != "st-1" || st.Realm != "cn" {
 			t.Fatalf("state 文件 = %s (%v)", raw, err)
 		}
+		// 登录链路存进 state 文件，poll 时沿用（同一个 loginSessionId）。
+		if st.Trace.SessionID == "" || !strings.Contains(out, "loginSessionId="+st.Trace.SessionID) {
+			t.Fatalf("state 文件应存这次登录的链路: %+v", st.Trace)
+		}
 		reqs := fake.requests()
 		if len(reqs) != 1 || reqs[0].method != http.MethodPost || reqs[0].host != "www.workbuddy.cn" ||
-			reqs[0].path != "/v2/plugin/auth/state" || reqs[0].origin != originRefererCN {
+			reqs[0].path != "/v2/plugin/auth/state" || reqs[0].query != "platform=workbuddy" {
 			t.Fatalf("请求不对: %+v", reqs)
+		}
+		h := reqs[0].header
+		if h.Get("Origin") != "" || h.Get("Referer") != "" {
+			t.Fatalf("登录请求不应带 Origin/Referer: %v", h)
+		}
+		if h.Get("Content-Type") != "application/json" || h.Get("Accept") != "application/json, text/plain, */*" ||
+			h.Get("X-Requested-With") != "XMLHttpRequest" || h.Get("X-Product") != "SaaS" ||
+			h.Get("X-Domain") != "www.workbuddy.cn" || h.Get("X-Custom-Channel-Id") != "unknown" ||
+			h.Get("X-No-Authorization") != "true" || h.Get("X-No-User-Id") != "true" {
+			t.Fatalf("发起授权的头不对: %v", h)
+		}
+		if ua := h.Get("User-Agent"); !strings.Contains(ua, "WorkBuddy/5.8.3") || !strings.Contains(ua, "CLI/") {
+			t.Fatalf("国内版 UA 不对: %q", ua)
+		}
+		if h.Get("X-Request-ID") == "" || len(h.Get("X-Request-ID")) != 32 {
+			t.Fatalf("X-Request-ID 应为 32 位 hex: %q", h.Get("X-Request-ID"))
 		}
 	})
 
@@ -139,12 +167,19 @@ func TestRunURLCNAndGlobal(t *testing.T) {
 		if fatal {
 			t.Fatalf("不应 fatal: %s", errb)
 		}
-		if !strings.Contains(out, "auth.example") {
+		if !strings.Contains(out, "auth.example/authorize?x=1&version=5.8.4") || strings.Contains(out, "loginSessionId") {
 			t.Fatalf("stdout=%q", out)
 		}
 		reqs := fake.requests()
-		if len(reqs) != 1 || reqs[0].host != "www.workbuddy.ai" || reqs[0].origin != originRefererGlobal {
-			t.Fatalf("应走国际版端点与 Origin: %+v", reqs)
+		if len(reqs) != 1 || reqs[0].host != "www.workbuddy.ai" || reqs[0].query != "platform=workbuddy-ai" {
+			t.Fatalf("应走国际版端点: %+v", reqs)
+		}
+		h := reqs[0].header
+		if h.Get("X-Domain") != "www.workbuddy.ai" {
+			t.Fatalf("国际版 X-Domain 不对: %v", h)
+		}
+		if ua := h.Get("User-Agent"); !strings.Contains(ua, "workbuddy-ai/5.8.4") {
+			t.Fatalf("国际版 UA 不对: %q", ua)
 		}
 	})
 }
@@ -176,6 +211,66 @@ func TestRunPollSuccess(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
 		t.Fatalf("poll 成功后应删除 state 文件: %v", err)
+	}
+
+	reqs := fake.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("应有 token + account 两次请求，实际 %d: %+v", len(reqs), reqs)
+	}
+	tokReq, acctReq := reqs[0], reqs[1]
+	if tokReq.host != "www.workbuddy.cn" || tokReq.path != "/v2/plugin/auth/token" || tokReq.query != "state=st-1" {
+		t.Fatalf("token 请求不对: %+v", tokReq)
+	}
+	if tokReq.header.Get("X-Domain") != "" || tokReq.header.Get("Authorization") != "" ||
+		tokReq.header.Get("X-No-Authorization") != "true" || tokReq.header.Get("Content-Type") != "" {
+		t.Fatalf("轮询令牌的头不对: %v", tokReq.header)
+	}
+	if acctReq.host != "www.workbuddy.cn" || acctReq.path != "/v2/plugin/account" || acctReq.query != "" {
+		t.Fatalf("国内版取账号应走 /v2/plugin/account: %+v", acctReq)
+	}
+	if acctReq.header.Get("Authorization") != "Bearer at-1" || acctReq.header.Get("X-Domain") != "www.codebuddy.cn" ||
+		acctReq.header.Get("X-No-User-Id") != "" || acctReq.header.Get("X-No-Authorization") != "" {
+		t.Fatalf("国内版取账号的头不对: %v", acctReq.header)
+	}
+}
+
+// poll global：令牌与账号都走 workbuddy.ai，账号端点带 state 查询参数与 X-No-* 头。
+func TestRunPollGlobal(t *testing.T) {
+	statePath := useStateFile(t)
+	stateJSON := `{"state":"st-g","realm":"global","trace":{"sessionId":"11111111-2222-4333-8444-555555555555","ownerId":"o-1","spanId":"0123456789abcdef"}}`
+	if err := os.WriteFile(statePath, []byte(stateJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := loginFakeClient(t)
+	out, errb, fatal, _ := runLogin(t, []string{"--realm=global", "poll"}, strings.NewReader(""),
+		&http.Client{Transport: fake})
+	if fatal {
+		t.Fatalf("不应 fatal: %s", errb)
+	}
+	if !strings.Contains(out, `"realm":"global"`) || !strings.Contains(out, `"uid":"u1"`) {
+		t.Fatalf("输出不对: %s", out)
+	}
+	reqs := fake.requests()
+	if len(reqs) != 3 {
+		t.Fatalf("应有 token + account + 账号列表三次请求，实际 %d", len(reqs))
+	}
+	if reqs[2].path != "/v2/plugin/accounts" || reqs[2].header.Get("Authorization") != "Bearer at-1" {
+		t.Fatalf("国际版登录后应取账号列表: %+v", reqs[2])
+	}
+	for i, r := range reqs {
+		if r.header.Get("X-Trace-ID") != "11111111222243338444555555555555" {
+			t.Fatalf("第 %d 个请求应沿用 state 文件里的登录链路: %q", i, r.header.Get("X-Trace-ID"))
+		}
+	}
+	if reqs[0].host != "www.workbuddy.ai" || reqs[0].query != "state=st-g" {
+		t.Fatalf("token 请求不对: %+v", reqs[0])
+	}
+	if reqs[1].host != "www.workbuddy.ai" || reqs[1].path != "/v2/plugin/login/account" || reqs[1].query != "state=st-g" {
+		t.Fatalf("国际版取账号路径不对: %+v", reqs[1])
+	}
+	if reqs[1].header.Get("X-No-User-Id") != "true" || reqs[1].header.Get("X-No-Enterprise-Id") != "true" ||
+		reqs[1].header.Get("X-No-Department-Info") != "true" {
+		t.Fatalf("国际版取账号应带 X-No-*: %v", reqs[1].header)
 	}
 }
 
@@ -225,7 +320,13 @@ func TestRunPollErrors(t *testing.T) {
 		return errb, fatal
 	}
 
-	t.Run("登录未完成（4xx）", func(t *testing.T) {
+	t.Run("登录未完成（业务码 11217）", func(t *testing.T) {
+		errb, fatal := pollWithToken(t, 200, `{"code":11217,"msg":"login ing"}`)
+		if !fatal || !strings.Contains(errb, "登录未完成") {
+			t.Fatalf("fatal=%v stderr=%q", fatal, errb)
+		}
+	})
+	t.Run("登录未完成（4xx 其他业务码）", func(t *testing.T) {
 		errb, fatal := pollWithToken(t, 400, `{"code":1,"msg":"login ing"}`)
 		if !fatal || !strings.Contains(errb, "登录未完成") {
 			t.Fatalf("fatal=%v stderr=%q", fatal, errb)
@@ -330,66 +431,4 @@ func TestRunURLFailures(t *testing.T) {
 			t.Fatalf("fatal=%v stderr=%q", fatal, errb)
 		}
 	})
-}
-
-// doJSON：非 2xx / 3xx / 非 JSON / code≠0 的错误与成功解包。
-func TestDoJSON(t *testing.T) {
-	mk := func(status int, body string) *http.Client {
-		return &http.Client{Transport: loginRT(func(*http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: status,
-				Header: http.Header{"Content-Type": []string{"application/json"}},
-				Body:   io.NopCloser(strings.NewReader(body))}, nil
-		})}
-	}
-	cases := []struct {
-		name    string
-		status  int
-		body    string
-		wantErr string
-	}{
-		{"500", 500, `{}`, "http_error: upstream 500"},
-		{"302", 302, `{}`, "upstream redirect 302"},
-		{"非 JSON", 200, `not-json`, "parse failed"},
-		{"code 非 0", 200, `{"code":7,"msg":"nope"}`, "code=7 msg=nope"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			_, _, err := doJSON(mk(c.status, c.body), http.MethodGet, "https://x.test/p", nil, nil)
-			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
-				t.Fatalf("err=%v want %q", err, c.wantErr)
-			}
-		})
-	}
-
-	data, status, err := doJSON(mk(200, `{"code":0,"data":{"v":1}}`), http.MethodGet, "https://x.test/p", nil, nil)
-	if err != nil || status != 200 || string(data) != `{"v":1}` {
-		t.Fatalf("成功解包 = %s, %d, %v", data, status, err)
-	}
-
-	// 自定义 headers 覆盖默认头（Origin 随 realm 切换）。
-	hdr := make(chan string, 1)
-	client := &http.Client{Transport: loginRT(func(r *http.Request) (*http.Response, error) {
-		hdr <- r.Header.Get("Origin")
-		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"code":0}`))}, nil
-	})}
-	headers := commonHeaders(originRefererGlobal)
-	if _, _, err := doJSON(client, http.MethodGet, "https://x.test/p", headers, nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := <-hdr; got != originRefererGlobal {
-		t.Fatalf("Origin=%q", got)
-	}
-}
-
-// 请求构造失败（非法 URL）也返回错误。
-func TestDoJSONBadURL(t *testing.T) {
-	if _, _, err := doJSON(mkEmptyClient(), http.MethodGet, "http://exa\x00mple/", nil, nil); err == nil {
-		t.Fatal("非法 URL 应报错")
-	}
-}
-
-func mkEmptyClient() *http.Client {
-	return &http.Client{Transport: loginRT(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"code":0}`))}, nil
-	})}
 }

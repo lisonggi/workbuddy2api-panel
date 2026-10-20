@@ -1,6 +1,6 @@
 package main
 
-// main_more_test.go 补齐 doJSON 的传输错误、--realm 缺值、runURL 上游失败与 main 入口。
+// main_more_test.go 补齐 --realm 缺值、runURL 上游失败与 main 入口。
 
 import (
 	"errors"
@@ -9,17 +9,6 @@ import (
 	"strings"
 	"testing"
 )
-
-// doJSON：client.Do 返回错误时原样返回。
-func TestDoJSONTransportError(t *testing.T) {
-	client := &http.Client{Transport: loginRT(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("dial boom")
-	})}
-	_, status, err := doJSON(client, http.MethodGet, "https://x.test/p", nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "dial boom") || status != 0 {
-		t.Fatalf("err=%v status=%d", err, status)
-	}
-}
 
 // --realm 缺少取值：fatal，提示 requires a value。
 func TestRunRealmMissingValue(t *testing.T) {

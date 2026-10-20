@@ -66,6 +66,8 @@ DOMAIN=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin
 USER_ID=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uid',''))")
 ENT_ID=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('enterprise_id',''))")
 NICKNAME=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('nickname',''))")
+# 部门全名与官方刷新时核对身份用的字段：poll 输出里有才写
+EXTRA=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps({k: d[k] for k in ('department_full_name','account_type','oneid_account_id','idp','token_type') if k in d}))")
 
 if [[ -z "$USER_ID" ]]; then
     echo "无法获取 uid，请检查 token 是否有效"
@@ -135,6 +137,7 @@ WB2A_LOGIN_DOMAIN="$DOMAIN" \
 WB2A_LOGIN_USER_ID="$USER_ID" \
 WB2A_LOGIN_ENT_ID="$ENT_ID" \
 WB2A_LOGIN_NICKNAME="$NICKNAME" \
+WB2A_LOGIN_EXTRA="$EXTRA" \
 WB2A_LOGIN_AUTH_FILE="$AUTH_FILE" \
 WB2A_LOGIN_ACTION="$ACTION" \
 python3 - <<'PYEOF'
@@ -153,6 +156,14 @@ auth = {
         "domain": os.environ["WB2A_LOGIN_DOMAIN"],
     },
 }
+# 部门全名（企业号才有，官方请求头 X-Department-Info 的值）与官方刷新时核对身份用的字段
+extra = json.loads(os.environ["WB2A_LOGIN_EXTRA"])
+for src, dst in (("department_full_name", "departmentFullName"), ("account_type", "type"),
+                 ("oneid_account_id", "oneidAccountId"), ("idp", "idp")):
+    if src in extra:
+        auth["account"][dst] = extra[src]
+if "token_type" in extra:
+    auth["auth"]["tokenType"] = extra["token_type"]
 with open(os.environ["WB2A_LOGIN_AUTH_FILE"], "w") as f:
     json.dump(auth, f, indent=1)
 print(f"已保存（{os.environ['WB2A_LOGIN_ACTION']}）: {os.environ['WB2A_LOGIN_AUTH_FILE']}")

@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 // TestParseRealmArgs 覆盖 --realm 参数解析：缺省 cn、等号/分离式写法、
@@ -130,17 +132,8 @@ func TestRealmSubcommandSelection(t *testing.T) {
 // 显式 --realm 优先，缺省时按 domain 推断（echo 出的 global 账号即便未显式指定也带 global）。
 // 这是「登录落盘永远带 realm 标识」契约的测试载体。
 func TestBuildLoginOutputRealmAlwaysSet(t *testing.T) {
-	tok := struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ExpiresIn    int64  `json:"expiresIn"`
-		Domain       string `json:"domain"`
-	}{AccessToken: "at", RefreshToken: "rt", ExpiresIn: 3600, Domain: "www.codebuddy.cn"}
-	acct := struct {
-		UID          string `json:"uid"`
-		EnterpriseID string `json:"enterpriseId"`
-		Nickname     string `json:"nickname"`
-	}{UID: "u1", Nickname: "n1"}
+	tok := upstream.LoginToken{AccessToken: "at", RefreshToken: "rt", ExpiresIn: 3600, Domain: "www.codebuddy.cn"}
+	acct := upstream.LoginAccount{UID: "u1", Nickname: "n1"}
 
 	cases := []struct {
 		name      string
@@ -165,5 +158,25 @@ func TestBuildLoginOutputRealmAlwaysSet(t *testing.T) {
 				t.Errorf("realm=%q want %q", m, c.wantRealm)
 			}
 		})
+	}
+}
+
+// TestBuildLoginOutputDepartment 部门全名与官方刷新时核对身份用的字段：上游有这个键才输出（空串
+// 也输出），login.sh 照样写进凭证文件。
+func TestBuildLoginOutputDepartment(t *testing.T) {
+	dept, typ, empty, bearer := "研发部", "enterprise", "", "bearer"
+	tok := upstream.LoginToken{AccessToken: "at", TokenType: &bearer}
+	out := buildLoginOutput(tok, "", upstream.LoginAccount{UID: "u1", EnterpriseID: "e1", DepartmentFullName: &dept,
+		Type: &typ, OneIDAccountID: &empty, IDP: &empty})
+	for k, want := range map[string]string{"department_full_name": dept, "account_type": typ, "oneid_account_id": "", "idp": "", "token_type": bearer} {
+		if got, ok := out[k]; !ok || got != want {
+			t.Errorf("%s = %v（有=%v），应为 %q", k, got, ok, want)
+		}
+	}
+	plain := buildLoginOutput(upstream.LoginToken{AccessToken: "at"}, "", upstream.LoginAccount{UID: "u1"})
+	for _, k := range []string{"department_full_name", "account_type", "oneid_account_id", "idp", "token_type"} {
+		if _, ok := plain[k]; ok {
+			t.Errorf("上游没有 %s 时不应输出这个键", k)
+		}
 	}
 }
