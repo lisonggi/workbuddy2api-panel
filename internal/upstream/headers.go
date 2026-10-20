@@ -232,6 +232,15 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	c.injectClientIP(req, clientIP)
 	// 设备风控头：auth 每号 > config 全局 > 文件兜底；空则不注入。
 	c.injectDeviceToken(req, a)
+	// 国际版上游要求对话带 X-Conversation-ID，不带一律 400 code=11128 "request illegal"
+	// （10-19 生产实测）；国内版不带也能用，仍是客户端没给就不发。客户端没给会话 id 时用本轮的
+	// 轮次 id 补上：每轮都不一样，开头相同的两段对话不会撞成同一个会话。
+	if meta.ConversationID == "" && a != nil && a.IsGlobal() {
+		if meta.ConversationRequestID == "" {
+			meta.ConversationRequestID = session.NewMessageID()
+		}
+		meta.ConversationID = meta.ConversationRequestID
+	}
 	// 会话头族（对话/请求/消息/B3 链路），见 injectConversationHeaders。
 	c.injectConversationHeaders(req, meta)
 }
