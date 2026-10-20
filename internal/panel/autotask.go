@@ -379,7 +379,7 @@ func (p *Panel) runMPMiniChatTask(a *auth.Auth, code string, withActivityId bool
 	need := target - t.Current
 	for i := int64(0); i < need; i++ {
 		time.Sleep(mpChatEventGap + randDuration(mpChatEventJitter))
-		conv := fmt.Sprintf("wb2api-mp-%d-%d", time.Now().UnixMilli(), i)
+		conv := upstream.NewConversationID()
 		var ev map[string]any
 		if withActivityId {
 			ev = upstream.SchoolSeasonChatEvent(conv)
@@ -516,7 +516,7 @@ func (p *Panel) runSequentialEventTask(a *auth.Auth, code string, primary, fallb
 func runSequentialAutomation(p *Panel, a *auth.Auth) (string, error) {
 	return p.runSequentialEventTask(a, "Sequential_Tasks_4",
 		func() error {
-			return p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopAutomationCreateEvent("wb2api 自动化"))
+			return p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopAutomationCreateEvent(automationTaskName))
 		}, nil)
 }
 
@@ -526,11 +526,10 @@ func runSequentialAutomation(p *Panel, a *auth.Auth) (string, error) {
 func runSequentialModelChat(p *Panel, a *auth.Auth) (string, error) {
 	return p.runSequentialEventTask(a, "Sequential_Tasks_5",
 		func() error {
-			conv := fmt.Sprintf("wb2api-mp-glm-%d", time.Now().UnixMilli())
-			return p.cfg.Upstream.ReportMPEvent(a, upstream.MiniChatModelEvent(conv, "glm-5.2", "GLM-5.2"))
+			return p.cfg.Upstream.ReportMPEvent(a, upstream.MiniChatModelEvent(upstream.NewConversationID(), "glm-5.2", "GLM-5.2"))
 		},
 		func() error {
-			return p.cfg.Upstream.ReportChatActivityModel(a, fmt.Sprintf("wb2api-mp-glm-%d", time.Now().UnixMilli()), "", "glm-5.2", "GLM-5.2")
+			return p.cfg.Upstream.ReportChatActivityModel(a, upstream.NewConversationID(), "", "glm-5.2", "GLM-5.2")
 		})
 }
 
@@ -773,8 +772,7 @@ func runChat5(p *Panel, a *auth.Auth) (string, error) {
 		return "进度已达标，无需上报", nil
 	}
 	for i := int64(0); i < need; i++ {
-		cid := fmt.Sprintf("wb2api-chat5-%d-%d", time.Now().UnixMilli(), i)
-		if err := p.cfg.Upstream.ReportChatActivity(a, cid, ""); err != nil {
+		if err := p.cfg.Upstream.ReportChatActivity(a, upstream.NewConversationID(), ""); err != nil {
 			return fmt.Sprintf("上报第 %d/%d 条失败: %v", i+1, need, err), nil
 		}
 		if i < need-1 {
@@ -786,7 +784,7 @@ func runChat5(p *Panel, a *auth.Auth) (string, error) {
 
 // runFirstBuddy 领养：report（解锁前置）→ agreement → first。
 func runFirstBuddy(p *Panel, a *auth.Auth) (string, error) {
-	if err := p.cfg.Upstream.ReportChatActivity(a, fmt.Sprintf("wb2api-adopt-%d", time.Now().UnixMilli()), ""); err != nil {
+	if err := p.cfg.Upstream.ReportChatActivity(a, upstream.NewConversationID(), ""); err != nil {
 		return "", fmt.Errorf("前置上报: %w", err)
 	}
 	time.Sleep(reportGap) // 给上游事件处理留时间（脚本实测口径）
@@ -814,11 +812,14 @@ func runModelChat(p *Panel, a *auth.Auth) (string, error) {
 	body, _ := json.Marshal(map[string]any{
 		"model": modelID,
 		"messages": []map[string]any{
-			{"role": "user", "content": "hi，请回复一句话"},
+			// 和夜间对话同一句：对话活跃上报的 inputLength 固定按它的长度 12。
+			{"role": "user", "content": "1+1等于几？直接回答。"},
 		},
 		"stream": true,
 	})
-	rc, status, respBody, err := p.cfg.Upstream.ChatStream(a, body, "", upstream.ChatMeta{})
+	// 上报和这次对话用同一个会话 id、轮次 id。
+	conv, req := upstream.NewConversationID(), upstream.NewRequestID()
+	rc, status, respBody, err := p.cfg.Upstream.ChatStream(a, body, "", upstream.ChatMeta{ConversationID: conv, ConversationRequestID: req})
 	if err != nil {
 		return "", fmt.Errorf("对话请求: %w", err)
 	}
@@ -831,7 +832,7 @@ func runModelChat(p *Panel, a *auth.Auth) (string, error) {
 	rc.Close()
 	time.Sleep(reportGap)
 	// 3. 对齐模型的上报（触发进度）
-	if err := p.cfg.Upstream.ReportChatActivityModel(a, fmt.Sprintf("wb2api-glm52-%d", time.Now().UnixMilli()), "", modelID, modelName); err != nil {
+	if err := p.cfg.Upstream.ReportChatActivityModel(a, conv, req, modelID, modelName); err != nil {
 		return "对话已完成，但进度上报失败：" + err.Error(), nil
 	}
 	return "已完成 glm-5.2 对话并上报", nil
@@ -844,11 +845,7 @@ func runModelChat(p *Panel, a *auth.Auth) (string, error) {
 // （紫川/人杰2 两账号无桌面客户端登录状态下 3 秒内 0/1 → 1/1）。
 // Hp_Appearance 的纯 API set 不计分（需客户端在主题下活跃），区别对待。
 func runRichMeow(p *Panel, a *auth.Auth) (string, error) {
-	ms := time.Now().UnixMilli()
-	conv := fmt.Sprintf("wb2api-rm-%d", ms)
-	req := fmt.Sprintf("wb2api-rm-req-%d", ms)
-	msg := fmt.Sprintf("req-%d-user", ms)
-	events := upstream.DesktopChatSequence(conv, req, msg, "fast-model", "fast-model")
+	events := upstream.DesktopChatSequence(upstream.NewConversationID(), upstream.NewRequestID(), upstream.NewRequestID(), "fast-model", "fast-model")
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 		return "", err
 	}
@@ -868,12 +865,16 @@ func runBuddyApp(p *Panel, a *auth.Auth) (string, error) {
 	return "已上报 buddyapp 进入五连事件（同时覆盖 Buddy_App 与 Buddy_App_QQ）", nil
 }
 
+// automationTaskName 定时任务创建事件的任务名。官方是用户在表单里填的名字，网关取一个普通用户会起的
+// 名字（典型值），不带网关自己的名字。
+const automationTaskName = "每日资讯简报"
+
 // runAutomationCreate 完成 automation_1（设置自动化任务）。
 // 2026-09-12 两账号实测：automated_task_create_suc 事件纯 API 上报即点亮，
 // 无需真实创建定时任务。
 func runAutomationCreate(p *Panel, a *auth.Auth) (string, error) {
 	if err := p.cfg.Upstream.ReportDesktopEvent(a,
-		upstream.DesktopAutomationCreateEvent("wb2api 自动化")); err != nil {
+		upstream.DesktopAutomationCreateEvent(automationTaskName)); err != nil {
 		return "", err
 	}
 	return "已上报定时任务创建事件", nil
@@ -926,7 +927,7 @@ func runSkillFresh(p *Panel, a *auth.Auth) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
-	msgID := "msg-" + req[len(req)-8:]
+	msgID := upstream.NewRequestID()
 	events := upstream.DesktopChatSequence(conv, req, msgID, "fast-model", "fast-model")
 	for _, ev := range events {
 		if ev["eventCode"] == "chat_message_response" {
@@ -934,12 +935,14 @@ func runSkillFresh(p *Panel, a *auth.Auth) (string, error) {
 		}
 	}
 	events = append(events, upstream.DesktopEvent{
-		"eventCode":      "skill_info",
-		"id":             "润泽小馆·日报撰写",
-		"skillId":        "skill_2097350077599879168",
-		"skillVersion":   "1.0.0",
-		"toolStatus":     "success",
-		"fileCount":      56,
+		"eventCode":    "skill_info",
+		"id":           "润泽小馆·日报撰写",
+		"skillId":      "skill_2097350077599879168",
+		"skillVersion": "1.0.0",
+		"toolStatus":   "success",
+		// 官方是产品配置里的技能条数（内置的加装上的）：5.8.3 安装包内置 48 个，加上这个技能共 49。
+		// 抓包样本是 56，推断是那台机器多装了别的技能。
+		"fileCount":      49,
 		"source":         "workbuddy-desktop",
 		"conversationId": conv, "requestId": req, "messageId": msgID,
 		"requestModelId": "fast-model", "requestModelName": "fast-model",

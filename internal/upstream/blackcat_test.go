@@ -250,13 +250,25 @@ func TestRunNightChatsSuccess(t *testing.T) {
 	if n := f.count(http.MethodPost, reportPath); n != 3 {
 		t.Errorf("上报请求 %d 次，应为 3", n)
 	}
-	// 对话体固定 glm-5.2、流式；上报体带 glm-5.2 与 wb2api-night 会话前缀。
+	// 对话体固定 glm-5.2、流式；每条上报的会话 id、轮次 id 就是前一次对话的。
+	var chats []*upReq
 	for _, r := range f.seen() {
-		if r.path == chatCompletionsPath && !strings.Contains(string(r.body), `"model":"glm-5.2"`) {
-			t.Errorf("对话体 model 不是 glm-5.2: %s", r.body)
-		}
-		if r.path == reportPath && !strings.Contains(string(r.body), "wb2api-night-") {
-			t.Errorf("上报体缺少 wb2api-night 会话: %s", r.body)
+		switch r.path {
+		case chatCompletionsPath:
+			if !strings.Contains(string(r.body), `"model":"glm-5.2"`) {
+				t.Errorf("对话体 model 不是 glm-5.2: %s", r.body)
+			}
+			chats = append(chats, r)
+		case reportPath:
+			var evs []map[string]any
+			if err := json.Unmarshal(r.body, &evs); err != nil || len(evs) != 1 || len(chats) == 0 {
+				t.Fatalf("上报体 = %s", r.body)
+			}
+			chat := chats[len(chats)-1].header
+			if evs[0]["conversationId"] != chat.Get("X-Conversation-ID") || evs[0]["requestId"] != chat.Get("X-Conversation-Request-ID") ||
+				!upstreamtest.UUIDv7.MatchString(chat.Get("X-Conversation-ID")) {
+				t.Errorf("上报的会话 / 轮次 id 应和对话一致: %v / %v", evs[0], chat)
+			}
 		}
 	}
 }

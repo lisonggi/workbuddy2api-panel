@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // TestSchoolJSON school 域请求公共形状：走 billingBase + /portal/activity/school、
@@ -250,7 +251,7 @@ func TestSchoolEventConstructors(t *testing.T) {
 			}
 		}
 		conv, _ := events[1]["conversationId"].(string)
-		if !strings.HasPrefix(conv, "wb2api-mp-pb-") {
+		if !upstreamtest.UUIDv7.MatchString(conv) {
 			t.Errorf("prompt_send conversationId = %q", conv)
 		}
 		if events[1]["isOfficial"] != 1 || events[1]["promptLength"] != 96 {

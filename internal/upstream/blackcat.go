@@ -53,7 +53,9 @@ func (c *Client) RunNightChats(a *auth.Auth, need int) (int64, error) {
 			"messages": []map[string]any{{"role": "user", "content": "1+1等于几？直接回答。"}},
 			"stream":   true,
 		})
-		rc, status, respBody, err := c.ChatStream(a, body, "", ChatMeta{})
+		// 上报和这次对话用同一个会话 id、轮次 id（官方的上报就是这次对话的）。
+		conv, req := NewConversationID(), NewRequestID()
+		rc, status, respBody, err := c.ChatStream(a, body, "", ChatMeta{ConversationID: conv, ConversationRequestID: req})
 		if err != nil || status >= 400 {
 			if rc != nil {
 				rc.Close()
@@ -62,7 +64,7 @@ func (c *Client) RunNightChats(a *auth.Auth, need int) (int64, error) {
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(rc, 1<<20))
 		rc.Close()
-		if err := c.ReportChatActivityModel(a, fmt.Sprintf("wb2api-night-%d-%d", time.Now().UnixMilli(), i), "", "glm-5.2", "GLM-5.2"); err != nil {
+		if err := c.ReportChatActivityModel(a, conv, req, "glm-5.2", "GLM-5.2"); err != nil {
 			return ok, fmt.Errorf("第 %d 次上报失败: %w", i+1, err)
 		}
 		ok++

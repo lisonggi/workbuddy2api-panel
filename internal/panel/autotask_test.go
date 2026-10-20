@@ -1240,8 +1240,8 @@ func TestRunChat5(t *testing.T) {
 				t.Fatalf("上报事件形状不对: %v", evs)
 			}
 			cid, _ := evs[0]["conversationId"].(string)
-			if !strings.HasPrefix(cid, "wb2api-chat5-") {
-				t.Fatalf("conversationId 前缀不对: %q", cid)
+			if !upstreamtest.UUIDv7.MatchString(cid) {
+				t.Fatalf("conversationId 应是官方会话 id 的形状: %q", cid)
 			}
 			if seen[cid] {
 				t.Fatalf("conversationId 重复: %q", cid)
