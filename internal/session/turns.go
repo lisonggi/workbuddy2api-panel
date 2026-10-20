@@ -58,7 +58,7 @@ func (t *TurnIDs) ForRequest(scope string, turn Turn) string {
 		return ""
 	}
 	if turn.Opening {
-		return NewMessageID()
+		return NewUUIDv7Hex() // 同官方开轮时 generateConversationRequestId
 	}
 	if t != nil && len(turn.CallIDs) > 0 {
 		now := t.now()

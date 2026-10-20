@@ -10,11 +10,14 @@ package session
 import (
 	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ResolveConversationID 从请求体提取会话头族的 conversationId（snake/camel 双形态，
@@ -59,26 +62,122 @@ func NewMessageID() string {
 	return fmt.Sprintf("%016x%016x", uint64(rand.Uint64())|1, rand.Uint64())
 }
 
-// deriveSalt 进程启动随机盐：对所有稳定聚合 ID 的纯派生统一加盐，使派生值无法
-// 按外部可控的键内容（会话键/轮级键）被预计算；重启换新（重启时旧对话轮/会话已
-// 结束，不构成断档）。会话级（RequestIDForKey）与轮级（TurnRequestID）共用同一盐。
-var deriveSalt = NewMessageID()
+// NewUUIDv7 官方内置 CLI 的 uuidv7()（RFC 9562 版本 7：前 48 位是毫秒时间戳，其余随机），带连字符
+// 的 36 位形状。官方新会话的 id（X-Conversation-ID、事件里的 conversationId）就是它。
+func NewUUIDv7() string { return dashUUID(NewUUIDv7Hex()) }
 
-// RequestIDForKey 返回会话键的稳定 conversationRequestID：sha256(盐|键) 前 16 字节
-// 的 hex，纯派生（无缓存、无 TTL、内存不随键数增长——此前 sync.Map 惰性缓存随
-// 会话键数量无上限增长，纯派生天然有界）。
-//   - 同 key：进程内恒派生同值（一次 user send/同会话多轮聚合）；
+// dashUUID 32 位十六进制排成 8-4-4-4-12。
+func dashUUID(h string) string {
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+}
+
+// NewUUIDv7Hex 去掉连字符的 UUID v7（32 位十六进制）。官方的轮次 id（generateConversationRequestId）
+// 和模型消息 id（X-Conversation-Message-ID、事件里的 messageId）都是 uuidv7() 去掉连字符。
+func NewUUIDv7Hex() string { return uuidV7Hex(time.Now()) }
+
+func uuidV7Hex(t time.Time) string {
+	var b [16]byte
+	if _, err := cryptoRandRead(b[6:]); err != nil {
+		binary.BigEndian.PutUint64(b[8:], rand.Uint64())
+		binary.BigEndian.PutUint16(b[6:], uint16(rand.Uint32()))
+	}
+	ms := uint64(t.UnixMilli())
+	b[0], b[1], b[2], b[3], b[4], b[5] = byte(ms>>40), byte(ms>>32), byte(ms>>24), byte(ms>>16), byte(ms>>8), byte(ms)
+	b[6] = 0x70 | b[6]&0x0f // 版本 7
+	b[8] = 0x80 | b[8]&0x3f // RFC 9562 变体
+	return hex.EncodeToString(b[:])
+}
+
+// RequestIDForKey 返回会话键的稳定 conversationRequestID：第一次见到这个键时生成的去掉连字符的
+// UUID v7，记在 derivedIDs 里（见 derivedMemo）。
+//   - 同 key：记录有效期内恒同值（一次 user send/同会话多轮聚合）；
 //   - 异 key：各自独立，互不相同；
 //   - 空 key：每次生成新值（无会话则无"会话内稳定"语义——调用方应在请求级
 //     捕获复用，handler 在轮转循环外取一次即天然共享）。
 //
-// 返回值恒为 32 hex（NewMessageID 形态），可直接用作 B3 TraceId（16/32 hex 合法）。
+// 返回值恒为 32 hex，可直接用作 B3 TraceId（16/32 hex 合法）。
 func RequestIDForKey(key string) string {
 	if key == "" {
-		return NewMessageID()
+		return NewUUIDv7Hex()
 	}
-	sum := sha256.Sum256([]byte(deriveSalt + "|" + key))
+	return derivedIDs.get("sess\x00"+key, false)
+}
+
+// ConversationSeed 客户端没给会话 id 时出站 X-Conversation-ID 的派生源：第一条 system/developer
+// 的文本 + 第一条 user 消息的签名 + 第一条助手回复的摘要（角色、文本、各工具调用的 id 与函数名）。
+// 历史里还没有助手回复（对话的第一个请求）时返回 ""，调用方改用本轮新生成的轮次 id。
+//
+// 为什么要等到第一条助手回复：只看 system + 首条 user 的话，开头逐字相同的两段不相干对话
+// （同一个应用的系统提示词、首句都是「你好」）会算出同一个 id，上游看到的是一个会话里分叉出
+// 两条历史。第一条回复几乎总不一样（工具调用 id 每次随机），之后这段对话的 id 就不再变，
+// 上游能按会话把请求路由到同一份前缀缓存（10-19 生产实测 glm-5.2：会话 id 稳定时跨轮全部
+// 命中，每轮换新只有约三成）。工具调用只取 id 与函数名、不取参数原文：参数是客户端回传的
+// JSON 字符串，个别客户端每轮重新序列化，入键会让 id 漂移。
+func ConversationSeed(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var obj struct {
+		Messages []turnMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return ""
+	}
+	system, firstUser, reply := "", "", ""
+	for _, m := range obj.Messages {
+		switch m.Role {
+		case "system", "developer":
+			if system == "" {
+				system = contentText(m.Content)
+			}
+		case "user":
+			if firstUser == "" {
+				firstUser = contentSignature(m.Content)
+			}
+		case "assistant":
+			if firstUser != "" && reply == "" {
+				reply = assistantDigest(m)
+			}
+		}
+		if reply != "" {
+			break
+		}
+	}
+	if firstUser == "" || reply == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(system + "\x00" + firstUser + "\x00" + reply))
 	return hex.EncodeToString(sum[:16])
+}
+
+// assistantDigest 助手消息的摘要：文本 + 每个工具调用的 id 与函数名。文本和工具调用都没有时返回 ""。
+func assistantDigest(m turnMessage) string {
+	var b strings.Builder
+	b.WriteString(contentText(m.Content))
+	for _, raw := range m.ToolCalls {
+		var tc struct {
+			ID       string `json:"id"`
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if json.Unmarshal(raw, &tc) == nil {
+			b.WriteString("\x00" + tc.ID + "\x00" + tc.Function.Name)
+		}
+	}
+	if strings.Trim(b.String(), "\x00") == "" {
+		return ""
+	}
+	return b.String()
+}
+
+// AccountConversationID 由 ConversationSeed 与账号 uid 得出出站 X-Conversation-ID：第一次见到
+// 这对值时生成的 UUID v7（带连字符，同官方新会话的 id），记在 derivedIDs 里，此后同一段对话
+// 在同一个号上不变。uid 入键：会话换到别的号就换一个 id，不会出现同一个会话 id 横跨多个账号。
+// 记录在最后一次使用后保留 2 小时；网关重启或隔了更久再接着聊会换一个新 id（用户 10-20 定，
+// 换来的是 id 里的时刻和官方一样是真实的）。
+func AccountConversationID(uid, seed string) string {
+	return derivedIDs.get("conv\x00"+uid+"\x00"+seed, true)
 }
 
 // turnMessage ParseTurn 只需要的消息字段。tool_calls 逐条留原文，各家客户端的字段类型
@@ -298,17 +397,73 @@ func contentSignature(raw json.RawMessage) string {
 	return strings.TrimSpace(out)
 }
 
-// TurnRequestID 返回轮级键对应的聚合 ID：sha256(盐|键) 前 16 字节的 hex（32 位，
-// 与 NewMessageID 同形态，可直接作 B3 TraceId）。
-//
-// 纯派生，无缓存、无 TTL、不随进程内请求数增长内存 —— 这点与会话级的
-// RequestIDForKey 相反：会话键数量有限（与粘性会话同源）可以常驻缓存，而轮级键
-// 每个对话轮新增一条，缓存必须有界，派生式天然有界。
-// 空键返回新随机值（无轮可聚合时保持原有的「每请求独立」行为）。
+// TurnRequestID 返回轮级键对应的聚合 ID：第一次见到这个键时生成的去掉连字符的 UUID v7（同官方
+// 开轮时的 generateConversationRequestId），记在 derivedIDs 里，可直接作 B3 TraceId。
+// 空键返回新值（无轮可聚合时保持原有的「每请求独立」行为）。
 func TurnRequestID(turnKey string) string {
 	if turnKey == "" {
-		return NewMessageID()
+		return NewUUIDv7Hex()
 	}
-	sum := sha256.Sum256([]byte(deriveSalt + "|" + turnKey))
-	return hex.EncodeToString(sum[:16])
+	return derivedIDs.get("turn\x00"+turnKey, false)
+}
+
+const (
+	// derivedIDTTL 派生 id 的记录在最后一次被取用后保留多久，同轮次记录（defaultTurnLinkTTL）。
+	derivedIDTTL = 2 * time.Hour
+	// derivedIDMax 记录条数上限（每条约百来字节），超了先清过期的，再随机清掉一成。
+	derivedIDMax = 50000
+)
+
+// derivedMemo 按内容派生的键 → 第一次派生时生成的 UUID v7。官方的会话 id、轮次 id 在会话、轮次
+// 开始时随机生成（前 48 位是当时的毫秒数），网关没有状态时只能按内容派生；为了 id 和官方同形、
+// 时刻真实，第一次派生时现生成一个，之后同一个键取回同一个。键先取 sha256，条目大小固定。
+type derivedMemo struct {
+	mu  sync.Mutex
+	m   map[[32]byte]derivedEntry
+	now func() time.Time
+}
+
+type derivedEntry struct {
+	id  string
+	exp time.Time
+}
+
+var derivedIDs = &derivedMemo{m: map[[32]byte]derivedEntry{}, now: time.Now}
+
+// get 取 key 的 id，没有（或已过期）就按当前时刻生成一个；取到就把有效期顺延。dashed 为真时是
+// 带连字符的会话 id 形状，否则是 32 位十六进制。
+func (d *derivedMemo) get(key string, dashed bool) string {
+	k := sha256.Sum256([]byte(key))
+	now := d.now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if e, ok := d.m[k]; ok && now.Before(e.exp) {
+		e.exp = now.Add(derivedIDTTL)
+		d.m[k] = e
+		return e.id
+	}
+	if len(d.m) >= derivedIDMax {
+		d.evictLocked(now)
+	}
+	id := uuidV7Hex(now)
+	if dashed {
+		id = dashUUID(id)
+	}
+	d.m[k] = derivedEntry{id: id, exp: now.Add(derivedIDTTL)}
+	return id
+}
+
+// evictLocked 清掉过期记录；仍然超限就随机清掉一部分（map 遍历顺序随机），降到上限的九成。
+func (d *derivedMemo) evictLocked(now time.Time) {
+	for k, e := range d.m {
+		if !now.Before(e.exp) {
+			delete(d.m, k)
+		}
+	}
+	for k := range d.m {
+		if len(d.m) <= derivedIDMax*9/10 {
+			break
+		}
+		delete(d.m, k)
+	}
 }

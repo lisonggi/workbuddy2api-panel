@@ -180,8 +180,9 @@ func (c *Client) injectCodeBuddyRequest(req *http.Request) {
 // 复用同值；TraceID 透传入站值（空 = 回落 conversationRequestID）。
 // messageID（消息级，每条独立）由 ChatHeaders 内部生成，无需外部可见。
 type ChatMeta struct {
-	ConversationID        string // X-Conversation-ID：body 提取的入站值，空则不发（透传优先，不伪造）
+	ConversationID        string // X-Conversation-ID：客户端给的会话 id；空则由 ChatHeaders 按 ConversationSeed 或轮次 id 补
 	CacheKeySeed          string // prompt_cache_key 的会话哈希源（可含网关会话键，不发头）；空则用 ConversationID
+	ConversationSeed      string // 客户端没给会话 id 时的派生源（session.ConversationSeed）；空 = 对话第一个请求
 	ConversationRequestID string // X-Conversation-Request-ID / X-Root-Request-ID：聚合主键，必发
 	TraceID               string // X-Trace-ID：入站透传值，空则回落 conversationRequestID
 }
@@ -232,14 +233,18 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	c.injectClientIP(req, clientIP)
 	// 设备风控头：auth 每号 > config 全局 > 文件兜底；空则不注入。
 	c.injectDeviceToken(req, a)
-	// 国际版上游要求对话带 X-Conversation-ID，不带一律 400 code=11128 "request illegal"
-	// （10-19 生产实测）；国内版不带也能用，仍是客户端没给就不发。客户端没给会话 id 时用本轮的
-	// 轮次 id 补上：每轮都不一样，开头相同的两段对话不会撞成同一个会话。
-	if meta.ConversationID == "" && a != nil && a.IsGlobal() {
-		if meta.ConversationRequestID == "" {
-			meta.ConversationRequestID = session.NewMessageID()
+	// X-Conversation-ID 官方每条都发（值是整段对话不变的会话 id）。国际版不带一律 400
+	// code=11128 "request illegal"（10-19 生产实测），国内版不带也能用，同样补上对齐官方。
+	// 客户端没给会话 id 时：历史里已有助手回复就按派生源 + 账号算出固定值（同一段对话在同一个号上
+	// 不变，上游据此命中前缀缓存，见 session.ConversationSeed）；对话第一个请求还没有回复可区分，
+	// 新生成一个，形状同官方新会话的 id（带连字符的 UUID v7）。
+	if meta.ConversationID == "" {
+		switch {
+		case meta.ConversationSeed != "":
+			meta.ConversationID = session.AccountConversationID(a.UID, meta.ConversationSeed)
+		default:
+			meta.ConversationID = session.NewUUIDv7()
 		}
-		meta.ConversationID = meta.ConversationRequestID
 	}
 	// 会话头族（对话/请求/消息/B3 链路），见 injectConversationHeaders。
 	c.injectConversationHeaders(req, meta)
@@ -268,8 +273,7 @@ func (c *Client) injectGlobalChatHeaders(req *http.Request, a *auth.Auth) {
 
 // injectConversationHeaders 注入官方客户端会话头族（issue #35 后台聚合）。
 // 头族分四层，各司其职：
-//   - X-Conversation-ID：会话级，多轮稳定（body 的 conversationId）。空则不发——
-//     透传客户端原值优先，客户端没给就不伪造，避免误导后台建错会话。
+//   - X-Conversation-ID：会话级（ChatHeaders 已保证非空：客户端给的会话 id、派生的或新生成的）。
 //   - X-Conversation-Request-ID：**对话轮级聚合主键**，必发。一次 user send 内的
 //     所有 tool call/重试/换号/降级复用同一个 → 后台按它聚合成一条（不再碎片化）。
 //   - X-Conversation-Message-ID = X-Request-ID：消息级，每条独立（32 位 hex）。
@@ -281,9 +285,9 @@ func (c *Client) injectGlobalChatHeaders(req *http.Request, a *auth.Auth) {
 func (c *Client) injectConversationHeaders(req *http.Request, meta ChatMeta) {
 	convReqID := meta.ConversationRequestID
 	if convReqID == "" {
-		// 零值 meta（直接调 ChatHeaders 的调用方/测试）也要保证聚合主键必发：
-		// 本级补一个 32 hex，调用方（handler）已生成稳定的不走到这里。
-		convReqID = session.NewMessageID()
+		// 零值 meta（直接调 injectConversationHeaders 的测试）也要保证聚合主键必发：
+		// 本级补一个，ChatHeaders 已生成稳定的不走到这里。
+		convReqID = session.NewUUIDv7Hex()
 	}
 	messageID := session.NewMessageID()
 	if meta.ConversationID != "" {

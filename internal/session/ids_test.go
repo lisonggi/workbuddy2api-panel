@@ -154,8 +154,7 @@ func TestTurnKeyHistory(t *testing.T) {
 	}
 }
 
-// TestTurnRequestIDDerivation 轮级 ID 是纯派生：同键恒同值、异键异值、空键每次新值、
-// 形态恒 32 hex。
+// TestTurnRequestIDDerivation 轮级 ID：同键恒同值、异键异值、空键每次新值、形态恒 32 hex。
 func TestTurnRequestIDDerivation(t *testing.T) {
 	a1 := TurnRequestID("u0:同一个问题")
 	a2 := TurnRequestID("u0:同一个问题")
@@ -177,5 +176,56 @@ func TestTurnRequestIDDerivation(t *testing.T) {
 		if len(id) != 32 {
 			t.Errorf("TurnRequestID value %q len=%d want 32", id, len(id))
 		}
+	}
+}
+
+// TestConversationSeed 出站会话 id 的派生源：没有助手回复时为空；有了之后多轮不变；
+// 第一条回复不同则不同；工具调用只看 id 与函数名，参数重新序列化不影响；空回复往后找。
+func TestConversationSeed(t *testing.T) {
+	first := `{"messages":[{"role":"system","content":"S"},{"role":"user","content":"你好"}]}`
+	turn2 := `{"messages":[{"role":"system","content":"S"},{"role":"user","content":"你好"},{"role":"assistant","content":"回复A"},{"role":"user","content":"继续"}]}`
+	turn3 := `{"messages":[{"role":"system","content":"S"},{"role":"user","content":"你好"},{"role":"assistant","content":"回复A"},{"role":"user","content":"继续"},{"role":"assistant","content":"x"},{"role":"user","content":"再继续"}]}`
+	other := `{"messages":[{"role":"system","content":"S"},{"role":"user","content":"你好"},{"role":"assistant","content":"回复B"},{"role":"user","content":"继续"}]}`
+	if got := ConversationSeed([]byte(first)); got != "" {
+		t.Fatalf("没有助手回复时应为空，got %q", got)
+	}
+	s2, s3, so := ConversationSeed([]byte(turn2)), ConversationSeed([]byte(turn3)), ConversationSeed([]byte(other))
+	if s2 == "" || s2 != s3 {
+		t.Fatalf("同一段对话多轮应不变: %q / %q", s2, s3)
+	}
+	if so == s2 {
+		t.Fatal("第一条回复不同应得到不同的派生源")
+	}
+	toolA := `{"messages":[{"role":"user","content":"查天气"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"北京\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"晴"}]}`
+	toolB := `{"messages":[{"role":"user","content":"查天气"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{ \"city\": \"北京\" }"}}]},{"role":"tool","tool_call_id":"call_1","content":"晴"}]}`
+	toolC := `{"messages":[{"role":"user","content":"查天气"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"weather","arguments":"{}"}}]}]}`
+	if a, b := ConversationSeed([]byte(toolA)), ConversationSeed([]byte(toolB)); a == "" || a != b {
+		t.Fatalf("工具参数重新序列化不应改变派生源: %q / %q", a, b)
+	}
+	if ConversationSeed([]byte(toolA)) == ConversationSeed([]byte(toolC)) {
+		t.Fatal("工具调用 id 不同应得到不同的派生源")
+	}
+	emptyReply := `{"messages":[{"role":"user","content":"你好"},{"role":"assistant","content":""},{"role":"user","content":"在吗"},{"role":"assistant","content":"在"}]}`
+	if got := ConversationSeed([]byte(emptyReply)); got == "" {
+		t.Fatal("空回复应往后找有内容的那条")
+	}
+	for _, in := range []string{"", "not json", `{"messages":[{"role":"assistant","content":"先回复"},{"role":"user","content":"再提问"}]}`, `{"messages":[{"role":"user","content":"a"},{"role":"assistant","tool_calls":[{"id":"","function":{"name":""}}]}]}`} {
+		if got := ConversationSeed([]byte(in)); got != "" {
+			t.Errorf("%q 应为空，got %q", in, got)
+		}
+	}
+}
+
+// TestAccountConversationID 官方会话 id 的形状（带连字符的 UUID v7）；同账号同源稳定，换号或换源都不同。
+func TestAccountConversationID(t *testing.T) {
+	a := AccountConversationID("u1", "seed")
+	if !uuidV7Dashed.MatchString(a) {
+		t.Fatalf("应是带连字符的 UUID v7: %q", a)
+	}
+	if AccountConversationID("u1", "seed") != a {
+		t.Fatal("同账号同源应稳定")
+	}
+	if AccountConversationID("u2", "seed") == a || AccountConversationID("u1", "seed2") == a {
+		t.Fatal("换号或换源应不同")
 	}
 }

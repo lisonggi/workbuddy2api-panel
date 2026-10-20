@@ -644,6 +644,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// ExtractKey 与粘性开关解耦（issue #35 侧）：关闭粘性时会话头族的聚合主键仍按
 	// 会话级（RequestIDForKey(sessKey)），不悄悄退化成轮级——提取本身与粘性无关。
 	sessKey := session.ExtractKey(body)
+	// 出站会话 id 的派生源在提示词改写之前取：降级开关切换会换系统提示词，不能让会话 id 跟着变。
+	convSeed := session.ConversationSeed(body)
 	stickyUID := ""
 	if h.cfg.Session != nil && sessKey != "" {
 		// 按模型解析：绑定号在**当前模型**被 6004 限额时视为不可用 → 重新分配，
@@ -807,6 +809,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	//   - cacheKeySeed：prompt_cache_key 的会话源。客户端没给 conversation_id 时
 	//     （Anthropic / Claude Code 流量）回退到会话键，否则 prompt_cache_key 退化成
 	//     每账号一个常量，同号所有客户端挤同一个前缀缓存槽、互相覆盖。
+	//   - conversationSeed：客户端没给 conversation_id 时出站 X-Conversation-ID 的派生源。
+	//     不直接用会话键：会话键只由 system + 首条 user 决定，开头相同的两段不相干对话
+	//     会撞成同一个值；派生源再加上第一条助手回复（见 session.ConversationSeed），
+	//     ChatHeaders 拼上账号 uid 算出 id。对话第一个请求没有回复，用轮次 id。
 	//
 	// 会话键只进 prompt_cache_key，不进 X-Conversation-ID：派生键只由 system + 首条
 	// user 决定，两段不相干的对话开头相同（如都没有 system、首句都是「你好」）就会
@@ -818,6 +824,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		cacheKeySeed = sessKey
 	}
 	chatMeta := upstream.ChatMeta{ConversationID: convID, CacheKeySeed: cacheKeySeed}
+	if convID == "" {
+		chatMeta.ConversationSeed = convSeed
+	}
 	// rememberTurn 开轮请求成功转出回复后，记下回复里的工具调用 id，轮内后续请求凭它找回本轮 ID。
 	rememberTurn := false
 	if v := r.Header.Get("X-Conversation-Request-ID"); v != "" {

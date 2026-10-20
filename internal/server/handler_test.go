@@ -20,6 +20,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/redisstore"
 	"github.com/yreidev/workbuddy2api-panel/internal/session"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 	"github.com/yreidev/workbuddy2api-panel/internal/usage"
 )
 
@@ -1878,23 +1879,29 @@ func TestChatMarkupRepairStrictModeRejectsUndeclaredTool(t *testing.T) {
 	}
 }
 
-// TestChatSessionKeyNotSentAsConversationID 客户端没给 conversation_id 时，会话键
-// 只做 prompt_cache_key 的会话源，不写进 X-Conversation-ID：派生键只看 system +
-// 首条 user，开头相同的两段不相干对话会撞成同一个值，发成头会让上游当成同一个会话。
-func TestChatSessionKeyNotSentAsConversationID(t *testing.T) {
+// TestChatConversationIDFromFirstReply 客户端没给 conversation_id 时的出站 X-Conversation-ID：
+// 对话第一个请求用本轮的轮次 id；历史里有了第一条助手回复后，按「system + 首条 user + 首条回复 +
+// 账号」算出固定值，之后多轮不变；开头逐字相同、第一条回复不同的两段对话各用各的。客户端给的
+// conversation_id 原样透传，客户端自己带的 prompt_cache_key 照转。
+func TestChatConversationIDFromFirstReply(t *testing.T) {
 	var mu sync.Mutex
-	var convIDs, cacheKeys []string
+	var convIDs, turnIDs, cacheKeys []string
 	up := &upstream.Client{
 		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			if strings.Contains(r.URL.Path, "/chat/completions") {
 				raw, _ := io.ReadAll(r.Body)
 				var obj struct {
-					PromptCacheKey string `json:"prompt_cache_key"`
+					PromptCacheKey *string `json:"prompt_cache_key"`
 				}
 				_ = json.Unmarshal(raw, &obj)
+				key := "<无>"
+				if obj.PromptCacheKey != nil {
+					key = *obj.PromptCacheKey
+				}
 				mu.Lock()
 				convIDs = append(convIDs, r.Header.Get("X-Conversation-ID"))
-				cacheKeys = append(cacheKeys, obj.PromptCacheKey)
+				turnIDs = append(turnIDs, r.Header.Get("X-Conversation-Request-ID"))
+				cacheKeys = append(cacheKeys, key)
 				mu.Unlock()
 			}
 			return &http.Response{
@@ -1909,9 +1916,15 @@ func TestChatSessionKeyNotSentAsConversationID(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at-1", ExpiresAt: 9999999999})
 	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
 	for _, body := range []string{
+		// 0：对话第一个请求
 		`{"model":"glm-5.2","messages":[{"role":"user","content":"你好"}]}`,
-		`{"model":"glm-5.2","messages":[{"role":"user","content":"写一首诗"}]}`,
-		`{"model":"glm-5.2","messages":[{"role":"user","content":"你好"}],"metadata":{"conversation_id":"conv-client"}}`,
+		// 1、2：同一段对话的第 2、3 轮
+		`{"model":"glm-5.2","messages":[{"role":"user","content":"你好"},{"role":"assistant","content":"你好！有什么可以帮你？"},{"role":"user","content":"写一首诗"}]}`,
+		`{"model":"glm-5.2","messages":[{"role":"user","content":"你好"},{"role":"assistant","content":"你好！有什么可以帮你？"},{"role":"user","content":"写一首诗"},{"role":"assistant","content":"春眠不觉晓"},{"role":"user","content":"再来一首"}]}`,
+		// 3：开头相同、第一条回复不同的另一段对话
+		`{"model":"glm-5.2","messages":[{"role":"user","content":"你好"},{"role":"assistant","content":"嗨，今天想聊点什么？"},{"role":"user","content":"写一首诗"}]}`,
+		// 4：客户端给了会话 id，也自带 prompt_cache_key
+		`{"model":"glm-5.2","messages":[{"role":"user","content":"你好"}],"metadata":{"conversation_id":"conv-client"},"prompt_cache_key":"client-key"}`,
 	} {
 		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 		rec := httptest.NewRecorder()
@@ -1922,16 +1935,22 @@ func TestChatSessionKeyNotSentAsConversationID(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(convIDs) != 3 {
-		t.Fatalf("want 3 chat calls, got %d", len(convIDs))
+	if len(convIDs) != 5 {
+		t.Fatalf("want 5 chat calls, got %d", len(convIDs))
 	}
-	if convIDs[0] != "" || convIDs[1] != "" {
-		t.Fatalf("会话键不得写进 X-Conversation-ID: got %q / %q", convIDs[0], convIDs[1])
+	if !upstreamtest.UUIDv7.MatchString(convIDs[0]) || !upstreamtest.UUIDv7Hex.MatchString(turnIDs[0]) {
+		t.Fatalf("对话第一个请求：X-Conversation-ID = %q、轮次 id = %q，应是官方新会话的形状", convIDs[0], turnIDs[0])
 	}
-	if convIDs[2] != "conv-client" {
-		t.Fatalf("客户端的 conversation_id 应原样透传: got %q", convIDs[2])
+	if convIDs[1] == "" || convIDs[1] == turnIDs[1] || convIDs[1] != convIDs[2] {
+		t.Fatalf("有了第一条回复后会话 id 应固定且不是轮次 id: %q / %q（轮次 %q）", convIDs[1], convIDs[2], turnIDs[1])
 	}
-	if cacheKeys[0] == "" || cacheKeys[0] == cacheKeys[1] {
-		t.Fatalf("prompt_cache_key 应按会话键区分不同对话: got %q / %q", cacheKeys[0], cacheKeys[1])
+	if convIDs[3] == convIDs[1] {
+		t.Fatalf("第一条回复不同的两段对话不应共用会话 id: %q", convIDs[3])
+	}
+	if convIDs[4] != "conv-client" {
+		t.Fatalf("客户端的 conversation_id 应原样透传: got %q", convIDs[4])
+	}
+	if cacheKeys[4] != "client-key" {
+		t.Fatalf("客户端自带的 prompt_cache_key 应原样转发: got %q", cacheKeys[4])
 	}
 }
