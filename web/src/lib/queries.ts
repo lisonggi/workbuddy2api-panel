@@ -186,7 +186,7 @@ export function useVersion() {
       const since = readStored(SEEN_VERSION_KEY) || 'none'
       return api<VersionResp>('version?since=' + encodeURIComponent(since))
     },
-    // 一键更新进行中（含重启时连不上）每 1.5 秒看一次进度，平时 30 分钟一次
-    refetchInterval: (q) => (updateBusy(q.state.data?.self_update) ? 1500 : 30 * 60_000),
+    // 一键更新进行中（含重启时连不上）每 0.8 秒看一次进度（服务器上几 MB 的安装包一两秒就下完），平时 30 分钟一次
+    refetchInterval: (q) => (updateBusy(q.state.data?.self_update) ? 800 : 30 * 60_000),
   })
 }

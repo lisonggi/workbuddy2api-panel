@@ -66,6 +66,37 @@ export function restartOutcome(p: PendingRestart, d?: VersionResp): 'waiting' | 
   return 'waiting'
 }
 
+export type UpdateStepKey = 'download' | 'verify' | 'restart'
+
+export interface UpdateStep {
+  key: UpdateStepKey
+  label: string
+  state: 'done' | 'active' | 'todo'
+}
+
+/** 各步在总进度里占的份额：下载按字节走；校验与重启量不出进度，做完一步填满一段 */
+const STEP_WEIGHT: Record<UpdateStepKey, number> = { download: 70, verify: 15, restart: 15 }
+const STEP_LABEL: Record<UpdateStepKey, string> = { download: '下载安装包', verify: '校验并试运行新程序', restart: '重启网关' }
+
+/**
+ * 一键更新 / 退回的进度：每一步的状态和总百分比。退回只有「重启网关」一步，量不出进度，percent 为 null。
+ * 重启期间连不上网关，缓存停在 restarting，仍按重启这一步算。
+ */
+export function updateProgress(kind: PendingRestart['kind'], su?: SelfUpdateStatus | null): { steps: UpdateStep[]; percent: number | null } {
+  const keys: UpdateStepKey[] = kind === 'rollback' ? ['restart'] : ['download', 'verify', 'restart']
+  const phase = su?.phase
+  const current: UpdateStepKey = kind === 'update' && phase === 'downloading' ? 'download'
+    : kind === 'update' && phase === 'verifying' ? 'verify'
+    : 'restart'
+  const at = keys.indexOf(current)
+  const steps = keys.map((key, i) => ({ key, label: STEP_LABEL[key], state: i < at ? 'done' as const : i === at ? 'active' as const : 'todo' as const }))
+  if (kind === 'rollback') return { steps, percent: null }
+  const finished = keys.slice(0, at).reduce((n, k) => n + STEP_WEIGHT[k], 0)
+  const total = su?.total || 0
+  const part = current === 'download' && total > 0 ? Math.min(1, (su?.done || 0) / total) : 0
+  return { steps, percent: finished + STEP_WEIGHT[current] * part }
+}
+
 export type InlinePart = { kind: 'text' | 'code'; text: string } | { kind: 'link'; text: string; href: string }
 
 /**

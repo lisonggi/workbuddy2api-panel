@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inlineParts, pickNotice, restartOutcome, shouldRecordSeen, updateBusy } from './update'
+import { inlineParts, pickNotice, restartOutcome, shouldRecordSeen, updateBusy, updateProgress } from './update'
 import type { Release, SelfUpdateStatus, VersionResp } from './types'
 
 const rel = (version: string): Release => ({ version, groups: [{ title: '新增', items: ['x'] }] })
@@ -97,5 +97,31 @@ describe('restartOutcome', () => {
     const back = { kind: 'rollback' as const, target: '1.1.0', startedAt: 0 }
     expect(restartOutcome(back, resp({ version: '1.2.0', self_update: su({ override: true, phase: 'restarting', target: '1.1.0' }) }))).toBe('waiting')
     expect(restartOutcome(back, resp({ version: '1.1.0', self_update: su() }))).toBe('done')
+  })
+})
+
+describe('updateProgress', () => {
+  const states = (r: ReturnType<typeof updateProgress>) => r.steps.map((x) => x.state)
+  it('下载中按字节算，大小未知时从 0 起', () => {
+    const r = updateProgress('update', su({ phase: 'downloading', done: 2, total: 4 }))
+    expect(states(r)).toEqual(['active', 'todo', 'todo'])
+    expect(r.percent).toBe(35)
+    expect(updateProgress('update', su({ phase: 'downloading', done: 9 })).percent).toBe(0)
+    expect(updateProgress('update', su({ phase: 'downloading', done: 9, total: 4 })).percent).toBe(70)
+  })
+  it('校验、重启：前面的步骤算完成，填满对应的段', () => {
+    const v = updateProgress('update', su({ phase: 'verifying', done: 4, total: 4 }))
+    expect(states(v)).toEqual(['done', 'active', 'todo'])
+    expect(v.percent).toBe(70)
+    const r = updateProgress('update', su({ phase: 'restarting' }))
+    expect(states(r)).toEqual(['done', 'done', 'active'])
+    expect(r.percent).toBe(85)
+    expect(updateProgress('update', undefined).percent).toBe(85)
+  })
+  it('退回只有重启一步，量不出进度', () => {
+    const r = updateProgress('rollback', su({ phase: 'restarting' }))
+    expect(r.steps.map((x) => x.key)).toEqual(['restart'])
+    expect(states(r)).toEqual(['active'])
+    expect(r.percent).toBeNull()
   })
 })

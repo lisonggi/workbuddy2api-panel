@@ -4,15 +4,16 @@
 // 条目来自网关解析的 docs/CHANGELOG.md：「本次更新」取二进制内嵌的那份，「有新版本」取网关定时从 GitHub 读到的那份。
 // 一键更新由网关下载、校验后原地重启（internal/selfupdate），本页轮询到新版本上线后自动刷新。
 import { useEffect, useState, type ReactNode } from 'react'
+import { Circle, CircleCheckFill } from '@gravity-ui/icons'
 import { useQueryClient } from '@tanstack/react-query'
-import { Alert, buttonVariants, Button, Chip, Label, Link, Modal, ProgressBar, toast } from '@heroui/react'
+import { Alert, buttonVariants, Button, Chip, Label, Link, Modal, ProgressBar, Spinner, toast } from '@heroui/react'
 import { post } from '../lib/api'
 import { fmtBytes, dateTime } from '../lib/format'
 import { toastError, useNow } from '../lib/hooks'
 import { qk, useVersion } from '../lib/queries'
 import {
-  DISMISSED_UPDATE_KEY, SEEN_VERSION_KEY, inlineParts, pickNotice, readStored, restartOutcome, shouldRecordSeen, writeStored,
-  type NoticeMode, type PendingRestart,
+  DISMISSED_UPDATE_KEY, SEEN_VERSION_KEY, inlineParts, pickNotice, readStored, restartOutcome, shouldRecordSeen, updateProgress, writeStored,
+  type NoticeMode, type PendingRestart, type UpdateStep,
 } from '../lib/update'
 import type { Release, SelfUpdatePhase, SelfUpdateStatus, VersionResp } from '../lib/types'
 import { BusyButton } from './Feedback'
@@ -388,32 +389,31 @@ function ProgressBody({ pending, outcome, data, onClose }: {
   }
 
   const waited = Math.max(0, Math.round((now - pending.startedAt) / 1000))
-  const phase = su?.phase
-  const total = su?.total || 0
-  const step = pending.kind === 'update' && phase === 'downloading' ? '下载安装包'
-    : pending.kind === 'update' && phase === 'verifying' ? '校验并试运行新程序'
-    : '重启网关'
-  const percent = step === '下载安装包' && total > 0 ? Math.min(100, ((su?.done || 0) / total) * 100) : null
-  const hint = step === '重启网关'
+  const { steps, percent } = updateProgress(pending.kind, su)
+  const active = steps.find((x) => x.state === 'active') ?? steps[steps.length - 1]
+  const restarting = active.key === 'restart'
+  const hint = restarting
     ? `网关正在优雅停机（在途请求最多等 ${su?.grace_sec ?? 5} 秒）并切换版本，恢复后页面会自动刷新。`
     : '核对 sha256 并试运行通过才会重启；中途失败不影响正在运行的网关。'
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
       <ProgressBar
-        aria-label={step}
+        aria-label={active.label}
         className="w-full"
         isIndeterminate={percent === null}
         value={percent ?? undefined}
-        valueLabel={percent !== null ? `${fmtBytes(su?.done)} / ${fmtBytes(total)}` : undefined}
       >
-        <Label>{step}</Label>
+        <Label>{active.label}</Label>
         {percent !== null && <ProgressBar.Output />}
         <ProgressBar.Track>
           <ProgressBar.Fill />
         </ProgressBar.Track>
       </ProgressBar>
+      <ol className="flex flex-col gap-2 text-sm">
+        {steps.map((x) => <StepRow key={x.key} step={x} detail={stepDetail(x, su, waited)} />)}
+      </ol>
       <p className="text-sm text-muted">{hint}</p>
-      {step === '重启网关' && waited >= SLOW_RESTART_SEC && (
+      {restarting && waited >= SLOW_RESTART_SEC && (
         <Alert status="warning">
           <Alert.Indicator />
           <Alert.Content>
@@ -426,6 +426,30 @@ function ProgressBody({ pending, outcome, data, onClose }: {
         </Alert>
       )}
     </div>
+  )
+}
+
+/** 步骤右侧的小字：下载显示字节数（下完了也留着，下得太快没看到进度时能看到下了多少），重启显示已等多久 */
+function stepDetail(step: UpdateStep, su: SelfUpdateStatus | undefined, waited: number): string {
+  if (step.key === 'download' && step.state !== 'todo') {
+    const done = su?.done || 0
+    const total = su?.total || 0
+    if (step.state === 'done') return fmtBytes(total || done)
+    return total > 0 ? `${fmtBytes(done)} / ${fmtBytes(total)}` : done > 0 ? fmtBytes(done) : ''
+  }
+  if (step.key === 'restart' && step.state === 'active') return `已等 ${waited} 秒`
+  return ''
+}
+
+function StepRow({ step, detail }: { step: UpdateStep; detail: string }) {
+  return (
+    <li className="flex items-center gap-2">
+      {step.state === 'done' ? <CircleCheckFill className="size-4 shrink-0 text-success" />
+        : step.state === 'active' ? <Spinner size="sm" color="current" className="size-4 shrink-0 text-accent" />
+        : <Circle className="size-4 shrink-0 text-muted" />}
+      <span className={step.state === 'todo' ? 'text-muted' : 'text-foreground'}>{step.label}</span>
+      {detail && <span className="ml-auto text-xs text-muted tabular-nums">{detail}</span>}
+    </li>
   )
 }
 
