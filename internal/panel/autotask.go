@@ -922,7 +922,7 @@ func runBlackCat(p *Panel, a *auth.Auth) (string, error) {
 // id）。此前的 skill_request_send/skill_installed/skill_action 全是错误方向。
 // 人杰2 实测 0/1 → 1/1 点亮。
 func runSkillFresh(p *Panel, a *auth.Auth) (string, error) {
-	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, "")
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, "", false)
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
@@ -974,7 +974,7 @@ func runExpertLighthouse(p *Panel, a *auth.Auth) (string, error) {
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopExpertSummonSequence(lh)...); err != nil {
 		return "", fmt.Errorf("召唤链: %w", err)
 	}
-	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, lhID)
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, lhID, lh.ExpertType == "team")
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
@@ -1104,7 +1104,7 @@ func runExpertBatch(p *Panel, a *auth.Auth, expertType string, count int) (strin
 			continue
 		}
 		// 真实 chat（带 X-Expert-Id）→ 服务端 requestId。
-		conv, req, cerr := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID)
+		conv, req, cerr := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID, e.ExpertType == "team")
 		if cerr != nil {
 			fail++
 			continue

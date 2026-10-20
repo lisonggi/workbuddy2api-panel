@@ -51,7 +51,7 @@ func TestFull7DesktopNewRequestErrors(t *testing.T) {
 	})
 	t.Run("DesktopChatWithExpert", func(t *testing.T) {
 		c := &Client{ChatBaseCN: "http://[::1"}
-		if _, _, err := c.DesktopChatWithExpert(a, ""); err == nil {
+		if _, _, err := c.DesktopChatWithExpert(a, "", false); err == nil {
 			t.Fatal("非法 base 应返回错误")
 		}
 	})
@@ -61,26 +61,8 @@ func TestFull7DesktopChatWithExpertTransportError(t *testing.T) {
 	c := &Client{ChatBaseCN: "https://d.example", HTTP: &http.Client{Transport: rtFunc(
 		func(*http.Request) (*http.Response, error) { return nil, errors.New("dial boom") },
 	)}}
-	if _, _, err := c.DesktopChatWithExpert(upAuth(), ""); err == nil || !strings.Contains(err.Error(), "dial boom") {
+	if _, _, err := c.DesktopChatWithExpert(upAuth(), "", false); err == nil || !strings.Contains(err.Error(), "dial boom") {
 		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestFull7DesktopChatWithExpertDebug(t *testing.T) {
-	t.Setenv("WB2A_DEBUG_CHAT", "1")
-	const wantID = "0123456789abcdef0123456789abcdef"
-	c := &Client{ChatBaseCN: "https://d.example", HTTP: &http.Client{Transport: rtFunc(
-		func(*http.Request) (*http.Response, error) {
-			body := strings.Repeat("x", 200) + `{"id":"` + wantID + `"}` + strings.Repeat("y", 10)
-			return jsonResp(200, body), nil
-		},
-	)}}
-	_, id, err := c.DesktopChatWithExpert(upAuth(), "")
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if id != wantID {
-		t.Fatalf("id = %q", id)
 	}
 }
 

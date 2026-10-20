@@ -57,7 +57,7 @@ func TestChatHeadersOfficialShape(t *testing.T) {
 			for _, k := range []string{
 				"Origin", "Referer", "Accept-Language", "X-CodeBuddy-Request", "X-Machine-ID", "X-Session-ID",
 				"X-No-Enterprise-Id", "X-No-Department-Info", "X-No-User-Id", "X-No-Authorization", "X-Root-Request-ID",
-				"X-Refresh-Token",
+				"X-Refresh-Token", "X-Expert-Id",
 			} {
 				if v := req.Header.Values(k); len(v) > 0 {
 					t.Errorf("官方对话请求不带 %s，实际 %q", k, v)
@@ -96,6 +96,30 @@ func TestChatHeadersPrivateData(t *testing.T) {
 	}
 	if got := (*Client)(nil).privateDataValue(cnAuth()); got != "true" {
 		t.Errorf("nil Client 应按默认发 true: %q", got)
+	}
+}
+
+// TestChatHeadersExpertID 专家对话由 ChatMeta.ExpertID 带 X-Expert-Id；普通对话（空）
+// 不带这个头（官方专家插件只在激活时追加）。
+func TestChatHeadersExpertID(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "https://x/", nil)
+	(&Client{}).ChatHeaders(req, cnAuth(), "", ChatMeta{ExpertID: "ex_1"})
+	if got := req.Header.Get("X-Expert-Id"); got != "ex_1" {
+		t.Errorf("X-Expert-Id = %q，应为 ex_1", got)
+	}
+	plain, _ := http.NewRequest(http.MethodPost, "https://x/", nil)
+	(&Client{}).ChatHeaders(plain, cnAuth(), "", ChatMeta{})
+	if v := plain.Header.Values("X-Expert-Id"); len(v) > 0 {
+		t.Errorf("ExpertID 为空时不应带 X-Expert-Id，实际 %q", v)
+	}
+	if v := req.Header.Values("X-Expert-Team-Task"); len(v) > 0 {
+		t.Errorf("单个专家不应带 X-Expert-Team-Task，实际 %q", v)
+	}
+	// X-Expert-Team-Task 只和 X-Expert-Id 一起发。
+	orphan, _ := http.NewRequest(http.MethodPost, "https://x/", nil)
+	(&Client{}).ChatHeaders(orphan, cnAuth(), "", ChatMeta{ExpertTeamTask: true})
+	if v := orphan.Header.Values("X-Expert-Team-Task"); len(v) > 0 {
+		t.Errorf("没有专家 id 时不应带 X-Expert-Team-Task，实际 %q", v)
 	}
 }
 

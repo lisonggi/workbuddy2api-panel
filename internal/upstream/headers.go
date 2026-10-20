@@ -248,6 +248,8 @@ type ChatMeta struct {
 	ConversationSeed      string // 客户端没给会话 id 时的派生源（session.ConversationSeed）；空 = 对话第一个请求
 	ConversationRequestID string // X-Conversation-Request-ID：聚合主键，必发
 	TraceID               string // X-Trace-ID：入站透传值，空则回落 conversationRequestID
+	ExpertID              string // X-Expert-Id：专家对话的专家 id；空 = 普通对话，不发
+	ExpertTeamTask        bool   // X-Expert-Team-Task：专家团（市场 expert_type=team）为 true，只和 ExpertID 一起发
 }
 
 // ChatHeaders 设置 chat 出站请求头。形状对齐桌面端内置 CLI 2.161.0 的对话请求：官方对话请求
@@ -290,6 +292,14 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	req.Header.Set("X-Product", deploymentType)
 	// 用量归属头：默认同官方桌面端（client_name="SaaS" 还原旧行为）。
 	c.injectAttribution(req, a)
+	// X-Expert-Id 是官方专家插件激活时追加的内部请求头，专家团另带 X-Expert-Team-Task: true
+	// （桌面端 applyPreparedExpertSettings：expertType === "team"）；普通对话都不带。
+	if meta.ExpertID != "" {
+		req.Header.Set("X-Expert-Id", meta.ExpertID)
+		if meta.ExpertTeamTask {
+			req.Header.Set("X-Expert-Team-Task", "true")
+		}
+	}
 	// 客户端 IP 透传（仅 PassthroughIP=true 且本次请求带 IP）。
 	c.injectClientIP(req, clientIP)
 	// 不带 X-Device-Token：官方只在签到和登录前的 auth/state 上带。

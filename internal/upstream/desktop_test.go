@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // testDesktopUA 任务中心桌面端请求的 UA：国内版桌面端 5.8.3、内置 CLI 2.161.0（跟随网关其余请求）。
@@ -543,22 +544,27 @@ func TestDesktopChatWithExpert(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200, "data: {\"id\":\""+validID+"\"}\n\n")
 		c := upClient(f)
-		conv, reqID, err := c.DesktopChatWithExpert(upAuth(), "ex_1")
+		// 用配置覆盖的 UA 证明专家对话走的是 CLI 的 UA（c.userAgent），不是后台服务的 UA。
+		c.UserAgent = "custom-cli/9.9"
+		a := upAuth()
+		a.Domain = "www.codebuddy.cn"
+		conv, reqID, err := c.DesktopChatWithExpert(a, "ex_1", false)
 		if err != nil {
 			t.Fatalf("DesktopChatWithExpert: %v", err)
 		}
 		if reqID != validID {
 			t.Errorf("requestID = %q，应为 %q", reqID, validID)
 		}
-		if !strings.HasPrefix(conv, "wb2api-conv-") {
-			t.Errorf("conversationID = %q", conv)
+		// 会话 id 同官方新会话：带连字符的 UUID v7。
+		if !upstreamtest.UUIDv7.MatchString(conv) {
+			t.Errorf("conversationID = %q，应是官方会话 id 的形状", conv)
 		}
 		r := f.seen()[0]
 		for k, want := range map[string]string{
 			"Authorization":       "Bearer at",
-			"Accept":              "text/event-stream",
-			"User-Agent":          testDesktopUA,
-			"X-Domain":            upBase,
+			"Accept":              "application/json, text/event-stream",
+			"User-Agent":          "custom-cli/9.9",
+			"X-Domain":            "www.codebuddy.cn",
 			"X-Product":           "SaaS",
 			"X-User-Id":           "u-1",
 			"X-Conversation-ID":   conv,
@@ -567,11 +573,17 @@ func TestDesktopChatWithExpert(t *testing.T) {
 			"X-IDE-Name":          "WorkBuddy",
 			"X-IDE-Type":          "WorkBuddy",
 			"X-IDE-Version":       "5.8.3",
-			"x-codebuddy-request": "1",
 			"X-Expert-Id":         "ex_1",
+			"X-Expert-Team-Task":  "",
+			"x-codebuddy-request": "",
 		} {
 			if got := r.header.Get(k); got != want {
 				t.Errorf("%s = %q，应为 %q", k, got, want)
+			}
+		}
+		for _, k := range []string{"X-Request-ID", "X-Conversation-Request-ID"} {
+			if got := r.header.Get(k); !hex32.MatchString(got) {
+				t.Errorf("%s = %q，应为 32 位十六进制", k, got)
 			}
 		}
 		var body map[string]any
@@ -583,6 +595,18 @@ func TestDesktopChatWithExpert(t *testing.T) {
 		}
 	})
 
+	t.Run("专家团另带 X-Expert-Team-Task", func(t *testing.T) {
+		f := newUpFake(t)
+		f.on(http.MethodPost, path, 200, "data: {\"id\":\""+validID+"\"}\n\n")
+		if _, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "ex_team", true); err != nil {
+			t.Fatalf("DesktopChatWithExpert: %v", err)
+		}
+		h := f.seen()[0].header
+		if h.Get("X-Expert-Id") != "ex_team" || h.Get("X-Expert-Team-Task") != "true" {
+			t.Errorf("X-Expert-Id = %q，X-Expert-Team-Task = %q", h.Get("X-Expert-Id"), h.Get("X-Expert-Team-Task"))
+		}
+	})
+
 	t.Run("先遇到不合规 id 再遇到合规 id", func(t *testing.T) {
 		f := newUpFake(t)
 		f.onFunc(http.MethodPost, path, func(*upReq) (*http.Response, error) {
@@ -591,7 +615,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 				[]byte("data: {\"id\":\"" + validID + "\"}\n\n"),
 			}}}, nil
 		})
-		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "")
+		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
 		if err != nil || reqID != validID {
 			t.Fatalf("reqID=%q err=%v，应为 %q", reqID, err, validID)
 		}
@@ -601,7 +625,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200,
 			"data: {\"id\":\"chatcmpl-not-a-request-id\",\"x\":{\"id\":\"\"}}\n\ndata: {\"id\":\""+validID+"\"}\n\n")
-		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "")
+		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
 		if err != nil || reqID != validID {
 			t.Fatalf("reqID=%q err=%v，应为 %q", reqID, err, validID)
 		}
@@ -615,7 +639,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 				[]byte(validID[10:] + "\"}\n\n"),
 			}}}, nil
 		})
-		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "")
+		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
 		if err != nil || reqID != validID {
 			t.Fatalf("reqID=%q err=%v，应为 %q", reqID, err, validID)
 		}
@@ -624,7 +648,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 	t.Run("裸 32hex 也接受", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200, "data: {\"id\":\""+bareID+"\"}\n\n")
-		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "")
+		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
 		if err != nil || reqID != bareID {
 			t.Fatalf("reqID=%q err=%v", reqID, err)
 		}
@@ -636,16 +660,16 @@ func TestDesktopChatWithExpert(t *testing.T) {
 	t.Run("上游 400", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 400, `{"code":400,"msg":"bad chat"}`)
-		_, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "")
-		if err == nil || !strings.Contains(err.Error(), "chat http 400") {
-			t.Fatalf("err = %v，应含 chat http 400", err)
+		_, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
+		if err == nil || !strings.Contains(err.Error(), "chat http 400") || !strings.Contains(err.Error(), "bad chat") {
+			t.Fatalf("err = %v，应含 chat http 400 与响应体", err)
 		}
 	})
 
 	t.Run("SSE 没有合规 id", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200, "data: {\"id\":\"nope\"}\n\n")
-		_, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "")
+		_, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
 		if err == nil || !strings.Contains(err.Error(), "未找到服务端 requestId") {
 			t.Fatalf("err = %v，应提示未找到 requestId", err)
 		}

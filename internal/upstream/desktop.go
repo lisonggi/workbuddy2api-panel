@@ -27,17 +27,18 @@ package upstream
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/session"
 )
 
 const (
@@ -401,12 +402,22 @@ func (c *Client) MarketExpertList(a *auth.Auth, expertType string) ([]MarketExpe
 	return out.Experts, nil
 }
 
-// DesktopChatWithExpert 发一条真实桌面指纹 chat 请求（可带 X-Expert-Id），从 SSE 流
+// NewConversationID 任务中心和各类上报用的会话 id，同官方新会话（带连字符的 UUID v7）。
+func NewConversationID() string { return session.NewUUIDv7() }
+
+// NewRequestID 任务中心和各类上报用的轮次 id、消息 id，同官方（去掉连字符的 UUID v7）。
+func NewRequestID() string { return session.NewUUIDv7Hex() }
+
+// DesktopChatWithExpert 走桌面端内置 CLI 的普通对话请求（可带 X-Expert-Id），从 SSE 流
 // 解析**服务端返回的 requestId**（data.id，如 cmb-xxxx / 32hex）并返回。
 // expert_actual_use 等 JOIN 事件的 requestId 必须是该服务端 id——自造 UUID 不计数
 // （客户端 resolveRealRequestId 同款语义，Sunny row 2113 实证）。
-func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string) (conversationID, requestID string, err error) {
-	conversationID = fmt.Sprintf("wb2api-conv-%d", time.Now().UnixNano())
+//
+// 依据：官方专家对话就是一次普通的内置 CLI 对话，只多带 X-Expert-Id: <专家 id>；
+// team 为 true（专家团，市场列表的 expert_type=team）时另带 X-Expert-Team-Task: true。
+// 会话 id、轮次 id 同官方新会话（NewConversationID、NewRequestID）。
+func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string, team bool) (conversationID, requestID string, err error) {
+	conversationID = NewConversationID()
 	body := map[string]any{
 		"model": "fast-model",
 		"messages": []any{
@@ -422,62 +433,36 @@ func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string) (conversat
 	if err != nil {
 		return "", "", err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.chatBase(a)+"/v2/chat/completions", bytes.NewReader(raw))
-	if err != nil {
+	rc, status, respBody, err := c.ChatStreamContext(context.Background(), a, raw, "", ChatMeta{
+		ConversationID:        conversationID,
+		ConversationRequestID: NewRequestID(),
+		ExpertID:              expertID,
+		ExpertTeamTask:        team,
+	})
+	if err != nil && status == 0 {
+		// 传输错误原样返回。
 		return "", "", err
 	}
-	h := req.Header
-	h.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	h.Set("Content-Type", "application/json")
-	h.Set("Accept", "text/event-stream")
-	h.Set("User-Agent", c.desktopUA(a))
-	h.Set("X-Domain", c.chatBase(a))
-	h.Set("X-Product", "SaaS")
-	h.Set("X-User-Id", a.UID)
-	h.Set("X-Conversation-ID", conversationID)
-	h.Set("X-Request-ID", fmt.Sprintf("%d", time.Now().UnixNano()))
-	h.Set("X-Agent-Intent", "craft")
-	h.Set("X-Agent-Type", "main")
-	h.Set("X-IDE-Name", "WorkBuddy")
-	h.Set("X-IDE-Type", "WorkBuddy")
-	h.Set("X-IDE-Version", c.clientVersion(a))
-	h.Set("x-codebuddy-request", "1")
-	if expertID != "" {
-		h.Set("X-Expert-Id", expertID)
-	}
-	if os.Getenv("WB2A_DEBUG_CHAT") != "" {
-		fmt.Printf("[dbg] URL=%s\n", req.URL)
-		for k := range req.Header {
-			fmt.Printf("[dbg] %s: %s\n", k, req.Header.Get(k))
+	if status != 200 {
+		if rc != nil {
+			b, _ := io.ReadAll(io.LimitReader(rc, 200))
+			rc.Close()
+			respBody = b
 		}
+		if len(respBody) > 200 {
+			respBody = respBody[:200]
+		}
+		return "", "", fmt.Errorf("chat http %d: %s", status, respBody)
 	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	if os.Getenv("WB2A_DEBUG_CHAT") != "" {
-		fmt.Printf("[dbg] status=%d enc=%q\n", resp.StatusCode, resp.Header.Get("Content-Encoding"))
-	}
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
-		return "", "", fmt.Errorf("chat http %d: %s", resp.StatusCode, b)
-	}
+	defer rc.Close()
 	// 从 SSE 流抓第一个 data.id 作为服务端 requestId（读干流避免残留连接）。
 	buf := make([]byte, 0, 1<<20)
 	tmp := make([]byte, 8192)
 	searchFrom := 0
 	for {
-		n, rerr := resp.Body.Read(tmp)
+		n, rerr := rc.Read(tmp)
 		if n > 0 {
 			buf = append(buf, tmp[:n]...)
-			if os.Getenv("WB2A_DEBUG_CHAT") != "" {
-				dbg := string(tmp[:n])
-				if len(dbg) > 120 {
-					dbg = dbg[:120]
-				}
-				fmt.Printf("[dbg-rd %d] %q\n", n, dbg)
-			}
 			// 从上次搜索位置继续，把已读到的每个 `"id":"` 都检查一遍：SSE 里它可能先
 			// 出现在消息 id 等字段，同一块数据里后面才是服务端 requestId。只看第一个
 			// 的话，整段响应一次读完时后面的 id 永远轮不到，误报"未找到 requestId"。
@@ -493,9 +478,6 @@ func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string) (conversat
 					break // 这个 id 还没读完整，等下一块
 				}
 				id := string(rest[:end])
-				if os.Getenv("WB2A_DEBUG_CHAT") != "" {
-					fmt.Printf("[dbg-id] %q match=%v\n", id, idRegex.MatchString(id))
-				}
 				if idRegex.MatchString(id) {
 					return conversationID, id, nil
 				}
