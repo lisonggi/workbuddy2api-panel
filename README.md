@@ -153,6 +153,7 @@ flowchart LR
 | [定时任务与积分任务](docs/tasks.md) | 签到、成长任务一键完成、任务中心、连登、旅行、暂停选号、企业版账号 |
 | [Web 管理面板](docs/panel.md) | 各视图功能、时间范围、调用来源、更新提醒与一键更新、面板接口、安全响应头 |
 | [API 参考](docs/api.md) | 对外端点、模型名、健康检查、请求日志、上游接口 |
+| [官方客户端对照](docs/official-client.md) | 出站请求按官方桌面端对齐的依据、未对齐项、官方升级后怎么核对 |
 | [安全与合规](docs/security.md) | 凭证保管、网络暴露、日志敏感度、使用边界 |
 | [常见问题](docs/faq.md) | 权限报错、6004 限额、内容审核误拦、账号恢复等 |
 | [项目来源与上游同步](docs/upstream.md) | 项目沿革、相对原始项目新增的能力、同步记录 |
@@ -174,7 +175,7 @@ flowchart LR
 
 - **开源依赖**：
   - 前端：[HeroUI](https://github.com/heroui-inc/heroui)、[React](https://github.com/facebook/react)、[TanStack Query 与 Router](https://github.com/TanStack)、[Recharts](https://github.com/recharts/recharts)、[Tailwind CSS](https://github.com/tailwindlabs/tailwindcss)、[Gravity UI Icons](https://github.com/gravity-ui/icons)、[Vite](https://github.com/vitejs/vite)。
-  - 后端：[go-redis](https://github.com/redis/go-redis)。
+  - 后端：[go-redis](https://github.com/redis/go-redis)、[andybalholm/brotli](https://github.com/andybalholm/brotli)、[klauspost/compress](https://github.com/klauspost/compress)。
 - **图标**：来自 [DGZSbot/ai-icon](https://github.com/DGZSbot/ai-icon)。
 
 ## 使用声明

@@ -68,4 +68,4 @@ Claude Code、Codex 等客户端的系统提示词里有固定模板句，可能
 
 ## 官网积分记录的「使用端」显示什么
 
-官网按出站请求的 User-Agent 归因。默认 UA 已对齐官方桌面端 `WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1`；需要时可用 `upstream.user_agent` 整体覆盖，或用 `upstream.client_version` / `upstream.cli_version` 只改版本号。改完需要重启。
+官网按出站请求的 User-Agent 归因。默认 UA 按账号所在域对齐官方桌面端：国内版 `WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0`，国际版 `WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0`；需要时可用 `upstream.user_agent` 整体覆盖，或用 `upstream.client_version` / `upstream.cli_version` 只改版本号。改完需要重启。

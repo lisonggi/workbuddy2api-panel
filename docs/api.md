@@ -76,13 +76,14 @@ curl -s http://127.0.0.1:7863/healthz
 
 上游均为官方客户端使用的**非公开接口**，没有公开文档，路径与 Host 以代码里的常量为准：
 
-- **国内版**：`copilot.tencent.com`（对话、token 刷新、OAuth、模型列表、成长体系），`www.codebuddy.cn`（签到、余额、活跃上报）
+- **国内版**：全部发往官方产品入口 `www.workbuddy.cn`（对话、token 刷新、登录、模型列表、积分、签到、成长体系、上报）。1.1.2 以前对话一类走 `copilot.tencent.com`、积分一类走 `www.codebuddy.cn`，见[官方客户端对照](official-client.md#国内版域名)
 - **国际版**：`www.workbuddy.ai`（可用 `global.chat_base` / `global.billing_base` 覆盖）
 
 | 相对路径 | 方法 | 用途 |
 |---|---|---|
 | `chat/completions` | POST | 对话补全（SSE） |
-| `console/enterprises/personal/models` | GET | 模型列表 |
+| `/v3/config` | GET | 模型目录（完整路径，不加 `/v2`）；按账号拉，和官方桌面端拉到的是同一份 |
+| `console/enterprises/personal/models` | GET | 企业号另拉的企业模型名单，并进 `/v3/config` 的目录；个人号不拉 |
 | `plugin/auth/token/refresh` | POST | 刷新 token |
 | `plugin/auth/state` · `plugin/auth/token` · `plugin/login/account` | POST / GET | OAuth 登录 |
 | `billing/meter/daily-checkin` | POST | 每日签到 |
