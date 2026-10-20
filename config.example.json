@@ -52,7 +52,8 @@
     "client_name": "",
     "device_token": "",
     "device_token_file": "",
-    "passthrough_ip": false
+    "passthrough_ip": false,
+    "model_optimization": false
   },
   "features": {
     "sanitize_blacklist_fingerprints": true

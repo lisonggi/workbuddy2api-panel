@@ -45,6 +45,7 @@ func TestChatHeadersOfficialShape(t *testing.T) {
 				"X-Agent-Intent":   "craft",
 				"X-Agent-Type":     "main",
 				"X-Agent-Purpose":  "conversation",
+				"X-Private-Data":   "true",
 				"X-Product":        "SaaS",
 			}
 			for k, v := range want {
@@ -66,6 +67,35 @@ func TestChatHeadersOfficialShape(t *testing.T) {
 				t.Error("User-Agent 必发")
 			}
 		})
+	}
+}
+
+// TestChatHeadersPrivateData X-Private-Data：默认一律 "true"（同官方桌面端默认）；打开 model_optimization 后
+// 个人号 "false"、企业号仍 "true"。
+func TestChatHeadersPrivateData(t *testing.T) {
+	ent := cnAuth()
+	ent.EnterpriseID = "corp-cn"
+	for _, tc := range []struct {
+		name string
+		opt  bool
+		a    *auth.Auth
+		want string
+	}{
+		{"默认·个人号", false, cnAuth(), "true"},
+		{"默认·企业号", false, ent, "true"},
+		{"打开·个人号", true, cnAuth(), "false"},
+		{"打开·企业号", true, ent, "true"},
+	} {
+		c := &Client{}
+		c.ModelOptimization.Store(tc.opt)
+		req, _ := http.NewRequest(http.MethodPost, "https://x/", nil)
+		c.ChatHeaders(req, tc.a, "", ChatMeta{})
+		if got := req.Header.Get("X-Private-Data"); got != tc.want {
+			t.Errorf("%s: X-Private-Data = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := (*Client)(nil).privateDataValue(cnAuth()); got != "true" {
+		t.Errorf("nil Client 应按默认发 true: %q", got)
 	}
 }
 

@@ -31,6 +31,7 @@ func TestApplyEnvAllFields(t *testing.T) {
 		"WB2A_DEVICE_TOKEN":           "dev-token",
 		"WB2A_DEVICE_TOKEN_FILE":      "dev-token-file",
 		"WB2A_PASSTHROUGH_IP":         "true",
+		"WB2A_MODEL_OPTIMIZATION":     "true",
 		"WB2A_SANITIZE_FINGERPRINTS":  "false",
 		"WB2A_PROMPT_MODE":            "custom",
 		"WB2A_PROMPT_FILE":            "prompt.md",
@@ -55,7 +56,7 @@ func TestApplyEnvAllFields(t *testing.T) {
 	if u.TimeoutSeconds != 33 || u.HeaderTimeoutSeconds != 44 || u.IdleTimeoutSeconds != 55 ||
 		u.UserAgent != "env-ua" || u.ClientVersion != "9.9.9" || u.CliVersion != "8.8.8" ||
 		u.ClientName != "WorkBuddy" || u.DeviceToken != "dev-token" || u.DeviceTokenFile != "dev-token-file" ||
-		!u.PassthroughIP {
+		!u.PassthroughIP || !u.ModelOptimization {
 		t.Fatalf("upstream 字段未覆盖: %+v", u)
 	}
 	if c.Features.SanitizeBlacklistFingerprints {
@@ -76,6 +77,7 @@ func TestApplyEnvInvalidValuesIgnored(t *testing.T) {
 		"WB2A_HEADER_TIMEOUT_SECONDS": "abc",
 		"WB2A_IDLE_TIMEOUT_SECONDS":   "abc",
 		"WB2A_PASSTHROUGH_IP":         "not-bool",
+		"WB2A_MODEL_OPTIMIZATION":     "not-bool",
 		"WB2A_SANITIZE_FINGERPRINTS":  "not-bool",
 		"WB2A_PREFER_EXPIRING":        "not-bool",
 	} {
@@ -86,13 +88,14 @@ func TestApplyEnvInvalidValuesIgnored(t *testing.T) {
 	c.Upstream.HeaderTimeoutSeconds = 8
 	c.Upstream.IdleTimeoutSeconds = 9
 	c.Upstream.PassthroughIP = true
+	c.Upstream.ModelOptimization = true
 	c.Features.SanitizeBlacklistFingerprints = true
 	c.Pool.PreferExpiring = true
 	applyEnv(c)
 	if c.Upstream.TimeoutSeconds != 7 || c.Upstream.HeaderTimeoutSeconds != 8 || c.Upstream.IdleTimeoutSeconds != 9 {
 		t.Fatalf("非法数值不应覆盖: %+v", c.Upstream)
 	}
-	if !c.Upstream.PassthroughIP || !c.Features.SanitizeBlacklistFingerprints || !c.Pool.PreferExpiring {
+	if !c.Upstream.PassthroughIP || !c.Upstream.ModelOptimization || !c.Features.SanitizeBlacklistFingerprints || !c.Pool.PreferExpiring {
 		t.Fatal("非法布尔不应覆盖")
 	}
 }

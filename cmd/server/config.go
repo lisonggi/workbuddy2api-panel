@@ -150,6 +150,9 @@ type Config struct {
 		DeviceTokenFile string `json:"device_token_file"`
 		// PassthroughIP 是否透传客户端 IP 给上游（默认 false，反代安全边界）。
 		PassthroughIP bool `json:"passthrough_ip"`
+		// ModelOptimization 允许上游用对话做模型优化（默认 false）：false 时对话一律带
+		// X-Private-Data: true；true 时照官方客户端默认，个人号 false、企业号 true。面板保存即生效。
+		ModelOptimization bool `json:"model_optimization"`
 	} `json:"upstream"`
 
 	Features struct {
@@ -444,6 +447,11 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_PASSTHROUGH_IP"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Upstream.PassthroughIP = b
+		}
+	}
+	if v := os.Getenv("WB2A_MODEL_OPTIMIZATION"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Upstream.ModelOptimization = b
 		}
 	}
 	if v := os.Getenv("WB2A_SANITIZE_FINGERPRINTS"); v != "" {

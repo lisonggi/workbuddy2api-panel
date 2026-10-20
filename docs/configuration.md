@@ -93,6 +93,7 @@
 | `upstream.device_token` | 空 | 设备风控头 `X-Device-Token` 的全局兜底值；单个凭证文件里的 `device_token` 优先 |
 | `upstream.device_token_file` | 空 | 从文件读取 device token（5 分钟缓存），优先级低于前两者 |
 | `upstream.passthrough_ip` | `false` | 是否把客户端 IP 透传给上游 |
+| `upstream.model_optimization` | `false` | 是否允许上游用对话做模型优化。关闭时每条对话都带 `X-Private-Data: true`，和官方桌面端没动过「模型优化」开关时一样；打开等于在桌面端打开这个开关，个人号发 `false`，企业号仍发 `true`（新版官方 CLI 对企业号一律不允许）。面板「上游与高级 → 出站请求」可改，保存即生效 |
 
 ### 提示词与脱敏
 
@@ -159,6 +160,7 @@
 | `WB2A_CLIENT_NAME` | `upstream.client_name` |
 | `WB2A_DEVICE_TOKEN` / `WB2A_DEVICE_TOKEN_FILE` | `upstream.device_token` / `upstream.device_token_file` |
 | `WB2A_PASSTHROUGH_IP` | `upstream.passthrough_ip`（布尔） |
+| `WB2A_MODEL_OPTIMIZATION` | `upstream.model_optimization`（布尔） |
 | `WB2A_SANITIZE_FINGERPRINTS` | `features.sanitize_blacklist_fingerprints`（布尔） |
 | `WB2A_PROMPT_MODE` / `WB2A_PROMPT_FILE` | `prompt.mode` / `prompt.file` |
 | `WB2A_PREFER_EXPIRING` / `WB2A_EXPIRING_SOON` | `pool.prefer_expiring`（布尔） / `pool.expiring_soon` |

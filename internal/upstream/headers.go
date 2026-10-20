@@ -255,7 +255,7 @@ type ChatMeta struct {
 // 也不带 X-No-*（那几个只在登录前的 auth/state、auth/token 上发）。
 //   - 账号头：Authorization、X-User-Id；企业号加 X-Enterprise-Id 与同值的 X-Tenant-Id，个人号
 //     两个都不发；X-Domain 取登录域（国际版固定 www.workbuddy.ai），没有就不发。
-//   - X-Agent-Intent=craft、X-Agent-Type=main（主对话）。
+//   - X-Agent-Intent=craft、X-Agent-Type=main（主对话）、X-Private-Data（见 privateDataValue）。
 //   - UA、X-IDE-* 取桌面端传给内置 CLI 的值（见 defaultCLIUA、injectAttribution）；X-Product 是
 //     请求框架给每个请求加的 deploymentType；不带 X-Device-Token。
 //
@@ -286,6 +286,7 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	}
 	req.Header.Set("X-Agent-Intent", "craft")
 	req.Header.Set("X-Agent-Type", "main")
+	req.Header.Set("X-Private-Data", c.privateDataValue(a))
 	req.Header.Set("X-Product", deploymentType)
 	// 用量归属头：默认同官方桌面端（client_name="SaaS" 还原旧行为）。
 	c.injectAttribution(req, a)
@@ -318,8 +319,19 @@ func chatDomain(a *auth.Auth) string {
 	return a.DomainValue()
 }
 
-// injectConversationHeaders 注入官方客户端会话头族（issue #35 后台聚合）。
-// 头族分四层，各司其职：
+// privateDataValue X-Private-Data 取值，告诉上游这段对话能不能拿去做模型优化。默认一律
+// "true"（不允许），和官方桌面端默认相同：桌面端 5.8.3 / 5.8.4 的产品配置都开了
+// DisableYuanbaoChannel，用户没动过「模型优化」开关时内置 CLI 2.161.0 就发 "true"。
+// upstream.model_optimization 打开后等于用户在桌面端打开了开关：个人号 "false"；企业号仍发
+// "true"（npm 上的 CLI 2.169.0 对企业号一律不允许，取更保守的一边）。
+func (c *Client) privateDataValue(a *auth.Auth) string {
+	if c != nil && c.ModelOptimization.Load() && !a.IsEnterprise() {
+		return "false"
+	}
+	return "true"
+}
+
+// injectConversationHeaders 注入官方客户端会话头族（issue #35 后台聚合），各司其职：
 //   - X-Conversation-ID：会话级（ChatHeaders 已保证非空：客户端给的会话 id、派生的或新生成的）。
 //   - X-Conversation-Request-ID：**对话轮级聚合主键**，必发。一次 user send 内的
 //     所有 tool call/重试/换号/降级复用同一个 → 后台按它聚合成一条（不再碎片化）。

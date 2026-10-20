@@ -652,21 +652,25 @@ type Client struct {
 	// 面板保存配置热改 + chat 热路径并发读写，用 atomic.Bool 消除数据竞争。
 	SanitizeFingerprints atomic.Bool
 
-	// UserAgent 出站 User-Agent 显式覆盖（非空时全路径生效，优先于默认三段式）。
-	// 空 = 默认官方形态：chat/refresh/FetchModels 走
-	// `WorkBuddy/<ver> WorkBuddy/<ver> CLI/<cliVer>`；billing 走 `WorkBuddy/<ver>`
-	// （仅当 client_name 非空）。
+	// ModelOptimization 允许上游用对话做模型优化（config upstream.model_optimization，默认 false）：
+	// false 时 chat 一律带 X-Private-Data: true；true 时照官方默认，个人号 false、企业号 true。
+	// 面板保存配置热改，与 SanitizeFingerprints 同样用 atomic.Bool。
+	ModelOptimization atomic.Bool
+
+	// UserAgent 出站 User-Agent 显式覆盖（非空时除任务中心桌面端上报外都用它）。
+	// 空 = 按账号域取官方桌面端的 UA：对话 / 刷新令牌 / 模型目录用 userAgent（内置 CLI），
+	// 积分 / 签到 / 成长任务 / 上报用 daemonUserAgent（后台服务），见 headers.go。
 	UserAgent string
 
-	// ClientVersion WorkBuddy 客户端版本段（出站 UA 的 `WorkBuddy/<ver>` + X-IDE-Version）。
-	// 空 = 内置默认（对齐官方 5.5.4 分发包）。
+	// ClientVersion 桌面端版本（UA 版本段 + X-IDE-Version），两域共用。
+	// 空 = 内置默认：国内版 5.8.3、国际版 5.8.4。
 	ClientVersion string
 
-	// CliVersion 出站 UA 中 `CLI/<ver>` 段版本。空 = 内置默认（官方内置 CLI 2.137.1）。
+	// CliVersion 出站 UA 中 `CLI/<ver>` 段版本。空 = 内置默认 2.161.0。
 	CliVersion string
 
-	// ClientName 用量归属头取值（X-Product / X-IDE-Name / X-IDE-Type / X-IDE-Version）。
-	// 空 = 旧行为：X-Product="SaaS"，不设 X-IDE-*（向后兼容，不突变归因）。
+	// ClientName 对话请求的归属头 X-IDE-Name / X-IDE-Type 取值。空 = "WorkBuddy"（同官方桌面端）；
+	// "SaaS" = 旧行为，对话不带 X-Agent-Purpose 与 X-IDE-*，后台服务请求不设 UA。X-Product 固定 "SaaS"。
 	ClientName string
 
 	// PassthroughIP 是否透传客户端 IP 给上游（X-Forwarded-For/X-Real-IP 首段）。

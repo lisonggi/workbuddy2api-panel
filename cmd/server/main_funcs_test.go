@@ -362,7 +362,7 @@ func TestSaveConfig(t *testing.T) {
   "logging": {"request_client_info": true},
   "pool": {"cross_realm": true, "credit_floor": 9, "expiring_soon": "30m"},
   "panel": {"update_check": true},
-  "upstream": {"timeout_seconds": 45}
+  "upstream": {"timeout_seconds": 45, "model_optimization": true}
 }`
 		got, err := saveConfig([]byte(incoming), path, live, p, up, sch)
 		if err != nil {
@@ -398,6 +398,9 @@ func TestSaveConfig(t *testing.T) {
 		}
 		if !up.SanitizeFingerprints.Load() {
 			t.Fatal("up.SanitizeFingerprints 未热更新")
+		}
+		if !up.ModelOptimization.Load() {
+			t.Fatal("up.ModelOptimization 未热更新")
 		}
 		if p.CreditFloor() != 9 {
 			t.Fatalf("号池 credit_floor 未热更新: %d", p.CreditFloor())

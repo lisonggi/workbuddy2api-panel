@@ -155,6 +155,8 @@ export const CONFIG_TABS: ConfigTab[] = [
           },
           { name: 'prompt_file', path: ['prompt', 'file'], label: '提示词文件路径', kind: 'text', placeholder: '留空 = 内置默认提示词', restart: true, clearable: true },
           toggle('sanitize_blacklist_fingerprints', ['features', 'sanitize_blacklist_fingerprints'], '出站请求指纹脱敏'),
+          toggle('model_optimization', ['upstream', 'model_optimization'], '允许上游用对话做模型优化',
+            '关闭时每条对话都声明不允许（X-Private-Data: true），和官方桌面端默认一样；打开等于在桌面端打开「模型优化」：个人号允许，企业号仍不允许'),
           toggle('session_sticky_enabled', ['session_sticky', 'enabled'], '会话粘性路由'),
         ],
       },
