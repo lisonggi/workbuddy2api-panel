@@ -815,6 +815,8 @@ func (c *Client) prepareBody(body []byte, realm string) []byte {
 	// 不再自动补 prompt_cache_key（客户端自己带的照转）：官方客户端不发它；10-19 生产实测
 	// deepseek、glm、kimi 两域带不带都不多命中，glm 会话 id 每轮换新时带它反而更少命中。
 	// 前缀缓存靠稳定的 X-Conversation-ID，见 ChatHeaders。
+	// reasoning_summary 对齐官方 CLI，见 InjectOfficialBodyFields。
+	body = InjectOfficialBodyFields(body)
 	return body
 }
 
