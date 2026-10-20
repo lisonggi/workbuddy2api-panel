@@ -60,11 +60,24 @@ func decodeResponse(resp *http.Response) *http.Response {
 	if resp == nil || resp.Body == nil || resp.Uncompressed {
 		return resp
 	}
-	enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
-	var open func(*bufio.Reader) (io.ReadCloser, error)
-	switch enc {
-	case "", "identity":
+	body, ok := DecodeBody(resp.Header.Get("Content-Encoding"), resp.Body)
+	if !ok {
 		return resp
+	}
+	resp.Body = body
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
+	resp.Uncompressed = true
+	return resp
+}
+
+// DecodeBody 按 Content-Encoding 的值给 raw 套上惰性解压（gzip / compress / deflate / br /
+// zstd，解法照 axios）。没有编码、identity 或不认识的编码返回 ok=false，调用方照用 raw。
+// 网关的入站请求体也用它解（server.readRequestBody）。
+func DecodeBody(contentEncoding string, raw io.ReadCloser) (io.ReadCloser, bool) {
+	var open func(*bufio.Reader) (io.ReadCloser, error)
+	switch strings.ToLower(strings.TrimSpace(contentEncoding)) {
 	case "gzip", "x-gzip", "compress", "x-compress":
 		open = openGzipOrZlib
 	case "deflate":
@@ -80,14 +93,9 @@ func decodeResponse(resp *http.Response) *http.Response {
 			return zr.IOReadCloser(), nil
 		}
 	default:
-		return resp
+		return raw, false
 	}
-	resp.Body = &decodedBody{raw: resp.Body, open: open}
-	resp.Header.Del("Content-Encoding")
-	resp.Header.Del("Content-Length")
-	resp.ContentLength = -1
-	resp.Uncompressed = true
-	return resp
+	return &decodedBody{raw: raw, open: open}, true
 }
 
 // openGzipOrZlib axios 对 gzip / compress 用 zlib.createUnzip：按头部自动分辨 gzip（1f 8b）

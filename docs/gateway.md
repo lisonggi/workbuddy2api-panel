@@ -101,6 +101,8 @@ flowchart LR
 
 业务码的含义和归类照官方客户端（WorkBuddy 桌面端内置的 CLI）的错误码表；业务码比状态码和文案更可靠，先按它判。上下文超限的文案也照官方的词表认，覆盖各家模型供应商的说法。
 
+客户端压缩过的请求体（`Content-Encoding` 为 gzip、deflate、br、zstd，或没标头但内容是 gzip）网关会先解开；解不开或不是合法 JSON 的请求就地回 400，不打上游。
+
 **熔断**：所有冷却入口与 5xx 共用一个连续失败计数，累计达 `breaker_threshold`（默认 3）触发熔断，时长 `breaker_cooldown × 2^次数`，封顶 `breaker_cooldown_max`。成功即清零。
 
 **软冷却退避**：同一账号连续触发软冷却时，冷却时长为 `soft_rate × 2^(连续次数-1)`，封顶 `soft_rate_max`。这个计数独立于熔断，只在成功或签到解冻时清零，随状态文件持久化。

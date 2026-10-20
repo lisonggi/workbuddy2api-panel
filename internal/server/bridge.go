@@ -61,7 +61,7 @@ func (h *Handler) withKeyAuth(format sdktranslator.Format, next http.HandlerFunc
 }
 
 func (h *Handler) bridge(w http.ResponseWriter, r *http.Request, format sdktranslator.Format) {
-	body, err := io.ReadAll(r.Body)
+	body, err := readRequestBody(r)
 	if err != nil {
 		writeBridgeError(w, format, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return
@@ -132,7 +132,7 @@ func (h *Handler) unknownModel(model string, format sdktranslator.Format) string
 // countTokens POST /v1/messages/count_tokens：按字数估算输入 token，不发上游。
 // 估算口径：CJK 等宽字符每字 1 个，其余按 4 字节 1 个；只数文本，不数 JSON 结构。
 func (h *Handler) countTokens(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := readRequestBody(r)
 	if err != nil {
 		writeBridgeError(w, sdktranslator.FormatClaude, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -605,9 +604,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 上游自然返回错误（其响应经既有错误分类链路透出，信息量更大）。#41 的截断
 	// 防御语义保留在读错误路径——移除预拦截后，截断只可能来自客户端自己断流，
 	// 读 body 出错就地 400，不把半截 JSON 喂上游 unmarshal 报 unexpected EOF 冤枉罚号。
-	body, err := io.ReadAll(r.Body)
+	body, err := readRequestBody(r)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+		return
+	}
+	// 不是合法 JSON 就地 400：转给上游只会换来 11101，白白占一次上游调用。字段类型不对
+	// （比如 stream 写成字符串）仍照转，由上游判定。
+	if !json.Valid(body) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "request body is not valid JSON")
 		return
 	}
 	var peek struct {

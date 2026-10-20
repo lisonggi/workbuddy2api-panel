@@ -418,3 +418,15 @@ func TestCallSitesDecode(t *testing.T) {
 		t.Fatalf("错误体 status=%d body=%q", status, respBody)
 	}
 }
+
+func TestDecodeBodyPassThrough(t *testing.T) {
+	raw := io.NopCloser(strings.NewReader("x"))
+	for _, enc := range []string{"", "identity", "snappy"} {
+		if got, ok := DecodeBody(enc, raw); ok || got != raw {
+			t.Errorf("DecodeBody(%q) 应原样交回", enc)
+		}
+	}
+	if _, ok := DecodeBody(" GZIP ", raw); !ok {
+		t.Error("DecodeBody 应不区分大小写、忽略空白")
+	}
+}
