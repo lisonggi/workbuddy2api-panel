@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,11 +26,15 @@ type travelStub struct {
 
 	infoCalls, statusCalls, departCalls atomic.Int32
 	claimCalls, firstCalls, agreeCalls  atomic.Int32
-	location, record                    atomic.Int64
+	location                            atomic.Int64
+	claimBody                           atomic.Value // 领奖请求体原文（网页形状应为 {}）
 }
 
 func (s *travelStub) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/activity/growth/buddy/info":
 			s.infoCalls.Add(1)
@@ -47,11 +52,8 @@ func (s *travelStub) handler() http.Handler {
 			w.Write([]byte(`{"code":0,"msg":"ok","data":{}}`))
 		case "/activity/growth/buddy/travel/claim":
 			s.claimCalls.Add(1)
-			var body struct {
-				RecordID int64 `json:"record_id"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			s.record.Store(body.RecordID)
+			raw, _ := io.ReadAll(r.Body)
+			s.claimBody.Store(string(raw))
 			w.Write([]byte(`{"code":0,"msg":"ok","data":{"reward_credit":9}}`))
 		case "/activity/growth/buddy/first":
 			s.firstCalls.Add(1)
@@ -79,6 +81,9 @@ func (s *travelStub) server() *httptest.Server {
 func billingAndGrowthServer(stub *travelStub) *httptest.Server {
 	growth := stub.handler()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/daily-checkin"):
 			w.Write([]byte(`{"code":0,"msg":"ok","data":{}}`))
@@ -104,10 +109,17 @@ func newTravelScheduler(t *testing.T, srv *httptest.Server, uids ...string) (*Sc
 	t.Helper()
 	p := pool.New("")
 	for _, uid := range uids {
-		p.Add(&auth.Auth{UID: uid, AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
+		// 网页形状不带 X-User-Id；登录码请求带 Bearer、之后的业务请求带 session Cookie，
+		// 假上游用 upstreamtest.Token 统一取令牌，所以每号用 uid 当 token。
+		p.Add(&auth.Auth{UID: uid, AccessToken: uid, RefreshToken: "rt", ExpiresAt: 9999999999})
 	}
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	return New(Config{Pool: p, Upstream: up, CheckinHours: []int{9, 21}, KeepaliveHours: []int{22}}), p
+}
+
+// reqUID 取请求的账号令牌（登录码请求带 Bearer，业务请求带 session Cookie）。
+func reqUID(r *http.Request) string {
+	return upstreamtest.Token(r)
 }
 
 // TestRunCheckinNowNoLongerTriggersTravel 签到收尾不再跑旅行（旅行已剥离为独立排程）。
@@ -270,8 +282,10 @@ func TestRunTravelStateMachine(t *testing.T) {
 			if tc.wantDepart > 0 && stub.location.Load() != tc.wantLocation {
 				t.Errorf("location_id=%d want %d", stub.location.Load(), tc.wantLocation)
 			}
-			if tc.wantClaim > 0 && stub.record.Load() != tc.wantRecord {
-				t.Errorf("record_id=%d want %d", stub.record.Load(), tc.wantRecord)
+			if tc.wantClaim > 0 {
+				if got, _ := stub.claimBody.Load().(string); got != "{}" {
+					t.Errorf("claim body=%q want {}", got)
+				}
 			}
 		})
 	}
@@ -326,12 +340,15 @@ func TestRunTravelSkipsDisabledAndFailedAccounts(t *testing.T) {
 	fastTravel(t)
 	var deadCalls, okDepart, disabledCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		switch {
-		case r.Header.Get("X-User-Id") == "disabled":
+		case reqUID(r) == "disabled":
 			disabledCalls.Add(1)
 			w.WriteHeader(401)
 			w.Write([]byte(`{"code":12153,"msg":"Offline user session not found"}`))
-		case r.Header.Get("X-User-Id") == "dead":
+		case reqUID(r) == "dead":
 			deadCalls.Add(1)
 			w.WriteHeader(401)
 			w.Write([]byte(`{"code":12153,"msg":"Offline user session not found"}`))
@@ -352,8 +369,10 @@ func TestRunTravelSkipsDisabledAndFailedAccounts(t *testing.T) {
 	p.Disable("disabled", "test")
 	s.RunTravelNow()
 
-	if n := deadCalls.Load(); n != 1 {
-		t.Errorf("dead account calls=%d want 1（401 跳过本轮，不强刷 token）", n)
+	// 网页请求 401 会清罐重取一次登录态并重发一次；连续 401 后返回错误、跳过本轮
+	// （不刷新 OAuth token，也不无限重试）。
+	if n := deadCalls.Load(); n != 2 {
+		t.Errorf("dead account calls=%d want 2（401 重取登录态后重发一次）", n)
 	}
 	if n := disabledCalls.Load(); n != 0 {
 		t.Errorf("disabled account calls=%d want 0", n)
@@ -392,7 +411,10 @@ func TestRunTravelActionErrorsDoNotAbort(t *testing.T) {
 	fastTravel(t)
 	var okDepart atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid := r.Header.Get("X-User-Id")
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
+		uid := reqUID(r)
 		fail := func() {
 			w.WriteHeader(500)
 			w.Write([]byte(`{"code":500,"msg":"boom"}`))

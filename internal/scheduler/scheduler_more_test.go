@@ -31,6 +31,9 @@ func newSchedCounter() *schedCounter {
 func (c *schedCounter) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		c.mu.Lock()
 		c.hits[r.URL.Path]++
 		c.mu.Unlock()

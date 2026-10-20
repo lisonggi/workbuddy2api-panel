@@ -1,12 +1,10 @@
 // travel.go growth 域「猫猫旅行」接口：状态查询 / 派出 / 领奖 / 领养 / 协议。
-// 全部走 chatBase（copilot.tencent.com，不带 /v2 前缀）+ BillingHeaders，信封同 doJSON。
+// 全部按官网网页的形状发（webBase + webJSON，成长中心 referer），信封同 doJSON。
 package upstream
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -37,32 +35,13 @@ type Buddy struct {
 type TravelState struct {
 	State             string `json:"state"`               // idle / traveling / arrived
 	DailyLimitReached bool   `json:"daily_limit_reached"` // 今日已派出过（自然日 00:00 CST 重置）
-	RecordID          int64  `json:"record_id"`           // 在途/到站记录 id，claim 必带
+	RecordID          int64  `json:"record_id"`           // 在途/到站记录 id（网页 claim 发空对象，不用它）
 	RewardCredit      int64  `json:"reward_credit"`       // 到站可领奖励积分
-}
-
-// growthJSON 发 growth 域请求并解信封；body 为 nil 时不带请求体。
-// 错误语义与 doJSON 一致：HTTP 非 2xx / 业务 code != 0 → *Error。
-func (c *Client) growthJSON(a *auth.Auth, method, path string, body any) (json.RawMessage, error) {
-	var rdr io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		rdr = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequest(method, c.chatBase(a)+path, rdr)
-	if err != nil {
-		return nil, err
-	}
-	c.BillingHeaders(req, a)
-	return c.doJSON(req)
 }
 
 // TravelStatus 查询猫猫旅行状态。
 func (c *Client) TravelStatus(a *auth.Auth) (*TravelState, error) {
-	data, err := c.growthJSON(a, http.MethodGet, travelStatusPath, nil)
+	data, err := c.webJSON(a, http.MethodGet, travelStatusPath, webPageGrowthCenter, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -75,13 +54,14 @@ func (c *Client) TravelStatus(a *auth.Auth) (*TravelState, error) {
 
 // TravelDepart 派出猫旅行；locationID 实测 1~4（收益/时长区间相同）。
 func (c *Client) TravelDepart(a *auth.Auth, locationID int) error {
-	_, err := c.growthJSON(a, http.MethodPost, travelDepartPath, map[string]any{"location_id": locationID})
+	_, err := c.webJSON(a, http.MethodPost, travelDepartPath, webPageGrowthCenter, map[string]any{"location_id": locationID})
 	return err
 }
 
-// TravelClaim 领取到站奖励，返回 reward_credit。
-func (c *Client) TravelClaim(a *auth.Auth, recordID int64) (int64, error) {
-	data, err := c.growthJSON(a, http.MethodPost, travelClaimPath, map[string]any{"record_id": recordID})
+// TravelClaim 领取到站奖励，返回 reward_credit。网页和桌面端都发空对象 {}，记录由服务端按
+// 当前在途旅行决定，不需要 record_id。
+func (c *Client) TravelClaim(a *auth.Auth) (int64, error) {
+	data, err := c.webJSON(a, http.MethodPost, travelClaimPath, webPageGrowthCenter, map[string]any{})
 	if err != nil {
 		return 0, err
 	}
@@ -97,7 +77,7 @@ func (c *Client) TravelClaim(a *auth.Auth, recordID int64) (int64, error) {
 
 // BuddyInfo 查询当前猫档案；返回 (nil, nil) 表示无猫（data.buddy 为 null）。
 func (c *Client) BuddyInfo(a *auth.Auth) (*Buddy, error) {
-	data, err := c.growthJSON(a, http.MethodGet, buddyInfoPath, nil)
+	data, err := c.webJSON(a, http.MethodGet, buddyInfoPath, webPageGrowthCenter, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -121,14 +101,15 @@ func (c *Client) BuddyInfo(a *auth.Auth) (*Buddy, error) {
 
 // BuddyFirst 领养第一只猫。无猫且已过 conversation 门槛时送 300 分。
 // 门槛未达标返回 HTTP 400（见 IsBuddyTaskIncomplete），属预期行为，调用方静默跳过。
+// 网页发 POST 且不带请求体。
 func (c *Client) BuddyFirst(a *auth.Auth) error {
-	_, err := c.growthJSON(a, http.MethodPost, buddyFirstPath, map[string]any{})
+	_, err := c.webJSON(a, http.MethodPost, buddyFirstPath, webPageGrowthCenter, nil)
 	return err
 }
 
 // BuddyAgreement 同意协议（幂等，重复调用无副作用）。
 func (c *Client) BuddyAgreement(a *auth.Auth) error {
-	_, err := c.growthJSON(a, http.MethodPost, buddyAgreementPath, map[string]any{"agree": true})
+	_, err := c.webJSON(a, http.MethodPost, buddyAgreementPath, webPageGrowthCenter, map[string]any{"agree": true})
 	return err
 }
 
@@ -137,7 +118,7 @@ func (c *Client) BuddyAgreement(a *auth.Auth) error {
 // GET 失败（HTTP 非 2xx / 业务 code != 0）返回 *Error；缺 streak/days 字段返回 0
 // （days==0 即活跃自检的「上报 200 但静默丢弃」告警信号）。
 func (c *Client) GrowthStreak(a *auth.Auth) (int, error) {
-	data, err := c.growthJSON(a, http.MethodGet, streakPath, nil)
+	data, err := c.webJSON(a, http.MethodGet, streakPath, webPageGrowthCenter, nil)
 	if err != nil {
 		return 0, err
 	}

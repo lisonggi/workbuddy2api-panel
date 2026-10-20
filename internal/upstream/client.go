@@ -702,6 +702,10 @@ type Client struct {
 	// false 时即便用户 auth 写了 realm=global 也**不**路由到 global base——
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
 	GlobalEnabled bool
+
+	// webSessions 官网网页登录态（每个「域 + uid」一个 Cookie 罐），见 websession.go。
+	// 零值可用，不需要构造函数；并发安全。
+	webSessions webSessionStore
 }
 
 // New 生产默认值。Transport 由 newTransport() 集中构造（连接层加固：真正禁 h2 /

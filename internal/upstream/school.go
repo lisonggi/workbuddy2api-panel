@@ -7,7 +7,7 @@
 //     webchat 普通会话不计数，纯 API 不做（需小程序内人工对话）。
 //   - 抽奖：POST /wheel/draw {draw_uuid}（前端生成 uuid，消耗 1 chance）。
 //
-// 端点基址 www.codebuddy.cn（billing 同域）；信封 {code,msg,data}，code=0 成功。
+// 端点基址 billingBase（国内版 www.workbuddy.cn）；信封 {code,msg,data}，code=0 成功。
 package upstream
 
 import (
@@ -38,6 +38,8 @@ func (c *Client) schoolJSON(a *auth.Auth, method, path string, body map[string]a
 	if a.UID != "" {
 		req.Header.Set("X-User-Id", a.UID)
 	}
+	// 小程序里的请求由微信发，UA 是微信的（同 ReportMPEvent）。
+	req.Header.Set("User-Agent", c.miniProgramUserAgent())
 	data, err := c.doJSON(req)
 	if err != nil {
 		return err
@@ -79,7 +81,7 @@ func mpEventBase(a *auth.Auth) map[string]any {
 	}
 }
 
-// ReportMPEvent 以小程序指纹向 www.codebuddy.cn/v2/report 批量上报事件。
+// ReportMPEvent 以小程序指纹向 billingBase（国内版 www.workbuddy.cn）的 /v2/report 批量上报事件。
 func (c *Client) ReportMPEvent(a *auth.Auth, events ...map[string]any) error {
 	if len(events) == 0 {
 		return fmt.Errorf("mp report: no events")
@@ -114,6 +116,9 @@ func (c *Client) ReportMPEvent(a *auth.Auth, events ...map[string]any) error {
 	req.Header.Set("X-Client-Version", "2.4.0")
 	req.Header.Set("X-Client-Platform", "mp-weixin")
 	req.Header.Set("X-Platform", "wechatmp")
+	// 小程序里的 wx.request 由微信发，UA 是微信的；没设时 Go 会发 Go-http-client/1.1。用和小程序
+	// 网页请求同一个 UA（miniProgramUA，未抓包）。
+	req.Header.Set("User-Agent", c.miniProgramUserAgent())
 	_, err = c.doJSON(req)
 	return err
 }

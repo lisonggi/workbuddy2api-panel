@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 func TestClassify(t *testing.T) {
@@ -192,9 +193,16 @@ func jsonResp(status int, body string) *http.Response {
 
 func testClient(fn rtFunc) *Client {
 	return &Client{
-		HTTP:          &http.Client{Transport: fn},
+		// 网页登录态的两个端点统一在这里答复，用例只关心业务请求。
+		HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+			if resp, ok := upstreamtest.WebSessionRoundTrip(r); ok {
+				return resp, nil
+			}
+			return fn(r)
+		})},
 		ChatBaseCN:    "https://chat.example",
 		BillingBaseCN: "https://billing.example",
+		WebBaseCN:     "https://web.example",
 	}
 }
 

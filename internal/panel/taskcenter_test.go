@@ -164,8 +164,9 @@ func TestTasksScanAll(t *testing.T) {
 			t.Fatalf("禁用账号不应有有效行: %v", byUID["u2"])
 		}
 		for _, r := range up.requests() {
-			if uid := r.Header.Get("X-User-Id"); uid == "u2" || uid == "u3" || uid == "u4" {
-				t.Fatalf("禁用/global/企业号不应发请求，收到 uid=%s %s %s", uid, r.Method, r.Path)
+			// 网页形状不再带 X-User-Id；登录码请求带 Bearer、业务请求带 session Cookie。
+			if tok := autoToken(r); tok == "at-u2" || tok == "at-u3" || tok == "at-u4" {
+				t.Fatalf("禁用/global/企业号不应发请求，收到 %s %s %s", tok, r.Method, r.Path)
 			}
 		}
 	})
@@ -173,7 +174,7 @@ func TestTasksScanAll(t *testing.T) {
 	t.Run("默认列表失败只影响该账号", func(t *testing.T) {
 		p, up := newTasksPanel(t, taskTestAuth("u1", "一号"), taskTestAuth("u2", "二号"))
 		up.onDefaultTasks(func(r autoReq) (int, string) {
-			if r.Header.Get("X-User-Id") == "u1" {
+			if autoToken(r) == "at-u1" {
 				return 400, `{"code":400,"msg":"u1 boom"}`
 			}
 			return 200, autoTasksJSON(autoTaskJSON("chat_5", 3, 1, "accepted"))
@@ -359,7 +360,7 @@ func TestTasksRunQueueExecution(t *testing.T) {
 			t.Fatalf("顺序应为 accept → chat_5 上报 → RichMeow 上报: accept=%d chat=%d rich=%d\n%v",
 				acceptIdx, chatIdx, richIdx, autoSequence(up.requests()))
 		}
-		accepts := up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "")
+		accepts := up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "web")
 		if len(accepts) != 1 {
 			t.Fatalf("应批量接受一次，实际 %d", len(accepts))
 		}
@@ -388,7 +389,7 @@ func TestTasksRunQueueExecution(t *testing.T) {
 		if it := queueItemByCode(t, items, "Library_read"); it["status"] != "done" {
 			t.Fatalf("后面的 Library_read 应继续执行: %v", it)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoReportPath, "web")); got != 1 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoReportPath, "")); got != 1 {
 			t.Fatalf("Library_read 应上报一次，实际 %d", got)
 		}
 	})
@@ -503,7 +504,7 @@ func TestTasksRunQueueExecution(t *testing.T) {
 		if it["status"] != "done" || !strings.Contains(msg, "已领取奖励（+100c +5e）") || !strings.Contains(msg, "（进度 1/1）") {
 			t.Fatalf("mp 任务结果不对: %v", it)
 		}
-		claims := up.requestsTo(http.MethodPost, autoChatHost,
+		claims := up.requestsTo(http.MethodPost, autoWebHost,
 			"/activity/growth/tasks/school_season/claim", "miniprogram")
 		if len(claims) != 1 {
 			t.Fatalf("应走 ClaimRewardMP 一次，实际 %d", len(claims))

@@ -55,6 +55,10 @@ func TestStreakBonusFullFlow(t *testing.T) {
 		case strings.HasSuffix(path, "/activity/growth/heatmap"):
 			w.Write([]byte(streakReply(`{"cells":[]}`)))
 			return true
+		case strings.HasSuffix(path, "/billing/meter/check-gift-claimed"):
+			// 网页先查礼包状态：开放且未领才允许领取。
+			w.Write([]byte(streakReply(`{"active":true,"claimed":false}`)))
+			return true
 		case strings.HasSuffix(path, "/activity/growth/streak"):
 			w.Write([]byte(streakReply(`{"makeup_cards":{"balance":0},"redemption_status":{
 				"tier_7d_status":"available","tier_14d_status":"locked","tier_28d_status":"claimed",

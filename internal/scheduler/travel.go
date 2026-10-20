@@ -111,13 +111,13 @@ func (s *Scheduler) travelDepart(a *auth.Auth, ts *upstream.TravelState) {
 	log.Printf("travel %s: depart ok location=%d", logfmt.Label(a.UID, a.Nickname), travelLocationID)
 }
 
-// travelClaim 到站领奖（必须带 record_id）。
+// travelClaim 到站领奖（网页发空对象，记录由服务端按当前在途旅行决定）。
 func (s *Scheduler) travelClaim(a *auth.Auth, ts *upstream.TravelState) {
 	if ts.RecordID == 0 {
 		log.Printf("travel %s: claim skipped (arrived but no record_id)", logfmt.Label(a.UID, a.Nickname))
 		return
 	}
-	reward, err := s.cfg.Upstream.TravelClaim(a, ts.RecordID)
+	reward, err := s.cfg.Upstream.TravelClaim(a)
 	if err != nil {
 		log.Printf("travel %s: claim record=%d: %v", logfmt.Label(a.UID, a.Nickname), ts.RecordID, err)
 		return

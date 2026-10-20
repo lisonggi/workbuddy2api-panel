@@ -32,12 +32,12 @@ func compensationAccount(a *auth.Auth) error {
 	return nil
 }
 
-// GetCompensationStatus 查询活动状态；官网对此只读操作使用 POST。
+// GetCompensationStatus 查询活动状态；官网对此只读操作使用 POST（无请求体，用量页 referer）。
 func (c *Client) GetCompensationStatus(a *auth.Auth) (*CompensationStatus, error) {
 	if err := compensationAccount(a); err != nil {
 		return nil, err
 	}
-	data, err := c.billingJSON(a, http.MethodPost, "/billing/meter/compensation-status", nil)
+	data, err := c.webJSON(a, http.MethodPost, "/billing/meter/compensation-status", webPageUsage, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func (c *Client) ClaimCompensation(a *auth.Auth) (int64, error) {
 	if err := compensationAccount(a); err != nil {
 		return 0, err
 	}
-	data, err := c.billingJSON(a, http.MethodPost, "/billing/meter/claim-compensation", nil)
+	data, err := c.webJSON(a, http.MethodPost, "/billing/meter/claim-compensation", webPageUsage, nil)
 	if err != nil {
 		return 0, err
 	}

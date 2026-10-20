@@ -160,7 +160,7 @@ func TestAccountTaskAccept(t *testing.T) {
 		if ok, _ := autoDecode(t, rec)["ok"].(bool); !ok {
 			t.Fatalf("成功响应应 ok=true: %s", rec.Body)
 		}
-		reqs := up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "")
+		reqs := up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "web")
 		if len(reqs) != 1 {
 			t.Fatalf("应发一次 accept，实际 %d", len(reqs))
 		}
@@ -195,7 +195,7 @@ func TestTaskAcceptAllBatches(t *testing.T) {
 		if resp["accepted"] != float64(0) || resp["message"] != "所有任务均已接受" {
 			t.Fatalf("无待接受任务时结果不对: %v", resp)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "")); got != 0 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "web")); got != 0 {
 			t.Fatalf("无待接受任务不应发 accept，实际 %d 次", got)
 		}
 	})
@@ -283,7 +283,7 @@ func TestTaskAcceptAllBatches(t *testing.T) {
 		if strings.Join(mpCodes, ",") != "mp_a" {
 			t.Fatalf("mp 接受内容不对: %v", mpCodes)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "")); got != 0 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "web")); got != 0 {
 			t.Fatalf("默认列表没有待接受的，不应发默认口径的 accept，实际 %d 次", got)
 		}
 	})
@@ -359,7 +359,7 @@ func TestAccountTaskClaim(t *testing.T) {
 		if resp["credit"] != float64(100) || resp["energy"] != float64(5) {
 			t.Fatalf("奖励数不对: %v", resp)
 		}
-		claims := up.requestsTo(http.MethodPost, autoChatHost,
+		claims := up.requestsTo(http.MethodPost, autoWebHost,
 			"/activity/growth/tasks/Sequential_Tasks_1/claim", "miniprogram")
 		if len(claims) != 1 {
 			t.Fatalf("应走 ClaimRewardMP 一次，实际 %d", len(claims))

@@ -95,12 +95,12 @@ func TestFull7GlobalModelsNameFallbacks(t *testing.T) {
 
 // --- travel.go -------------------------------------------------------------
 
-func TestFull7GrowthJSONErrors(t *testing.T) {
+func TestFull7WebJSONErrors(t *testing.T) {
 	a := upAuth()
-	if _, err := (&Client{}).growthJSON(a, http.MethodPost, "/x", func() {}); err == nil {
+	if _, err := (&Client{}).webJSON(a, http.MethodPost, "/x", webPageGrowthCenter, func() {}); err == nil {
 		t.Fatal("不可序列化 body 应返回错误")
 	}
-	if _, err := (&Client{ChatBaseCN: "http://[::1"}).growthJSON(a, http.MethodGet, "/x", nil); err == nil {
+	if _, err := (&Client{WebBaseCN: "http://[::1"}).webJSON(a, http.MethodGet, "/x", webPageGrowthCenter, nil); err == nil {
 		t.Fatal("非法 base 应返回错误")
 	}
 }
@@ -117,7 +117,7 @@ func TestFull7TravelAndBuddyErrors(t *testing.T) {
 	t.Run("TravelClaim 请求失败", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, travelClaimPath, 400, `{"code":10001,"msg":"no"}`)
-		if _, err := upClient(f).TravelClaim(a, 1); err == nil {
+		if _, err := upClient(f).TravelClaim(a); err == nil {
 			t.Fatal("应返回上游错误")
 		}
 	})
@@ -219,18 +219,20 @@ func TestFull7TasksErrors(t *testing.T) {
 		}
 	})
 	t.Run("growthJSONMP 非法 base", func(t *testing.T) {
-		if _, err := (&Client{ChatBaseCN: "http://[::1"}).growthJSONMP(a, http.MethodGet, "/x", nil); err == nil {
+		// 小程序口径发往官网域（webBase），不再是 chat 域。
+		if _, err := (&Client{WebBaseCN: "http://[::1"}).growthJSONMP(a, http.MethodGet, "/x", nil); err == nil {
 			t.Fatal("非法 base 应返回错误")
 		}
 	})
 	t.Run("ClaimRewardMP 非法 base", func(t *testing.T) {
-		c := &Client{ChatBaseCN: "http://[::1"}
+		c := &Client{WebBaseCN: "http://[::1"}
 		if _, _, err := c.ClaimRewardMP(a, "task"); err == nil {
 			t.Fatal("非法 base 应返回错误")
 		}
 	})
 	t.Run("任务列表解析失败", func(t *testing.T) {
 		f := newUpFake(t)
+		f.on(http.MethodGet, tasksSubscribeStatusPath, 200, `{"code":0,"data":{}}`)
 		f.on(http.MethodGet, tasksListPath, 200, `{"code":0,"data":"oops"}`)
 		if _, err := upClient(f).ListTasks(a); err == nil {
 			t.Fatal("data 类型不符应返回解析错误")

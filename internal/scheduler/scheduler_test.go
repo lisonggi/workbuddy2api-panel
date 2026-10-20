@@ -201,6 +201,9 @@ type fakeUpstream struct {
 
 func (f *fakeUpstream) server() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/daily-checkin"):
 			f.checkinCalls.Add(1)
@@ -412,7 +415,7 @@ func TestRunBalanceRefreshNowUpdatesCreditsAndRevives(t *testing.T) {
 	p.Cooldown("u1", pool.CoolHard, time.Hour, "余额不足")
 	p.Disable("u2", "manual")
 
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 	s.RunBalanceRefreshNow()
 
@@ -462,7 +465,7 @@ func TestRunBalanceRefreshReplacesExpirySnapshot(t *testing.T) {
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
 	p.SetCreditsDetailed("u1", 999, 999, 999, time.Now().Add(time.Hour), 999)
 
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up, ExpiringSoonWindow: 7 * 24 * time.Hour})
 	s.RunBalanceRefreshNow()
 
@@ -515,7 +518,7 @@ func TestRunCheckinSkipsDisabledByDefault(t *testing.T) {
 	defer srv.Close()
 
 	p := poolWithDisabledAccount()
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up, CheckinHours: []int{9, 21}, KeepaliveHours: []int{22}})
 
 	s.RunCheckinNow()
@@ -532,7 +535,7 @@ func TestRunCheckinIncludesDisabledWhenConfigured(t *testing.T) {
 	defer srv.Close()
 
 	p := poolWithDisabledAccount()
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{
 		Pool: p, Upstream: up,
 		CheckinHours:           []int{9, 21},
@@ -560,7 +563,7 @@ func TestRunKeepaliveIncludesDisabledRenewsToken(t *testing.T) {
 	defer srv.Close()
 
 	p := poolWithDisabledAccount()
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up, IncludeDisabledInTasks: true})
 
 	s.RunKeepaliveNow()
@@ -577,7 +580,7 @@ func TestRunBalanceRefreshIncludesDisabledUpdatesCredits(t *testing.T) {
 	defer srv.Close()
 
 	p := poolWithDisabledAccount()
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up, IncludeDisabledInTasks: true})
 
 	s.RunBalanceRefreshNow()
@@ -597,7 +600,7 @@ func TestSetIncludeDisabledInTasksHot(t *testing.T) {
 	defer srv.Close()
 
 	p := poolWithDisabledAccount()
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	s.RunCheckinNow()
@@ -627,7 +630,7 @@ func TestPausedAccountStillRunsKeepaliveTasks(t *testing.T) {
 	if !p.Pause("u2") {
 		t.Fatal("Pause 失败")
 	}
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up}) // 有意不设 IncludeDisabledInTasks
 
 	s.RunCheckinNow()
@@ -666,7 +669,7 @@ func TestPausedVsDisabledTaskParticipation(t *testing.T) {
 	p.Pause("u2")
 	p.Disable("u3", "manual disable (test)")
 
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up}) // 全局开关有意保持关闭
 
 	s.RunCheckinNow()
@@ -688,7 +691,7 @@ func TestPausedStillTravels(t *testing.T) {
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
 	p.Add(&auth.Auth{UID: "u2", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
 	p.Pause("u2")
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	s.RunTravelNow()

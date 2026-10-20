@@ -655,8 +655,8 @@ func TestPanelBatchTriggers(t *testing.T) {
 			return 200, loginResourceBody(88, 100)
 		})
 		up.on(http.MethodGet, autoWebHost, "/console/account", "web", func(r autoReq) (int, string) {
-			// FetchAccountProfile 不带 X-User-Id，按 Bearer 区分账号。
-			if r.Header.Get("Authorization") == "Bearer at-u1" {
+			// FetchAccountProfile 不带 X-User-Id，登录态 Cookie 里的令牌区分账号。
+			if autoToken(r) == "at-u1" {
 				return 200, autoEnvelope(`{"uid":"u1","nickname":"新昵称一"}`)
 			}
 			return 400, `{"code":400,"msg":"profile boom"}`
@@ -683,7 +683,7 @@ func TestPanelBatchTriggers(t *testing.T) {
 			t.Fatalf("只应为两个启用账号拉昵称，实际 %d 次", len(profiles))
 		}
 		for _, r := range profiles {
-			if r.Header.Get("Authorization") == "Bearer at-u3" {
+			if autoToken(r) == "at-u3" {
 				t.Fatal("禁用号不应拉取昵称")
 			}
 		}

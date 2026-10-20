@@ -9,11 +9,15 @@ import (
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // TestGrowthStreakParsesDays 解析 data.streak.days（probe_active.py 同口径）。
 func TestGrowthStreakParsesDays(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		if r.URL.Path != "/activity/growth/streak" {
 			t.Errorf("path=%s want /activity/growth/streak", r.URL.Path)
 		}
@@ -24,7 +28,7 @@ func TestGrowthStreakParsesDays(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	days, err := c.GrowthStreak(&auth.Auth{AccessToken: "at", UID: "u1"})
 	if err != nil {
 		t.Fatalf("GrowthStreak: %v", err)
@@ -37,11 +41,14 @@ func TestGrowthStreakParsesDays(t *testing.T) {
 // TestGrowthStreakDefaultZero 缺 streak/days 字段 → 0（days==0 即自检告警信号）。
 func TestGrowthStreakDefaultZero(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		w.Write([]byte(`{"code":0,"data":{}}`))
 	}))
 	defer srv.Close()
 
-	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	days, err := c.GrowthStreak(&auth.Auth{AccessToken: "at", UID: "u1"})
 	if err != nil {
 		t.Fatalf("GrowthStreak: %v", err)
@@ -54,12 +61,15 @@ func TestGrowthStreakDefaultZero(t *testing.T) {
 // TestGrowthStreakServerError HTTP 非 2xx → *Error。
 func TestGrowthStreakServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		w.WriteHeader(500)
 		w.Write([]byte(`boom`))
 	}))
 	defer srv.Close()
 
-	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	if _, err := c.GrowthStreak(&auth.Auth{AccessToken: "at", UID: "u1"}); err == nil {
 		t.Fatal("want error on 500")
 	}
@@ -68,12 +78,15 @@ func TestGrowthStreakServerError(t *testing.T) {
 // TestGrowthStreakBusinessCode 业务 code 非 0 → 错误（非 2xx 之外的静默失败也要能被观测）。
 func TestGrowthStreakBusinessCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		w.WriteHeader(200)
 		w.Write([]byte(`{"code":12000,"msg":"internal"}`))
 	}))
 	defer srv.Close()
 
-	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	if _, err := c.GrowthStreak(&auth.Auth{AccessToken: "at", UID: "u1"}); err == nil {
 		t.Fatal("want error on non-zero business code")
 	}
@@ -108,7 +121,7 @@ func TestGrowthStreakFull(t *testing.T) {
 		if len(st.RedemptionStatus.Tiers) != 1 || st.RedemptionStatus.Tiers[0].Chances != 2 {
 			t.Errorf("tiers = %+v", st.RedemptionStatus.Tiers)
 		}
-		r := f.seen()[0]
+		r := f.bizSeen()[0]
 		if r.method != http.MethodGet || r.path != streakPath {
 			t.Errorf("请求 = %s %s", r.method, r.path)
 		}
@@ -149,7 +162,7 @@ func TestGrowthRedeemTier(t *testing.T) {
 	if err := c.GrowthRedeemTier(upAuth(), "14d"); err != nil {
 		t.Fatalf("GrowthRedeemTier: %v", err)
 	}
-	r := f.seen()[0]
+	r := f.bizSeen()[0]
 	if r.method != http.MethodPost || r.path != streakRedeemPath {
 		t.Errorf("请求 = %s %s", r.method, r.path)
 	}
@@ -161,8 +174,8 @@ func TestGrowthRedeemTier(t *testing.T) {
 		t.Errorf("tier = %v", body["tier"])
 	}
 	token, _ := body["client_token"].(string)
-	if !uuidV4Shape.MatchString(token) {
-		t.Errorf("client_token 形态不对: %q", token)
+	if !redeemTokenShape.MatchString(token) || !strings.HasPrefix(token, "redeem-14d-") {
+		t.Errorf("client_token 应形如 redeem-<tier>-<uuid>: %q", token)
 	}
 
 	f2 := newUpFake(t)
@@ -182,7 +195,7 @@ func TestLotteryChances(t *testing.T) {
 		if err != nil || chances != 3 {
 			t.Fatalf("chances=%d err=%v，应为 3/nil", chances, err)
 		}
-		r := f.seen()[0]
+		r := f.bizSeen()[0]
 		if r.method != http.MethodGet || r.path != lotterySummaryPath {
 			t.Errorf("请求 = %s %s", r.method, r.path)
 		}
@@ -229,7 +242,7 @@ func TestLotteryDraw(t *testing.T) {
 	if prize, _ := data["prize"].(map[string]any); prize["name"] != "50 积分" {
 		t.Errorf("prize = %v", data["prize"])
 	}
-	r := f.seen()[0]
+	r := f.bizSeen()[0]
 	if r.method != http.MethodPost || r.path != lotteryDrawPath {
 		t.Errorf("请求 = %s %s", r.method, r.path)
 	}
@@ -237,8 +250,8 @@ func TestLotteryDraw(t *testing.T) {
 	if err := json.Unmarshal(r.body, &body); err != nil {
 		t.Fatalf("请求体: %v", err)
 	}
-	if token, _ := body["client_token"].(string); !uuidV4Shape.MatchString(token) {
-		t.Errorf("client_token 形态不对: %q", token)
+	if token, _ := body["client_token"].(string); !drawTokenShape.MatchString(token) {
+		t.Errorf("client_token 应形如 draw-<uuid>: %q", token)
 	}
 
 	f2 := newUpFake(t)
@@ -248,20 +261,33 @@ func TestLotteryDraw(t *testing.T) {
 	}
 }
 
-// TestClientToken clientToken 生成 8-4-4-4-12 的 hex UUID 形态且每次不同。
+// TestClientToken clientToken 按网页写法 `${prefix}-${uuid}` 生成，UUID 部分保持
+// 8-4-4-4-12 小写 hex 且每次不同；无前缀时（school.go）仍返回裸 UUID。
 func TestClientToken(t *testing.T) {
-	first := clientToken()
-	second := clientToken()
-	if !uuidV4Shape.MatchString(first) {
-		t.Errorf("token 形态不对: %q", first)
+	first := clientToken("draw")
+	second := clientToken("draw")
+	if !drawTokenShape.MatchString(first) {
+		t.Errorf("token 形态应为 draw-<uuid>: %q", first)
 	}
 	if first == second {
 		t.Errorf("两次生成不应相同: %q", first)
+	}
+	if redeem := clientToken("redeem-7d"); !strings.HasPrefix(redeem, "redeem-7d-") {
+		t.Errorf("兑换令牌应带 redeem-<tier>- 前缀: %q", redeem)
+	}
+	if bare := clientToken(); !uuidV4Shape.MatchString(bare) {
+		t.Errorf("无前缀应返回裸 UUID: %q", bare)
 	}
 }
 
 // uuidV4Shape 与 clientToken 的 8-4-4-4-12 hex 形态一致（版本位不强制 4）。
 var uuidV4Shape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// drawTokenShape / redeemTokenShape 网页抽奖、兑换的 client_token 形态。
+var (
+	drawTokenShape   = regexp.MustCompile(`^draw-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	redeemTokenShape = regexp.MustCompile(`^redeem-[0-9]+d-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+)
 
 // TestStreakBusinessErrors 兑换/抽奖的错误语义：业务 code≠0 带 msg；非 JSON
 // 由 doJSON 报解析错误。

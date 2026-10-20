@@ -20,7 +20,11 @@ func TestCompensationBulkClaim(t *testing.T) {
 	var mu sync.Mutex
 	claims := map[string]int{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
+		// 登录码请求带 Bearer、业务请求带 session Cookie，统一取令牌当 uid。
+		uid := upstreamtest.Token(r)
 		if uid == "global" || uid == "enterprise" {
 			t.Errorf("unsupported account contacted upstream: %s", uid)
 		}
@@ -65,7 +69,8 @@ func TestCompensationBulkClaim(t *testing.T) {
 	accounts.Pause("paused")
 	accounts.Disable("disabled", "test")
 	accounts.Cooldown("ready", pool.CoolHard, time.Hour, "credits exhausted")
-	p := New(Config{Pool: accounts, Upstream: &upstream.Client{HTTP: srv.Client(), BillingBaseCN: srv.URL}, APIKey: "key"})
+	// 补偿状态与领取走官网网页域（webBase），BillingBaseCN 只留给余额刷新。
+	p := New(Config{Pool: accounts, Upstream: &upstream.Client{HTTP: srv.Client(), BillingBaseCN: srv.URL, WebBaseCN: srv.URL}, APIKey: "key"})
 	request := func(method, path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, nil)
 		r.Header.Set("Authorization", "Bearer key")
@@ -159,6 +164,9 @@ func TestCompensationEndpointsRequireAuth(t *testing.T) {
 func TestCompensationSingleClaimWithBalanceFailure(t *testing.T) {
 	claims := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/billing/meter/compensation-status":
 			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
@@ -175,7 +183,7 @@ func TestCompensationSingleClaimWithBalanceFailure(t *testing.T) {
 	defer srv.Close()
 	accounts := pool.New("")
 	accounts.Add(&auth.Auth{UID: "u1", AccessToken: "at"})
-	p := New(Config{Pool: accounts, Upstream: &upstream.Client{HTTP: srv.Client(), BillingBaseCN: srv.URL}})
+	p := New(Config{Pool: accounts, Upstream: &upstream.Client{HTTP: srv.Client(), BillingBaseCN: srv.URL, WebBaseCN: srv.URL}})
 	for i := 0; i < 2; i++ {
 		w := httptest.NewRecorder()
 		p.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/panel/api/accounts/u1/compensation/claim", nil))

@@ -142,7 +142,8 @@ func TestImportGlobalBranches(t *testing.T) {
 
 	p, up, _ := newLoginPanel(t)
 	up.on(http.MethodGet, loginGlobalHost, globalRegisterStatus, "", autoOK(`{"code":200}`))
-	up.on(http.MethodPost, loginGlobalHost, globalTrialPath, "", autoOK(autoEnvelope("{}")))
+	// 试用改走官网网页形状（webBase 国际版固定 www.workbuddy.ai，带 X-Client-Platform: web）。
+	up.on(http.MethodPost, loginGlobalHost, globalTrialPath, "web", autoOK(autoEnvelope("{}")))
 	up.on(http.MethodPost, loginGlobalHost, resourcePathGlobal, "", autoOK(loginResourceBody(5, 10)))
 	item := `{"auth":{"accessToken":"at-imp-g","refreshToken":"rt-imp-g","domain":"www.workbuddy.ai"},` +
 		`"account":{"uid":"u-imp-g","nickname":"国际导入"}}`
@@ -257,7 +258,7 @@ func TestCompensationClaimUpstreamError(t *testing.T) {
 	defer srv.Close()
 	accounts := pool.New("")
 	accounts.Add(&auth.Auth{UID: "u1", AccessToken: "at"})
-	p := New(Config{Pool: accounts, Upstream: &upstream.Client{HTTP: srv.Client(), BillingBaseCN: srv.URL}})
+	p := New(Config{Pool: accounts, Upstream: &upstream.Client{HTTP: srv.Client(), BillingBaseCN: srv.URL, WebBaseCN: srv.URL}})
 	rec := postJSON(t, p, "/panel/api/accounts/u1/compensation/claim", "")
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "claim boom") {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
@@ -282,7 +283,7 @@ func TestCompensationContextCancel(t *testing.T) {
 	for _, uid := range []string{"a", "b", "c", "d"} {
 		accounts.Add(&auth.Auth{UID: uid, AccessToken: "at"})
 	}
-	p := New(Config{Pool: accounts, Upstream: &upstream.Client{HTTP: srv.Client(), BillingBaseCN: srv.URL}})
+	p := New(Config{Pool: accounts, Upstream: &upstream.Client{HTTP: srv.Client(), BillingBaseCN: srv.URL, WebBaseCN: srv.URL}})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/panel/api/compensation", nil).WithContext(ctx)
@@ -439,7 +440,7 @@ func TestRunGrowthQueuedMoreBranches(t *testing.T) {
 		if !strings.Contains(msg, "自动领奖") {
 			t.Fatalf("message=%q", msg)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost,
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost,
 			"/activity/growth/tasks/Sequential_Tasks_2/claim", "miniprogram")); got == 0 {
 			t.Fatal("应走小程序口径领奖")
 		}

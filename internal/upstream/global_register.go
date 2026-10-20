@@ -25,10 +25,6 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
-// globalWebUA 国际版 web 端 UA（注册完善页走 web 指纹，非桌面端 CLI 指纹）。
-const globalWebUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-	"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
 // GlobalCountry 可选注册地区（对应 get-country-code 的 list 元素）。
 type GlobalCountry struct {
 	EnName string `json:"EnName"` // 英文全名（countryFullName）
@@ -62,8 +58,9 @@ func (c *Client) globalRegisterReq(method, url, token string, body any) (*http.R
 		return nil, err
 	}
 	base := c.globalRegisterBase()
-	req.Header.Set("User-Agent", globalWebUA)
+	req.Header.Set("User-Agent", c.webUserAgent())
 	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Encoding", acceptEncodingChrome)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", base)
 	req.Header.Set("Referer", base+"/")
@@ -75,7 +72,7 @@ func (c *Client) globalRegisterReq(method, url, token string, body any) (*http.R
 
 // globalRegisterJSON 发注册链路请求并解外层信封（code/msg）。
 func (c *Client) globalRegisterJSON(req *http.Request) (code int, msg string, raw json.RawMessage, err error) {
-	resp, err := c.HTTP.Do(req)
+	resp, err := doDecoded(c.HTTP, req)
 	if err != nil {
 		return 0, "", nil, err
 	}

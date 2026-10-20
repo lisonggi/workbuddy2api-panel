@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // TestClaimRewardWebEndpoint 领奖走 Web 域（workbuddy.cn）、任务码在路径里、无 body。
@@ -17,6 +18,9 @@ func TestClaimRewardWebEndpoint(t *testing.T) {
 	var gotPath, gotMethod, gotBody string
 	var gotPlatform, gotReferer string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		gotPath, gotMethod = r.URL.Path, r.Method
 		gotPlatform = r.Header.Get("x-client-platform")
 		gotReferer = r.Header.Get("Referer")
@@ -49,8 +53,8 @@ func TestClaimRewardWebEndpoint(t *testing.T) {
 	if gotPlatform != "web" {
 		t.Errorf("x-client-platform=%q want web", gotPlatform)
 	}
-	if !strings.Contains(gotReferer, "workbuddy.cn") {
-		t.Errorf("Referer=%q 应指向 workbuddy.cn", gotReferer)
+	if want := srv.URL + webPageGrowthCenter; gotReferer != want {
+		t.Errorf("Referer=%q want %q", gotReferer, want)
 	}
 }
 
@@ -58,6 +62,9 @@ func TestClaimRewardWebEndpoint(t *testing.T) {
 // 本地应视为"无新增奖励但不报错"（幂等语义）。
 func TestClaimRewardAlreadyClaimed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		w.Write([]byte(`{"code":0,"msg":"OK","data":{"already_claimed":true}}`))
 	}))
 	defer srv.Close()
@@ -74,6 +81,9 @@ func TestClaimRewardAlreadyClaimed(t *testing.T) {
 // TestClaimRewardNotCompleted 未达标：上游 400 + task not completed 应作为错误透出。
 func TestClaimRewardNotCompleted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]any{"code": 400, "msg": "task not completed"})
 	}))
@@ -142,6 +152,7 @@ func TestListTasksParseVariants(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newUpFake(t)
+			f.on(http.MethodGet, tasksSubscribeStatusPath, 200, `{"code":0,"data":{}}`)
 			f.on(http.MethodGet, tasksListPath, 200, upTasksJSON(tc.item))
 			c := upClient(f)
 			tasks, err := c.ListTasks(upAuth())
@@ -154,15 +165,22 @@ func TestListTasksParseVariants(t *testing.T) {
 			if tasks[0] != tc.want {
 				t.Errorf("task = %+v，应为 %+v", tasks[0], tc.want)
 			}
-			r := f.seen()[0]
+			reqs := f.bizSeen()
+			if len(reqs) != 2 {
+				t.Fatalf("请求数 = %d，应订阅状态 + 列表", len(reqs))
+			}
+			r := reqs[1]
 			if r.method != http.MethodGet || r.path != tasksListPath {
 				t.Errorf("请求 = %s %s", r.method, r.path)
 			}
-			if r.header.Get("X-Client-Platform") != "" {
-				t.Errorf("默认口径不应带小程序头，got %q", r.header.Get("X-Client-Platform"))
+			if got := r.header.Get("X-Client-Platform"); got != "web" {
+				t.Errorf("X-Client-Platform = %q，应为 web", got)
 			}
-			if r.header.Get("Authorization") != "Bearer at" {
-				t.Errorf("Authorization = %q", r.header.Get("Authorization"))
+			if got := r.header.Get("Authorization"); got != "" {
+				t.Errorf("网页请求不应带 Authorization，got %q", got)
+			}
+			if got := r.header.Get("Cookie"); !strings.Contains(got, "session=at") {
+				t.Errorf("Cookie = %q，应含登录态 session=at", got)
 			}
 		})
 	}
@@ -185,11 +203,30 @@ func TestListTasksErrors(t *testing.T) {
 			if tc.name == "HTTP 400" {
 				status = 400
 			}
+			f.on(http.MethodGet, tasksSubscribeStatusPath, 200, `{"code":0,"data":{}}`)
 			f.on(http.MethodGet, tasksListPath, status, tc.body)
 			if _, err := upClient(f).ListTasks(upAuth()); err == nil {
 				t.Fatal("应返回错误")
 			}
 		})
+	}
+}
+
+// TestListTasksSubscribeStatusErrorIgnored 订阅状态请求失败不影响拉列表（网页同样忽略它）。
+func TestListTasksSubscribeStatusErrorIgnored(t *testing.T) {
+	f := newUpFake(t)
+	f.on(http.MethodGet, tasksSubscribeStatusPath, 500, `{"code":500,"msg":"subscribe boom"}`)
+	f.on(http.MethodGet, tasksListPath, 200, upTasksJSON(`{"task_code":"chat_5","target":5,"current":5}`))
+	tasks, err := upClient(f).ListTasks(upAuth())
+	if err != nil {
+		t.Fatalf("订阅状态失败不应影响列表: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].TaskCode != "chat_5" {
+		t.Fatalf("tasks = %+v", tasks)
+	}
+	reqs := f.bizSeen()
+	if len(reqs) != 2 || reqs[0].path != tasksSubscribeStatusPath || reqs[1].path != tasksListPath {
+		t.Fatalf("请求顺序应为订阅状态 → 列表，got %+v", reqs)
 	}
 }
 
@@ -206,9 +243,30 @@ func TestListTasksMP(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].TaskCode != "mp_task" || !tasks[0].Claimable {
 		t.Errorf("tasks = %+v", tasks)
 	}
-	r := f.seen()[0]
+	r := f.bizSeen()[0]
+	if r.url != upBase+tasksListPath {
+		t.Errorf("URL = %q，应发往官网域 %q", r.url, upBase+tasksListPath)
+	}
 	if got := r.header.Get("X-Client-Platform"); got != mpPlatform {
 		t.Errorf("X-Client-Platform = %q，应为 %q", got, mpPlatform)
+	}
+	if got := r.header.Get("Authorization"); got != "Bearer at" {
+		t.Errorf("Authorization = %q，应为 Bearer at（小程序不用 Cookie）", got)
+	}
+	if got := r.header.Get("User-Agent"); got != miniProgramUA {
+		t.Errorf("User-Agent = %q，应为 miniProgramUA", got)
+	}
+	if got := r.header.Get("Referer"); got != upBase+webPageGrowthCenter {
+		t.Errorf("Referer = %q", got)
+	}
+	if got := r.header.Get("Accept-Language"); got != "zh-CN,zh;q=0.9" {
+		t.Errorf("Accept-Language = %q", got)
+	}
+	for _, k := range []string{"Cookie", "X-CodeBuddy-Request", "X-User-Id", "X-Domain", "X-Tenant-Id",
+		"X-Device-Token", "Sec-CH-UA", "Sec-CH-UA-Mobile", "Sec-CH-UA-Platform"} {
+		if got := r.header.Get(k); got != "" {
+			t.Errorf("小程序请求不应带 %s，got %q", k, got)
+		}
 	}
 }
 
@@ -220,7 +278,7 @@ func TestAcceptTasks(t *testing.T) {
 		call func(c *Client) error
 		want string
 	}{
-		{"默认口径", func(c *Client) error { return c.AcceptTasks(upAuth(), []string{"a", "b"}) }, ""},
+		{"默认口径", func(c *Client) error { return c.AcceptTasks(upAuth(), []string{"a", "b"}) }, "web"},
 		{"小程序口径", func(c *Client) error { return c.AcceptTasksMP(upAuth(), []string{"a", "b"}) }, mpPlatform},
 	}
 	for _, tc := range cases {
@@ -230,9 +288,12 @@ func TestAcceptTasks(t *testing.T) {
 			if err := tc.call(upClient(f)); err != nil {
 				t.Fatalf("accept: %v", err)
 			}
-			r := f.seen()[0]
+			r := f.bizSeen()[0]
 			if r.method != http.MethodPost || r.path != tasksAcceptPath {
 				t.Errorf("请求 = %s %s", r.method, r.path)
+			}
+			if r.url != upBase+tasksAcceptPath {
+				t.Errorf("URL = %q，应发往官网域", r.url)
 			}
 			var body struct {
 				TaskCodes []string `json:"task_codes"`
@@ -245,6 +306,24 @@ func TestAcceptTasks(t *testing.T) {
 			}
 			if got := r.header.Get("X-Client-Platform"); got != tc.want {
 				t.Errorf("X-Client-Platform = %q，应为 %q", got, tc.want)
+			}
+			if got := r.header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("有请求体应带 Content-Type，got %q", got)
+			}
+			if tc.want == mpPlatform {
+				if got := r.header.Get("Authorization"); got != "Bearer at" {
+					t.Errorf("小程序口径 Authorization = %q，应为 Bearer at", got)
+				}
+				if got := r.header.Get("Cookie"); got != "" {
+					t.Errorf("小程序口径不应带 Cookie，got %q", got)
+				}
+			} else {
+				if got := r.header.Get("Authorization"); got != "" {
+					t.Errorf("网页口径不应带 Authorization，got %q", got)
+				}
+				if got := r.header.Get("Cookie"); !strings.Contains(got, "session=at") {
+					t.Errorf("网页口径 Cookie = %q，应含登录态", got)
+				}
 			}
 		})
 	}
@@ -267,70 +346,60 @@ func TestAcceptTasks(t *testing.T) {
 	})
 }
 
-// TestClaimRewardMP 小程序领奖：chat 域 + mp 头；chat 域 400 时降级 Web 域领奖；
-// 非 400 错误不降级。
+// TestClaimRewardMP 小程序领奖：发往官网域 + 小程序 web-view 头（Bearer），
+// 不再有 chat 域 → Web 域降级；400 直接作为错误返回。
 func TestClaimRewardMP(t *testing.T) {
-	newSplitClient := func(f *upFake) *Client {
+	newClient := func(f *upFake) *Client {
 		c := upClient(f)
 		c.ChatBaseCN = "https://chat.example"
 		c.WebBaseCN = "https://web.example"
 		return c
 	}
 
-	t.Run("chat 域成功", func(t *testing.T) {
+	t.Run("官网域成功", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, "/activity/growth/tasks/mp_task/claim", 200, `{"code":0,"data":{"credit":50,"energy":2}}`)
-		c := newSplitClient(f)
+		c := newClient(f)
 		credit, energy, err := c.ClaimRewardMP(upAuth(), "mp_task")
 		if err != nil || credit != 50 || energy != 2 {
 			t.Fatalf("credit=%d energy=%d err=%v，应为 50/2/nil", credit, energy, err)
 		}
-		r := f.seen()[0]
+		r := f.bizSeen()[0]
 		if r.header.Get("X-Client-Platform") != mpPlatform {
 			t.Errorf("X-Client-Platform = %q", r.header.Get("X-Client-Platform"))
 		}
-		if r.url != "https://chat.example/activity/growth/tasks/mp_task/claim" {
-			t.Errorf("URL = %q", r.url)
+		if r.header.Get("Authorization") != "Bearer at" || r.header.Get("Cookie") != "" {
+			t.Errorf("认证头：Authorization=%q Cookie=%q，应为 Bearer 且无 Cookie",
+				r.header.Get("Authorization"), r.header.Get("Cookie"))
+		}
+		if r.url != "https://web.example/activity/growth/tasks/mp_task/claim" {
+			t.Errorf("URL = %q，应发往官网域", r.url)
 		}
 	})
 
-	t.Run("chat 域 400 降级 Web 域", func(t *testing.T) {
+	t.Run("HTTP 400 直接返回错误", func(t *testing.T) {
 		f := newUpFake(t)
-		f.onHost("chat.example", http.MethodPost, "/activity/growth/tasks/mp_task/claim", 400, `{"code":400,"msg":"bad"}`)
-		f.onHost("web.example", http.MethodPost, "/activity/growth/tasks/mp_task/claim", 200, `{"code":0,"data":{"credit":50,"energy":2}}`)
-		c := newSplitClient(f)
-		credit, energy, err := c.ClaimRewardMP(upAuth(), "mp_task")
-		if err != nil || credit != 50 || energy != 2 {
-			t.Fatalf("降级后 credit=%d energy=%d err=%v，应为 50/2/nil", credit, energy, err)
+		f.on(http.MethodPost, "/activity/growth/tasks/mp_task/claim", 400, `{"code":400,"msg":"task not completed"}`)
+		if _, _, err := newClient(f).ClaimRewardMP(upAuth(), "mp_task"); err == nil {
+			t.Fatal("400 应直接返回错误，不再降级")
 		}
-		reqs := f.seen()
-		if len(reqs) != 2 {
-			t.Fatalf("应发 2 次请求（chat→web），实际 %d", len(reqs))
-		}
-		if reqs[1].url != "https://web.example/activity/growth/tasks/mp_task/claim" {
-			t.Errorf("降级 URL = %q", reqs[1].url)
-		}
-		if got := reqs[1].header.Get("x-client-platform"); got != "web" {
-			t.Errorf("降级请求 x-client-platform = %q，应为 web", got)
+		if n := len(f.bizSeen()); n != 1 {
+			t.Errorf("只应发一次请求，实际 %d 次", n)
 		}
 	})
 
-	t.Run("非 400 错误不降级", func(t *testing.T) {
+	t.Run("非 400 错误", func(t *testing.T) {
 		f := newUpFake(t)
-		f.onHost("chat.example", http.MethodPost, "/activity/growth/tasks/mp_task/claim", 500, `{"code":500,"msg":"server boom"}`)
-		c := newSplitClient(f)
-		if _, _, err := c.ClaimRewardMP(upAuth(), "mp_task"); err == nil {
+		f.on(http.MethodPost, "/activity/growth/tasks/mp_task/claim", 500, `{"code":500,"msg":"server boom"}`)
+		if _, _, err := newClient(f).ClaimRewardMP(upAuth(), "mp_task"); err == nil {
 			t.Fatal("500 应返回错误")
-		}
-		if n := len(f.seen()); n != 1 {
-			t.Errorf("非 400 不应降级，实际请求 %d 次", n)
 		}
 	})
 
 	t.Run("成功但 data 非法", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, "/activity/growth/tasks/mp_task/claim", 200, `{"code":0,"data":"nope"}`)
-		if _, _, err := newSplitClient(f).ClaimRewardMP(upAuth(), "mp_task"); err == nil {
+		if _, _, err := newClient(f).ClaimRewardMP(upAuth(), "mp_task"); err == nil {
 			t.Fatal("data 类型不符应返回解析错误")
 		}
 	})
@@ -361,17 +430,25 @@ func TestClaimRewardHeadersAndErrors(t *testing.T) {
 		if err != nil || credit != 10 || energy != 1 {
 			t.Fatalf("credit=%d energy=%d err=%v", credit, energy, err)
 		}
-		r := f.seen()[0]
+		r := f.bizSeen()[0]
+		if got := r.header.Get("Cookie"); !strings.Contains(got, "session=at") {
+			t.Errorf("Cookie = %q，应含登录态 session=at", got)
+		}
 		for k, want := range map[string]string{
-			"Authorization":   "Bearer at",
-			"X-User-Id":       "u-1",
+			"Authorization":   "",
 			"X-Enterprise-Id": "ent-9",
-			"X-Tenant-Id":     "ent-9",
-			"X-Domain":        "www.workbuddy.cn",
 			"User-Agent":      "custom-ua/1.0",
+			"Origin":          upBase,
+			"Referer":         upBase + webPageGrowthCenter,
 		} {
 			if got := r.header.Get(k); got != want {
 				t.Errorf("%s = %q，应为 %q", k, got, want)
+			}
+		}
+		// 网页形状不带桌面端那套账号头；无请求体也不带 Content-Type。
+		for _, k := range []string{"X-User-Id", "X-Tenant-Id", "X-Domain", "Content-Type"} {
+			if got := r.header.Get(k); got != "" {
+				t.Errorf("%s 不应携带，got %q", k, got)
 			}
 		}
 	})

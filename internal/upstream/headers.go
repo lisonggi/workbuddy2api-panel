@@ -405,40 +405,10 @@ func (c *Client) BillingHeaders(req *http.Request, a *auth.Auth) {
 	c.frameworkHeaders(req, a, c.daemonUserAgent(a))
 }
 
-// miniProgramHeaders 小程序限定任务（X-Client-Platform 为小程序）的请求头，保持 1.1.2 以前的
-// 形状：没有小程序的包可对照，改了反而多一个没验证过的变量。
-func (c *Client) miniProgramHeaders(req *http.Request, a *auth.Auth) {
-	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-CodeBuddy-Request", "1")
-	if a.IsGlobal() {
-		req.Header.Set("Accept-Language", "en-US")
-	} else {
-		req.Header.Set("Accept-Language", "zh-CN")
-	}
-	if c != nil && c.UserAgent != "" {
-		req.Header.Set("User-Agent", c.UserAgent)
-	} else if c.attributionClientName() != "SaaS" {
-		req.Header.Set("User-Agent", "WorkBuddy/"+c.clientVersion(a))
-	}
-	if a.UID != "" {
-		req.Header.Set("X-User-Id", a.UID)
-	}
-	if a.EnterpriseID != "" {
-		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
-		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
-	}
-	if d := a.DomainValue(); d != "" {
-		req.Header.Set("X-Domain", d)
-	}
-	c.injectDeviceToken(req, a)
-	req.Header.Set("X-Client-Platform", mpPlatform)
-}
-
 // RefreshHeaders 刷新令牌的请求头（X-Refresh-Token 只允许出现在这里）。官方内置 CLI 的
 // refreshSession：请求框架的头 + X-Domain（登录域，没有就用产品入口域）+ X-Refresh-Token +
-// X-Auth-Refresh-Source: plugin。
+// X-Auth-Refresh-Source: plugin。官方另带的链路头（X-Trace-ID、b3、X-B3-*）由 RefreshToken
+// 按这次刷新的根 span 补上（trace.go）。
 func (c *Client) RefreshHeaders(req *http.Request, a *auth.Auth) {
 	c.frameworkHeaders(req, a, c.userAgent(a))
 	d := chatDomain(a)

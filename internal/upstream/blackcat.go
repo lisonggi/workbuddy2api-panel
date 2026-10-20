@@ -71,9 +71,35 @@ func (c *Client) RunNightChats(a *auth.Auth, need int) (int64, error) {
 	return ok, nil
 }
 
-// ClaimGift 领取新手礼包（每号一次，已领返回业务错误）。
+// 新手礼包端点（官网用量页）。网页先查 check-gift-claimed，data.active 为真且 claimed
+// 为假才显示领取按钮；点了才发 claim-gift。两条都没有请求体。
+const (
+	giftCheckPath = "/billing/meter/check-gift-claimed"
+	giftClaimPath = "/billing/meter/claim-gift"
+)
+
+// ClaimGift 领取新手礼包（每号一次）。按网页顺序先查状态：未开放不领、已领不领（照旧按
+// “已领”返回错误，调用方只在 err==nil 时记日志）、查询失败返回该错误不领；只有 active 且
+// 未领取才发领取请求。
 func (c *Client) ClaimGift(a *auth.Auth) (int64, error) {
-	data, err := c.billingJSON(a, http.MethodPost, "/billing/meter/claim-gift", map[string]any{})
+	data, err := c.webJSON(a, http.MethodPost, giftCheckPath, webPageUsage, nil)
+	if err != nil {
+		return 0, err
+	}
+	var status struct {
+		Active  bool `json:"active"`
+		Claimed bool `json:"claimed"`
+	}
+	if err := json.Unmarshal(data, &status); err != nil {
+		return 0, fmt.Errorf("解析新手礼包状态: %w", err)
+	}
+	if !status.Active {
+		return 0, fmt.Errorf("新手礼包未开放")
+	}
+	if status.Claimed {
+		return 0, fmt.Errorf("新手礼包已领取")
+	}
+	data, err = c.webJSON(a, http.MethodPost, giftClaimPath, webPageUsage, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -87,7 +113,7 @@ func (c *Client) ClaimGift(a *auth.Auth) (int64, error) {
 // HeatmapYesterdayMissed 检查昨日是否漏签（heatmap cell score==0）。
 func (c *Client) HeatmapYesterdayMissed(a *auth.Auth) (bool, error) {
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-	data, err := c.growthJSON(a, http.MethodGet, "/activity/growth/heatmap", nil)
+	data, err := c.webJSON(a, http.MethodGet, "/activity/growth/heatmap", webPageGrowthCenter, nil)
 	if err != nil {
 		return false, err
 	}
@@ -110,7 +136,7 @@ func (c *Client) HeatmapYesterdayMissed(a *auth.Auth) (bool, error) {
 
 // UseMakeupCard 对指定日期使用补签卡（保住连登连续天数；无卡返回业务错误）。
 func (c *Client) UseMakeupCard(a *auth.Auth, date string) error {
-	_, err := c.growthJSON(a, http.MethodPost, "/activity/growth/makeup-cards/use",
+	_, err := c.webJSON(a, http.MethodPost, "/activity/growth/makeup-cards/use", webPageGrowthCenter,
 		map[string]any{"target_date": date})
 	return err
 }

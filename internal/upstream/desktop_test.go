@@ -393,22 +393,40 @@ func TestReportWebEvent(t *testing.T) {
 	if err := c.ReportWebEvent(a, "library_doc_intro_click", "https://www.workbuddy.cn/library/1", "btn-intro", "介绍"); err != nil {
 		t.Fatalf("ReportWebEvent: %v", err)
 	}
-	r := f.seen()[0]
+	r := f.bizSeen()[0]
 	if r.url != "https://www.workbuddy.cn/v2/report" {
 		t.Errorf("URL = %q", r.url)
 	}
+	// 官网网页的 sendBeacon 形状：text/plain、Accept: */*、Origin/Referer/浏览器 UA，
+	// 靠网页登录态 Cookie 认人（不带 Authorization）。
 	for k, want := range map[string]string{
-		"x-client-platform": "web",
-		"Origin":            "https://www.workbuddy.cn",
-		"Referer":           "https://www.workbuddy.cn/library/1",
-		"X-User-Id":         "u-web",
+		"Authorization":      "",
+		"Content-Type":       "text/plain;charset=UTF-8",
+		"Accept":             "*/*",
+		"Origin":             "https://www.workbuddy.cn",
+		"Referer":            "https://www.workbuddy.cn/library/1",
+		"User-Agent":         browserUA,
+		"Sec-Fetch-Site":     "same-origin",
+		"Sec-Fetch-Mode":     "no-cors",
+		"Sec-Fetch-Dest":     "empty",
+		"Accept-Language":    "zh-CN,zh;q=0.9",
+		"Sec-CH-UA-Mobile":   "?0",
+		"Sec-CH-UA-Platform": `"macOS"`,
 	} {
 		if got := r.header.Get(k); got != want {
 			t.Errorf("%s = %q，应为 %q", k, got, want)
 		}
 	}
-	if !strings.Contains(r.header.Get("User-Agent"), "Mozilla/5.0") {
-		t.Errorf("UA 应为浏览器形状: %q", r.header.Get("User-Agent"))
+	if got := r.header.Get("Cookie"); !strings.Contains(got, "session=at") {
+		t.Errorf("Cookie = %q，应含登录态 session=at", got)
+	}
+	if got := r.header.Get("Sec-CH-UA"); got != `"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"` {
+		t.Errorf("Sec-CH-UA = %q", got)
+	}
+	for _, k := range []string{"X-User-Id", "X-Client-Platform", "X-Requested-With", "X-Product", "X-Domain"} {
+		if got := r.header.Get(k); got != "" {
+			t.Errorf("网页上报不应带 %s，got %q", k, got)
+		}
 	}
 	var events []map[string]any
 	if err := json.Unmarshal(r.body, &events); err != nil || len(events) != 1 {
@@ -419,8 +437,20 @@ func TestReportWebEvent(t *testing.T) {
 		ev["elementId"] != "btn-intro" || ev["elementName"] != "介绍" {
 		t.Errorf("事件字段 = %v", ev)
 	}
-	if ev["os"] != "Win32" || ev["userId"] != "u-web" || ev["userNickname"] != "网页号" || ev["enterpriseId"] != "ent-1" {
+	if ev["os"] != "macOS" || ev["osVersion"] != "10.15.7" || ev["userId"] != "u-web" || ev["userNickname"] != "网页号" ||
+		ev["username"] != "网页号" || ev["enterpriseId"] != "ent-1" || ev["product"] != "UserCenter" ||
+		ev["type"] != "library_doc_intro_click" || ev["machineId"] != webVisitorID(a) || ev["reportDelay"] != float64(0) {
 		t.Errorf("web 指纹字段 = %v", ev)
+	}
+	if sid, _ := ev["sessionId"].(string); !regexp.MustCompile(`^\d{13}-[0-9a-z]{9}$`).MatchString(sid) {
+		t.Errorf("sessionId = %q，应为「毫秒时间戳-9 位 36 进制」", sid)
+	}
+	if _, ok := ev["arch"]; ok {
+		t.Errorf("官网网页事件不带 arch: %v", ev)
+	}
+	// 事件里的 userAgent 与请求头同一个 UA。
+	if ev["userAgent"] != r.header.Get("User-Agent") {
+		t.Errorf("事件 userAgent = %v，应等于请求头 %q", ev["userAgent"], r.header.Get("User-Agent"))
 	}
 
 	f2 := newUpFake(t)

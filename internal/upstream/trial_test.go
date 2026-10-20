@@ -22,7 +22,7 @@ func TestClaimTrialOnlyGlobal(t *testing.T) {
 	}
 }
 
-// TestClaimTrialSuccess 领取成功：POST billingBase /billing/ide/trial，带鉴权头。
+// TestClaimTrialSuccess 领取成功：POST 网页域 /billing/ide/trial（国际版域），无请求体。
 func TestClaimTrialSuccess(t *testing.T) {
 	f := newUpFake(t)
 	f.on(http.MethodPost, trialPath, 200, `{"code":0,"msg":"OK","data":{}}`)
@@ -31,15 +31,36 @@ func TestClaimTrialSuccess(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("claimed=%v err=%v，应为 true/nil", claimed, err)
 	}
-	r := f.seen()[0]
+	r := f.bizSeen()[0]
 	if r.method != http.MethodPost || r.path != trialPath {
 		t.Errorf("请求 = %s %s", r.method, r.path)
 	}
-	if r.header.Get("Authorization") != "Bearer "+globalAuth().AccessTokenValue() {
-		t.Errorf("Authorization = %q", r.header.Get("Authorization"))
+	if want := "https://www.workbuddy.ai" + trialPath; r.url != want {
+		t.Errorf("URL = %q，应为国际版网页域 %q", r.url, want)
 	}
-	if r.header.Get("Content-Type") != "application/json" || r.header.Get("Accept") != "application/json, text/plain, */*" {
-		t.Errorf("内容头 = %v", r.header)
+	if got := r.header.Get("Authorization"); got != "" {
+		t.Errorf("网页请求不应带 Authorization，got %q", got)
+	}
+	if got := r.header.Get("Cookie"); !strings.Contains(got, "session="+globalAuth().AccessTokenValue()) {
+		t.Errorf("Cookie = %q，应含登录态", got)
+	}
+	if got := r.header.Get("Accept"); got != "application/json, text/plain, */*" {
+		t.Errorf("Accept = %q", got)
+	}
+	if got := r.header.Get("Content-Type"); got != "" {
+		t.Errorf("无请求体不应带 Content-Type，got %q", got)
+	}
+	if got := r.header.Get("Origin"); got != "https://www.workbuddy.ai" {
+		t.Errorf("Origin = %q，应为国际版网页域", got)
+	}
+	if got := r.header.Get("Referer"); got != "https://www.workbuddy.ai/profile" {
+		t.Errorf("Referer = %q，应为国际版个人主页", got)
+	}
+	if got := r.header.Get("X-Client-Platform"); got != "web" {
+		t.Errorf("X-Client-Platform = %q，应为 web", got)
+	}
+	if got := r.header.Get("X-User-Id"); got != "" {
+		t.Errorf("网页形状不应带 X-User-Id，got %q", got)
 	}
 }
 
@@ -73,7 +94,7 @@ func TestClaimTrialAlready(t *testing.T) {
 	}
 }
 
-// [高熵密钥] 其他失败（非 14051）原样返回错误。
+// TestClaimTrialBusinessFailure 其他失败（非 14051）原样返回错误。
 func TestClaimTrialBusinessFailure(t *testing.T) {
 	f := newUpFake(t)
 	f.on(http.MethodPost, trialPath, 400, `{"code":500,"msg":"trial boom"}`)

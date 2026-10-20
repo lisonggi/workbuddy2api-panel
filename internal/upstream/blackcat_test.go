@@ -2,14 +2,17 @@ package upstream
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // upReq 假上游记录的请求（断言方法/路径/头/体）。
@@ -34,7 +37,35 @@ type upFake struct {
 }
 
 func newUpFake(t *testing.T) *upFake {
-	return &upFake{t: t, routes: map[string]upRoute{}}
+	f := &upFake{t: t, routes: map[string]upRoute{}}
+	// 网页登录态的两个端点统一由 upstreamtest 答复：登录码回 "dc."+令牌，client-login 按码
+	// 种 session Cookie，免得每个走 webJSON 的用例各自搭登录流程。需要特制（如 401）的用例
+	// 用 onFunc 覆盖同名路由。
+	webSession := func(r *upReq) (*http.Response, error) {
+		fakeReq := &http.Request{
+			Method: r.method,
+			URL:    &url.URL{Path: r.path, RawQuery: r.query},
+			Header: r.header,
+		}
+		status, hdr, body, ok := upstreamtest.WebSessionResponse(fakeReq)
+		if !ok {
+			f.t.Errorf("网页登录态端点未识别: %s %s", r.method, r.path)
+			return jsonResp(http.StatusBadRequest, `{"code":400,"msg":"unexpected"}`), nil
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+			Header:     hdr,
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	}
+	f.onFunc(http.MethodPost, upstreamtest.DeviceAuthCodePath, webSession)
+	f.onFunc(http.MethodGet, upstreamtest.ClientLoginPath, webSession)
+	// client-login 跳去的页面（网关照浏览器跟随跳转）。
+	for _, page := range []string{webPageGrowthCenter, webPageUsage, webPageProfile, webPageAccountSettings} {
+		f.onFunc(http.MethodGet, page, webSession)
+	}
+	return f
 }
 
 func (f *upFake) on(method, path string, status int, body string) {
@@ -87,6 +118,18 @@ func (f *upFake) seen() []*upReq {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]*upReq(nil), f.reqs...)
+}
+
+// bizSeen 只返回业务请求，去掉网页登录流程的请求（登录码、client-login、跳转后的页面）。
+func (f *upFake) bizSeen() []*upReq {
+	var out []*upReq
+	for _, r := range f.seen() {
+		if upstreamtest.IsWebSessionPath(r.path) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 func (f *upFake) count(method, path string) int {
@@ -151,6 +194,7 @@ func TestBlackcatNeed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newUpFake(t)
+			f.on(http.MethodGet, tasksSubscribeStatusPath, 200, `{"code":0,"data":{}}`)
 			f.on(http.MethodGet, tasksListPath, 200, upTasksJSON(tc.task))
 			c := upClient(f)
 			got, err := c.BlackcatNeed(upAuth())
@@ -160,7 +204,8 @@ func TestBlackcatNeed(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("need = %d，应为 %d", got, tc.want)
 			}
-			r := f.seen()[0]
+			reqs := f.seen()
+			r := reqs[len(reqs)-1]
 			if r.method != http.MethodGet || r.path != tasksListPath {
 				t.Errorf("请求 = %s %s", r.method, r.path)
 			}
@@ -169,6 +214,7 @@ func TestBlackcatNeed(t *testing.T) {
 
 	t.Run("列表请求失败", func(t *testing.T) {
 		f := newUpFake(t)
+		f.on(http.MethodGet, tasksSubscribeStatusPath, 200, `{"code":0,"data":{}}`)
 		f.on(http.MethodGet, tasksListPath, 400, `{"code":400,"msg":"bad request"}`)
 		c := upClient(f)
 		if _, err := c.BlackcatNeed(upAuth()); err == nil {
@@ -282,38 +328,84 @@ func TestRunNightChatsTransportError(t *testing.T) {
 	}
 }
 
-// TestClaimGift 新手礼包：POST claim-gift，解析 data.credit；400/code≠0 返回错误。
+// TestClaimGift 新手礼包按网页顺序：先 POST check-gift-claimed，active 且未领才 POST
+// claim-gift。未开放、已领、查询失败都不发领取请求。
 func TestClaimGift(t *testing.T) {
-	t.Run("成功", func(t *testing.T) {
+	const (
+		checkPath = "/billing/meter/check-gift-claimed"
+		claimPath = "/billing/meter/claim-gift"
+	)
+
+	t.Run("正常领取", func(t *testing.T) {
 		f := newUpFake(t)
-		f.on(http.MethodPost, "/billing/meter/claim-gift", 200, `{"code":0,"data":{"credit":100}}`)
-		c := upClient(f)
-		credit, err := c.ClaimGift(upAuth())
+		f.on(http.MethodPost, checkPath, 200, `{"code":0,"data":{"active":true,"claimed":false}}`)
+		f.on(http.MethodPost, claimPath, 200, `{"code":0,"data":{"credit":100}}`)
+		credit, err := upClient(f).ClaimGift(upAuth())
 		if err != nil || credit != 100 {
 			t.Fatalf("credit=%d err=%v，应为 100/nil", credit, err)
 		}
-		r := f.seen()[0]
-		if r.method != http.MethodPost || r.path != "/billing/meter/claim-gift" {
-			t.Errorf("请求 = %s %s", r.method, r.path)
+		reqs := f.bizSeen()
+		if len(reqs) != 2 {
+			t.Fatalf("请求数 = %d，应为 check + claim 两次", len(reqs))
 		}
-		if got := r.header.Get("Authorization"); got != "Bearer at" {
-			t.Errorf("Authorization = %q", got)
+		if reqs[0].method != http.MethodPost || reqs[0].path != checkPath {
+			t.Errorf("第一次请求 = %s %s，应为 POST %s", reqs[0].method, reqs[0].path, checkPath)
+		}
+		if reqs[1].method != http.MethodPost || reqs[1].path != claimPath {
+			t.Errorf("第二次请求 = %s %s，应为 POST %s", reqs[1].method, reqs[1].path, claimPath)
+		}
+		for _, r := range reqs {
+			if len(r.body) != 0 {
+				t.Errorf("%s 不应带请求体，got %q", r.path, r.body)
+			}
+			if got := r.header.Get("Content-Type"); got != "" {
+				t.Errorf("%s 无请求体不应带 Content-Type，got %q", r.path, got)
+			}
+			if got := r.header.Get("Authorization"); got != "" {
+				t.Errorf("%s 不应带 Authorization，got %q", r.path, got)
+			}
+			if got := r.header.Get("Cookie"); !strings.Contains(got, "session=at") {
+				t.Errorf("%s Cookie = %q，应含登录态 session=at", r.path, got)
+			}
+			if got := r.header.Get("Referer"); got != upBase+webPageUsage {
+				t.Errorf("%s Referer = %q，应为 %q", r.path, got, upBase+webPageUsage)
+			}
 		}
 	})
 
-	t.Run("HTTP 400", func(t *testing.T) {
+	t.Run("未开放", func(t *testing.T) {
 		f := newUpFake(t)
-		f.on(http.MethodPost, "/billing/meter/claim-gift", 400, `{"code":400,"msg":"already claimed"}`)
-		if _, err := upClient(f).ClaimGift(upAuth()); err == nil || !strings.Contains(err.Error(), "already claimed") {
-			t.Fatalf("应返回带 msg 的错误，got %v", err)
+		f.on(http.MethodPost, checkPath, 200, `{"code":0,"data":{"active":false,"claimed":false}}`)
+		_, err := upClient(f).ClaimGift(upAuth())
+		if err == nil || !strings.Contains(err.Error(), "新手礼包未开放") {
+			t.Fatalf("未开放应返回错误，got %v", err)
+		}
+		if n := len(f.bizSeen()); n != 1 {
+			t.Errorf("请求数 = %d，未开放不应领奖", n)
 		}
 	})
 
-	t.Run("业务 code 非 0", func(t *testing.T) {
+	t.Run("已领", func(t *testing.T) {
 		f := newUpFake(t)
-		f.on(http.MethodPost, "/billing/meter/claim-gift", 200, `{"code":10001,"msg":"gift unavailable"}`)
-		if _, err := upClient(f).ClaimGift(upAuth()); err == nil || !strings.Contains(err.Error(), "gift unavailable") {
-			t.Fatalf("应返回带 msg 的错误，got %v", err)
+		f.on(http.MethodPost, checkPath, 200, `{"code":0,"data":{"active":true,"claimed":true}}`)
+		_, err := upClient(f).ClaimGift(upAuth())
+		if err == nil || !strings.Contains(err.Error(), "已领取") {
+			t.Fatalf("已领应返回错误，got %v", err)
+		}
+		if n := len(f.bizSeen()); n != 1 {
+			t.Errorf("请求数 = %d，已领不应再次领奖", n)
+		}
+	})
+
+	t.Run("查询失败", func(t *testing.T) {
+		f := newUpFake(t)
+		f.on(http.MethodPost, checkPath, 400, `{"code":400,"msg":"check boom"}`)
+		_, err := upClient(f).ClaimGift(upAuth())
+		if err == nil || !strings.Contains(err.Error(), "check boom") {
+			t.Fatalf("查询失败应原样返回错误，got %v", err)
+		}
+		if n := len(f.bizSeen()); n != 1 {
+			t.Errorf("请求数 = %d，查询失败不应领奖", n)
 		}
 	})
 }
@@ -372,7 +464,7 @@ func TestUseMakeupCard(t *testing.T) {
 	if err := c.UseMakeupCard(upAuth(), "2026-10-18"); err != nil {
 		t.Fatalf("UseMakeupCard: %v", err)
 	}
-	r := f.seen()[0]
+	r := f.bizSeen()[0]
 	var body map[string]any
 	if err := json.Unmarshal(r.body, &body); err != nil {
 		t.Fatalf("请求体: %v", err)

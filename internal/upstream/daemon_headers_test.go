@@ -3,6 +3,7 @@ package upstream
 import (
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
@@ -145,6 +146,57 @@ func TestRefreshHeadersOfficialShape(t *testing.T) {
 				"X-Machine-ID": "", "X-Session-ID": "",
 			})
 			wantRequestID(t, req.Header, "")
+		})
+	}
+}
+
+// TestMiniProgramWebViewShape 小程序口径是「同一份网页嵌在微信 web-view 里」的形状：
+// 发往官网域、Bearer 认人、X-Client-Platform: miniprogram、UA 为 miniProgramUA
+// （显式 user_agent 优先），不带 Cookie 与旧版 CLI 头（X-CodeBuddy-Request、X-User-Id、
+// X-Domain、X-Tenant-Id、X-Device-Token）。
+func TestMiniProgramWebViewShape(t *testing.T) {
+	auth.SetGlobalEnabled(true)
+	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
+	cnEnt := cnAuth()
+	cnEnt.EnterpriseID = "corp-cn"
+	for _, tc := range []struct {
+		name      string
+		c         *Client
+		a         *auth.Auth
+		lang, ua  string
+		ent, base string
+	}{
+		{"国内版企业号", &Client{GlobalEnabled: true}, cnEnt, "zh-CN,zh;q=0.9", miniProgramUA, "corp-cn", cnProductEndpoint},
+		{"国际版", &Client{GlobalEnabled: true}, globalAuth(), "en-US,en;q=0.9", miniProgramUA, "", defaultGlobalBase},
+		{"显式 user_agent", &Client{GlobalEnabled: true, UserAgent: "MP/1"}, cnAuth(), "zh-CN,zh;q=0.9", "MP/1", "", cnProductEndpoint},
+		{"client_name=SaaS 不改变 UA", &Client{GlobalEnabled: true, ClientName: "SaaS"}, cnAuth(), "zh-CN,zh;q=0.9", miniProgramUA, "", cnProductEndpoint},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, tc.base+"/activity/growth/tasks/accept", strings.NewReader("{}"))
+			tc.c.webMPHeaders(req, tc.a)
+			wantHeaders(t, req.Header, map[string]string{
+				"Accept":              "application/json, text/plain, */*",
+				"Content-Type":        "application/json",
+				"Accept-Language":     tc.lang,
+				"User-Agent":          tc.ua,
+				"Authorization":       "Bearer tok",
+				"X-Enterprise-Id":     tc.ent,
+				"X-Client-Platform":   mpPlatform,
+				"Origin":              tc.base,
+				"Referer":             tc.base + webPageGrowthCenter,
+				"Sec-Fetch-Site":      "same-origin",
+				"Sec-Fetch-Mode":      "cors",
+				"Sec-Fetch-Dest":      "empty",
+				"X-Tenant-Id":         "",
+				"X-User-Id":           "",
+				"X-Domain":            "",
+				"X-Device-Token":      "",
+				"X-CodeBuddy-Request": "",
+				"Cookie":              "",
+				"Sec-CH-UA":           "",
+				"Sec-CH-UA-Mobile":    "",
+				"Sec-CH-UA-Platform":  "",
+			})
 		})
 	}
 }

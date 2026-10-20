@@ -1,12 +1,17 @@
 // tasks.go growth 域「任务」接口：列表查询 / 接受 / 领取奖励。
 //
-// 来源：上游 scripts/task_common.py 实测口径（list_tasks/accept_tasks/claim_reward），
+// 来源：官网网页 growthSpace-*.js（路径与请求体）+ 上游 scripts/task_common.py 实测口径，
 // 集成进主程序后不再需要外部脚本。
 //
-// 端点（chatBase，BillingHeaders）：
-//   - GET  /v2/activity/growth/tasks                全量任务列表（含 progress/accept_status）
-//   - POST /v2/activity/growth/tasks/accept         {"task_codes":[...]} not_accepted → accepted
-//   - POST /v2/activity/growth/tasks/reward/claim   {"task_code":"..."} 完成态领奖
+// 端点（全部发往 webBase，成长中心 referer）：
+//   - GET  /v2/activity/growth/subscribe-task/status  订阅任务状态（网页先查，失败不影响列表）
+//   - GET  /v2/activity/growth/tasks                  全量任务列表（含 progress/accept_status）
+//   - POST /activity/growth/tasks/accept              {"task_codes":[...]} not_accepted → accepted
+//   - POST /activity/growth/tasks/{code}/claim        完成态领奖（无请求体）
+//
+// 网页口径（ListTasks / AcceptTasks / ClaimReward）用网页登录态（Cookie，见 websession.go）；
+// 小程序口径（*MP）是「同一份网页嵌在小程序 web-view 里」的形状：发往官网域，靠
+// Authorization: Bearer 认人，X-Client-Platform 为 miniprogram，不带 Cookie。
 //
 // 语义要点：
 //   - accept 是"报名"，不产生进度；进度由服务端行为事件点亮（如 chat_request_send 上报、
@@ -24,15 +29,63 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
-// growth 域任务路径（与 scripts/task_common.py 对齐）。
+// growth 域任务路径（与官网网页对齐）。
 const (
-	tasksListPath   = "/v2/activity/growth/tasks"
-	tasksAcceptPath = "/v2/activity/growth/tasks/accept"
+	tasksSubscribeStatusPath = "/v2/activity/growth/subscribe-task/status"
+	tasksListPath            = "/v2/activity/growth/tasks"
+	// tasksAcceptPath 网页发 /activity/growth/tasks/accept（不带 /v2）；网页在小程序里打开时
+	// 也是这条，所以小程序的 AcceptTasksMP 共用它。
+	tasksAcceptPath = "/activity/growth/tasks/accept"
 )
 
 // mpPlatform 小程序口径头值：小程序限定任务（Sequential_Tasks_1 / school_season）
 // 的列表下发、accept、claim 全链路要求 X-Client-Platform: miniprogram。
 const mpPlatform = "miniprogram"
+
+// miniProgramUA 小程序 web-view 的 UA。微信文档说小程序 web-view 的 UA 含 `miniProgram`；
+// wx907c65e5e107ddcf 是官网前端里写的小程序 appid。iOS 与微信的版本号是挑的一个近期值，
+// 未抓包。
+const miniProgramUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.61(0x18003d2c) NetType/WIFI Language/zh_CN miniProgram/wx907c65e5e107ddcf"
+
+// miniProgramUserAgent 小程序口径的 UA：config user_agent 显式覆盖优先，否则 miniProgramUA。
+func (c *Client) miniProgramUserAgent() string {
+	if c != nil && c.UserAgent != "" {
+		return c.UserAgent
+	}
+	return miniProgramUA
+}
+
+// webMPHeaders 小程序 web-view 里那份网页的请求头：和 webHeaders 同形状，但
+// X-Client-Platform 为 miniprogram、靠 Authorization: Bearer 认人（不用 Cookie），
+// 不补 Sec-CH-UA*（小程序 web-view 不是桌面 Chrome）。Referer 固定成长中心页。
+func (c *Client) webMPHeaders(req *http.Request, a *auth.Auth) {
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	if req.Body != nil && req.Body != http.NoBody {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-Client-Platform", mpPlatform)
+	if a != nil {
+		if at := a.AccessTokenValue(); at != "" {
+			req.Header.Set("Authorization", "Bearer "+at)
+		}
+		if a.IsEnterprise() {
+			// 与网页口径一致：企业号只带 X-Enterprise-Id。
+			req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+		}
+	}
+	base := c.webBase(a)
+	// 浏览器同源 GET 不带 Origin；非 GET 才带。
+	if req.Method != http.MethodGet {
+		req.Header.Set("Origin", base)
+	}
+	req.Header.Set("Referer", base+webPageGrowthCenter)
+	req.Header.Set("User-Agent", c.miniProgramUserAgent())
+	req.Header.Set("Accept-Language", webAcceptLanguage(a))
+	req.Header.Set("Accept-Encoding", acceptEncodingBrowser)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+}
 
 // Task 单个任务的对外视图（字段名与上游 JSON 对齐，多余字段不透出）。
 type Task struct {
@@ -56,11 +109,13 @@ type Task struct {
 	Claimed      bool   `json:"claimed,omitempty"`   // 已领取（accept_status == claimed）
 }
 
-// ListTasks 拉取全量任务列表（默认口径，无端标记头）。
+// ListTasks 拉取全量任务列表（网页口径，无端标记头）。网页先查订阅任务状态再拉列表；
+// 订阅状态只是让网页刷新按钮态，失败不影响拉列表（忽略它的错误），列表的错误照旧返回。
 // 响应形如 data.tasks[]，元素字段随任务类型变化（progress 可能是 {current,target} 或平铺），
 // 这里做宽松解析：两种形状都尝试。
 func (c *Client) ListTasks(a *auth.Auth) ([]Task, error) {
-	data, err := c.growthJSON(a, http.MethodGet, tasksListPath, nil)
+	_, _ = c.webJSON(a, http.MethodGet, tasksSubscribeStatusPath, webPageGrowthCenter, nil)
+	data, err := c.webJSON(a, http.MethodGet, tasksListPath, webPageGrowthCenter, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +136,8 @@ func (c *Client) ListTasksMP(a *auth.Auth) ([]Task, error) {
 	return parseGrowthTasks(data)
 }
 
-// growthJSONMP 发 growth 域请求（小程序口径：叠加 X-Client-Platform: miniprogram）
-// 并解信封。语义同 growthJSON。
+// growthJSONMP 发 growth 域请求（小程序 web-view 口径：发往官网域，Bearer 认人，
+// X-Client-Platform: miniprogram）并解信封。语义同 webJSON，但不用 Cookie。
 func (c *Client) growthJSONMP(a *auth.Auth, method, path string, body any) (json.RawMessage, error) {
 	var rdr io.Reader
 	if body != nil {
@@ -92,11 +147,11 @@ func (c *Client) growthJSONMP(a *auth.Auth, method, path string, body any) (json
 		}
 		rdr = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, c.chatBase(a)+path, rdr)
+	req, err := http.NewRequest(method, c.webBase(a)+path, rdr)
 	if err != nil {
 		return nil, err
 	}
-	c.miniProgramHeaders(req, a)
+	c.webMPHeaders(req, a)
 	return c.doJSON(req)
 }
 
@@ -107,22 +162,13 @@ func (c *Client) AcceptTasksMP(a *auth.Auth, taskCodes []string) error {
 	return err
 }
 
-// ClaimRewardMP 领取小程序限定任务奖励：chat 域 /activity/growth/tasks/{code}/claim
-// + mp 头（上游 task_runner claim_one(mp=True) 同款）；chat 域 400 时降级 Web 域
-// 领奖端点（ClaimReward，x-client-platform: web 形态）。返回 (credit, energy, err)。
+// ClaimRewardMP 领取小程序限定任务奖励：官网域 /activity/growth/tasks/{code}/claim
+// + 小程序 web-view 头（上游 task_runner claim_one(mp=True) 同款）。请求本来就发往官网域，
+// 官方小程序只有这一种形状，不做降级。返回 (credit, energy, err)。
 func (c *Client) ClaimRewardMP(a *auth.Auth, taskCode string) (credit, energy int64, err error) {
-	req, err := http.NewRequest(http.MethodPost,
-		c.chatBase(a)+"/activity/growth/tasks/"+url.PathEscape(taskCode)+"/claim", nil)
+	data, err := c.growthJSONMP(a, http.MethodPost,
+		"/activity/growth/tasks/"+url.PathEscape(taskCode)+"/claim", nil)
 	if err != nil {
-		return 0, 0, err
-	}
-	c.miniProgramHeaders(req, a)
-	data, err := c.doJSON(req)
-	if err != nil {
-		// chat 域对该路径 400（部分任务/租户形态）→ Web 域降级（已实测可领）。
-		if ue, ok := err.(*Error); ok && ue.Status == http.StatusBadRequest {
-			return c.ClaimReward(a, taskCode)
-		}
 		return 0, 0, err
 	}
 	return parseClaimReward(data)
@@ -207,7 +253,8 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 
 // AcceptTasks 接受任务（幂等：已 accepted 时上游返回成功或业务提示，均不视为致命错误）。
 func (c *Client) AcceptTasks(a *auth.Auth, taskCodes []string) error {
-	_, err := c.growthJSON(a, http.MethodPost, tasksAcceptPath, map[string]any{"task_codes": taskCodes})
+	_, err := c.webJSON(a, http.MethodPost, tasksAcceptPath, webPageGrowthCenter,
+		map[string]any{"task_codes": taskCodes})
 	return err
 }
 
@@ -216,41 +263,16 @@ func (c *Client) AcceptTasks(a *auth.Auth, taskCodes []string) error {
 // 端点来源（实测）：Web 成长中心的领奖请求 ——
 //
 //	POST https://www.workbuddy.cn/activity/growth/tasks/<task_code>/claim
-//	（任务码在**路径**里，无 body；带 x-client-platform: web 头，Bearer 鉴权）
+//	（任务码在**路径**里，无 body；带 x-client-platform: web 头，网页登录态 Cookie 认人）
 //
 // 关键区别：此前误用 CLI 域 copilot.tencent.com 的
 // /v2/activity/growth/tasks/reward/claim（task_code 放 body），该路径**不存在**，
 // 一直返回 400 "task not completed"，是此前领奖失败的真实原因。
 // 本实现返回 (credit, energy, err)：credit/energy 为本次到账奖励（已领取过时为 0）。
 func (c *Client) ClaimReward(a *auth.Auth, taskCode string) (credit, energy int64, err error) {
-	req, err := http.NewRequest(http.MethodPost,
-		c.webBase(a)+"/activity/growth/tasks/"+url.PathEscape(taskCode)+"/claim", nil)
-	if err != nil {
-		return 0, 0, err
-	}
-	// Web 端请求头形状（对照浏览器实际请求）：Origin/Referer 指向 workbuddy.cn 成长中心，
-	// 带 x-client-platform: web 标记来源端。
-	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", "https://www.workbuddy.cn")
-	req.Header.Set("Referer", "https://www.workbuddy.cn/profile/growth-center")
-	req.Header.Set("x-client-platform", "web")
-	if ua := c.userAgent(a); ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
-	if a.UID != "" {
-		req.Header.Set("X-User-Id", a.UID)
-	}
-	if a.EnterpriseID != "" {
-		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
-		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
-	}
-	if d := a.DomainValue(); d != "" {
-		req.Header.Set("X-Domain", d)
-	}
-
-	data, err := c.doJSON(req)
+	// 网页请求头形状见 web.go：无请求体，因此不带 Content-Type。
+	data, err := c.webJSON(a, http.MethodPost,
+		"/activity/growth/tasks/"+url.PathEscape(taskCode)+"/claim", webPageGrowthCenter, nil)
 	if err != nil {
 		return 0, 0, err
 	}

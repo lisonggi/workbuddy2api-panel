@@ -6,21 +6,28 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
-// travelPath 断言请求打到 growth 域的正确路径（BASE 走 chatBase，无 /v2 前缀）。
+// travelPath 断言请求打到网页 growth 域的正确路径（无 /v2 前缀）与网页头。
 func travelPath(r *http.Request, want string) error {
 	if r.URL.Path != want {
 		return errors.New("wrong path: " + r.URL.Path)
 	}
-	if r.Header.Get("Authorization") != "Bearer at" {
-		return errors.New("missing Authorization")
+	if r.Header.Get("Authorization") != "" {
+		return errors.New("网页请求不应带 Authorization")
 	}
-	if r.Header.Get("X-User-Id") != "u1" {
-		return errors.New("missing X-User-Id")
+	if !strings.Contains(r.Header.Get("Cookie"), "session=at") {
+		return errors.New("missing web session cookie")
+	}
+	if r.Header.Get("X-Client-Platform") != "web" {
+		return errors.New("missing X-Client-Platform: web")
+	}
+	if r.Header.Get("X-User-Id") != "" {
+		return errors.New("网页形状不应带 X-User-Id")
 	}
 	return nil
 }
@@ -96,15 +103,15 @@ func TestTravelClaimReturnsReward(t *testing.T) {
 		got, _ = io.ReadAll(r.Body)
 		return jsonResp(200, `{"code":0,"msg":"ok","data":{"reward_credit":9}}`), nil
 	})
-	reward, err := c.TravelClaim(&auth.Auth{AccessToken: "at", UID: "u1"}, 42)
+	reward, err := c.TravelClaim(&auth.Auth{AccessToken: "at", UID: "u1"})
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if reward != 9 {
 		t.Errorf("reward=%d want 9", reward)
 	}
-	if !bytes.Contains(got, []byte(`"record_id":42`)) {
-		t.Errorf("claim body missing record_id: %s", got)
+	if string(bytes.TrimSpace(got)) != "{}" {
+		t.Errorf("claim body=%q want {}", got)
 	}
 }
 
@@ -170,14 +177,16 @@ func TestBuddyFirstPath(t *testing.T) {
 		if err := travelPath(r, "/activity/growth/buddy/first"); err != nil {
 			return nil, err
 		}
-		got, _ = io.ReadAll(r.Body)
+		if r.Body != nil {
+			got, _ = io.ReadAll(r.Body)
+		}
 		return jsonResp(200, `{"code":0,"msg":"ok","data":{"buddy":{"id":1}}}`), nil
 	})
 	if err := c.BuddyFirst(&auth.Auth{AccessToken: "at", UID: "u1"}); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if string(bytes.TrimSpace(got)) != "{}" {
-		t.Errorf("first body=%q want {}", got)
+	if len(bytes.TrimSpace(got)) != 0 {
+		t.Errorf("first 不应带请求体，got %q", got)
 	}
 }
 

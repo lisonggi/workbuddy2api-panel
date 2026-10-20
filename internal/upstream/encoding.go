@@ -5,6 +5,11 @@
 //     补上 "gzip, compress, deflate" 加运行时支持 brotli 时的 ", br"（Node 都支持）；CLI 的
 //     axios 另有 advertiseZstdAcceptEncoding 开关，默认关，不带 zstd。官方代码没有在哪个
 //     请求上改写这个头。
+//   - 网页登录态的登录码请求是 Node 内置 fetch（undici）：https 请求补 "br, gzip, deflate"
+//     （安装包里 undici 6.25.0 的 lib/web/fetch/index.js）。
+//   - 官网网页在用户的浏览器里跑：桌面 Chrome 123 起发 "gzip, deflate, br, zstd"；小程序的
+//     web-view 是 iOS WebKit，发 "gzip, deflate, br"。网页请求头配了自定义 UA 时仍按 Chrome 发。
+//   - HTTPDNS 用 Node 的 https.request，不发这个头（见 httpdns.go）。
 //
 // Go 的 Transport 只在自己补 "Accept-Encoding: gzip" 时才自动解压；请求显式设了这个头，
 // 响应要自己解。doDecoded 在每个出站请求的 Do 之后按 Content-Encoding 解开，解法照 axios：
@@ -26,9 +31,17 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// acceptEncodingAxios 官方请求框架（axios http 适配器）的默认值：对话、刷新令牌、登录、
-// 模型目录、积分、签到、上报、外观、专家列表。
-const acceptEncodingAxios = "gzip, compress, deflate, br"
+const (
+	// acceptEncodingAxios 官方请求框架（axios http 适配器）的默认值：对话、刷新令牌、登录、
+	// 模型目录、积分、签到、上报、外观、专家列表。
+	acceptEncodingAxios = "gzip, compress, deflate, br"
+	// acceptEncodingNodeFetch Node 内置 fetch 对 https 请求的默认值（网页登录码）。
+	acceptEncodingNodeFetch = "br, gzip, deflate"
+	// acceptEncodingChrome 桌面 Chrome 的默认值（官网网页、client-login 页面、国际版注册页）。
+	acceptEncodingChrome = "gzip, deflate, br, zstd"
+	// acceptEncodingBrowser iOS WebKit 的默认值（小程序 web-view 里的网页）。
+	acceptEncodingBrowser = "gzip, deflate, br"
+)
 
 // doDecoded 发请求，并在请求显式设了 Accept-Encoding 时按响应的 Content-Encoding 解压。
 // 解压是惰性的：第一次读响应体时才建解压器，流式响应（SSE）不会在这里阻塞。

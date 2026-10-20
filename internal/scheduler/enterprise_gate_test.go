@@ -48,6 +48,9 @@ func (r *recorderUpstream) snapshot() []string {
 
 func (r *recorderUpstream) server() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if upstreamtest.WebSession(w, req) {
+			return
+		}
 		r.record(req.URL.Path)
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/get-enterprise-user-usage"):

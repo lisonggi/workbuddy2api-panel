@@ -38,6 +38,9 @@ func TestSchoolJSON(t *testing.T) {
 		if r.header.Get("Content-Type") != "application/json" || r.header.Get("Accept") != "application/json" {
 			t.Errorf("内容头不全: %v", r.header)
 		}
+		if r.header.Get("User-Agent") != miniProgramUA {
+			t.Errorf("UA = %q，应为小程序 UA", r.header.Get("User-Agent"))
+		}
 	})
 
 	t.Run("POST 带体且 out 为 nil", func(t *testing.T) {
@@ -110,6 +113,7 @@ func TestReportMPEvent(t *testing.T) {
 			"X-Client-Version":  "2.4.0",
 			"X-Client-Platform": "mp-weixin",
 			"X-Platform":        "wechatmp",
+			"User-Agent":        miniProgramUA,
 		} {
 			if got := r.header.Get(k); got != want {
 				t.Errorf("%s = %q，应为 %q", k, got, want)

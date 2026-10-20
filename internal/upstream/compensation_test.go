@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // 查询与领取遵循官网协议，未开放/已领不请求领奖，奖励以官方响应为准。
@@ -33,8 +34,12 @@ func TestClaimAvailableCompensation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer test-token" {
-					t.Errorf("unexpected request: %s auth=%q", r.Method, r.Header.Get("Authorization"))
+				if upstreamtest.WebSession(w, r) {
+					return
+				}
+				// 网页请求靠登录态 Cookie 认人；登录码请求走 Bearer，由 WebSession 先答。
+				if r.Method != http.MethodPost || upstreamtest.Token(r) != "test-token" {
+					t.Errorf("unexpected request: %s token=%q", r.Method, upstreamtest.Token(r))
 				}
 				data := tc.status
 				switch r.URL.Path {
@@ -48,7 +53,7 @@ func TestClaimAvailableCompensation(t *testing.T) {
 				w.Write([]byte(`{"code":0,"data":` + data + `}`))
 			}))
 			defer srv.Close()
-			c := &Client{HTTP: srv.Client(), BillingBaseCN: srv.URL}
+			c := &Client{HTTP: srv.Client(), BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 			result, err := c.ClaimAvailableCompensation(&auth.Auth{UID: "u1", AccessToken: "test-token"})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
@@ -75,6 +80,9 @@ func TestClaimCompensationFailureRechecksStatus(t *testing.T) {
 		t.Run(map[bool]string{false: "business_error", true: "concurrent_claim"}[claimed], func(t *testing.T) {
 			reads := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if upstreamtest.WebSession(w, r) {
+					return
+				}
 				if r.URL.Path == "/billing/meter/claim-compensation" {
 					w.WriteHeader(http.StatusBadRequest)
 					w.Write([]byte(`{"code":10001,"msg":"补偿尚未开放"}`))
@@ -86,7 +94,7 @@ func TestClaimCompensationFailureRechecksStatus(t *testing.T) {
 				}})
 			}))
 			defer srv.Close()
-			c := &Client{HTTP: srv.Client(), BillingBaseCN: srv.URL}
+			c := &Client{HTTP: srv.Client(), BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 			result, err := c.ClaimAvailableCompensation(&auth.Auth{AccessToken: "at"})
 			if reads != 2 {
 				t.Fatalf("status reads=%d want 2", reads)

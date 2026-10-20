@@ -18,6 +18,9 @@ func TestStreakBonusClaimsCompensationOnce(t *testing.T) {
 	claimed := false
 	claims, balances := 0, 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/billing/meter/compensation-status":
 			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
@@ -43,7 +46,7 @@ func TestStreakBonusClaimsCompensationOnce(t *testing.T) {
 	accounts.Add(&auth.Auth{UID: "u1", AccessToken: "at"})
 	accounts.Cooldown("u1", pool.CoolHard, time.Hour, "credits exhausted")
 	s := New(Config{Pool: accounts, Upstream: &upstream.Client{
-		HTTP: srv.Client(), BillingBaseCN: srv.URL, ChatBaseCN: srv.URL,
+		HTTP: srv.Client(), BillingBaseCN: srv.URL, ChatBaseCN: srv.URL, WebBaseCN: srv.URL,
 	}})
 	s.RunStreakBonusNow()
 	s.RunStreakBonusNow()

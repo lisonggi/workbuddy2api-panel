@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
 )
 
 // acceptBatchGap 批量接受的批间节流（对齐脚本 1.05s 口径，避免上游风控）。
@@ -31,6 +32,12 @@ func (p *Panel) accountTasks(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
 	a := p.accountByUID(w, uid)
 	if a == nil {
+		return
+	}
+	// 官方国际版产品配置 UserGrowth:false，没有成长体系；改用 Cookie 后成长任务列表对国际版
+	// 回 401。国际版直接当空列表处理，不发请求。
+	if a.IsGlobal() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tasks": []upstream.Task{}})
 		return
 	}
 	tasks, err := p.cfg.Upstream.ListTasks(a)
@@ -87,6 +94,12 @@ func (p *Panel) taskAcceptAll(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
 	a := p.accountByUID(w, uid)
 	if a == nil {
+		return
+	}
+	// 官方国际版没有成长体系（UserGrowth:false），列表接口改用 Cookie 后回 401；
+	// 直接当空列表处理，不发请求。
+	if a.IsGlobal() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": 0, "message": "所有任务均已接受"})
 		return
 	}
 	tasks, err := p.cfg.Upstream.ListTasks(a)

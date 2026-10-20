@@ -1,7 +1,7 @@
 package main
 
 // trial/main_test.go 批量领取 global trial：假 Transport 覆盖成功/已领/失败/
-// 凭证损坏与 CN 账号不适用。global 请求必须打到国际版 base。
+// 凭证损坏与 CN 账号不适用。试用按官网网页的形状发往国际版官网 www.workbuddy.ai，按令牌认账号。
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 type trialRT func(*http.Request) (*http.Response, error)
@@ -27,13 +28,18 @@ type trialFake struct {
 }
 
 func (f *trialFake) RoundTrip(r *http.Request) (*http.Response, error) {
+	// 网页登录态的两个端点由公共辅助答复，不记入业务请求。
+	if resp, ok := upstreamtest.WebSessionRoundTrip(r); ok {
+		return resp, nil
+	}
 	f.mu.Lock()
 	f.recs = append(f.recs, r.URL.Host+r.URL.Path)
 	f.mu.Unlock()
 	status, body := 200, ""
 	switch {
-	case r.URL.Host == "global.fake" && r.URL.Path == "/billing/ide/trial":
-		switch r.Header.Get("X-User-Id") {
+	case r.URL.Host == "www.workbuddy.ai" && r.URL.Path == "/billing/ide/trial":
+		// 登录码请求带 Bearer、业务请求带 session Cookie，统一取令牌。
+		switch strings.TrimPrefix(upstreamtest.Token(r), "at-") {
 		case "g-ok":
 			body = `{"code":0,"data":{}}`
 		case "g-already":
@@ -127,8 +133,8 @@ func TestTrialAccounts(t *testing.T) {
 		t.Fatalf("只有 3 个有效 global 账号应发请求，实际 %v", reqs)
 	}
 	for _, r := range reqs {
-		if r != "global.fake/billing/ide/trial" {
-			t.Fatalf("trial 请求应打到国际版 base：%s", r)
+		if r != "www.workbuddy.ai/billing/ide/trial" {
+			t.Fatalf("trial 请求应打到国际版官网：%s", r)
 		}
 	}
 }

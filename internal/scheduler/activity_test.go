@@ -12,6 +12,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // fastActivity 关闭活跃上报账号间限速，避免测试白等 800ms。
@@ -31,6 +32,9 @@ type reportStub struct {
 
 func (s *reportStub) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		if r.URL.Path == "/v2/report" {
 			s.calls.Add(1)
 			uid := r.Header.Get("X-User-Id")
@@ -55,7 +59,7 @@ func TestRunActivityNowReportsEachAccount(t *testing.T) {
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
 	p.Add(&auth.Auth{UID: "u2", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	s.RunActivityNow()
@@ -80,7 +84,7 @@ func TestRunActivityNowSkipsDisabledAndNoToken(t *testing.T) {
 	p.Add(&auth.Auth{UID: "dis", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
 	p.Add(&auth.Auth{UID: "notoken", AccessToken: "", RefreshToken: "", ExpiresAt: 9999999999})
 	p.Disable("dis", "test")
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	s.RunActivityNow()
@@ -114,7 +118,7 @@ func TestRunActivityNowErrorDoesNotAbort(t *testing.T) {
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "fail", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
 	p.Add(&auth.Auth{UID: "ok", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	s.RunActivityNow() // 不应 panic
@@ -138,6 +142,9 @@ type activityStreakStub struct {
 
 func (s *activityStreakStub) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamtest.WebSession(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/v2/report":
 			s.reportCalls.Add(1)
@@ -165,7 +172,7 @@ func TestRunActivityNowSelfCheckDaysNormal(t *testing.T) {
 
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	s.RunActivityNow()
@@ -187,7 +194,7 @@ func TestRunActivityNowSelfCheckSilentDrop(t *testing.T) {
 
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	if !s.checkActivityStreak(p.AuthByUID("u1")) {
@@ -204,7 +211,7 @@ func TestRunActivityNowSelfCheckGETFailure(t *testing.T) {
 
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	// 直接断言 checkActivityStreak：GET 失败 → 告警。
@@ -235,7 +242,7 @@ func TestRunActivityNowSkipsSelfCheckOnReportFail(t *testing.T) {
 
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL, WebBaseCN: srv.URL}
 	s := New(Config{Pool: p, Upstream: up})
 
 	s.RunActivityNow() // 不上报成功 → 无自检
@@ -471,6 +478,7 @@ func TestRunActivityNowReportsGlobalAccount(t *testing.T) {
 		GlobalEnabled:     true,
 		ChatBaseCN:        cnSrv.URL,
 		BillingBaseCN:     cnSrv.URL,
+		WebBaseCN:         cnSrv.URL,
 		ChatBaseGlobal:    globalSrv.URL,
 		BillingBaseGlobal: globalSrv.URL,
 	}
@@ -515,6 +523,7 @@ func TestRunActivityNowMixedPoolReportsBoth(t *testing.T) {
 		GlobalEnabled:     true,
 		ChatBaseCN:        cnSrv.URL,
 		BillingBaseCN:     cnSrv.URL,
+		WebBaseCN:         cnSrv.URL,
 		ChatBaseGlobal:    globalSrv.URL,
 		BillingBaseGlobal: globalSrv.URL,
 	}
@@ -557,6 +566,7 @@ func TestRunActivityNowGlobalErrorDoesNotSkipCN(t *testing.T) {
 		GlobalEnabled:     true,
 		ChatBaseCN:        cnSrv.URL,
 		BillingBaseCN:     cnSrv.URL,
+		WebBaseCN:         cnSrv.URL,
 		ChatBaseGlobal:    globalSrv.URL,
 		BillingBaseGlobal: globalSrv.URL,
 	}
@@ -588,6 +598,7 @@ func TestCheckinStillSkipsGlobal(t *testing.T) {
 		GlobalEnabled:     true,
 		ChatBaseCN:        srv.URL,
 		BillingBaseCN:     srv.URL,
+		WebBaseCN:         srv.URL,
 		ChatBaseGlobal:    srv.URL,
 		BillingBaseGlobal: srv.URL,
 	}

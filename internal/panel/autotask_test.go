@@ -30,8 +30,11 @@ const (
 	autoBillingHost = "billing.test"
 	autoWebHost     = "web.test"
 
-	autoTasksPath    = "/v2/activity/growth/tasks"
-	autoAcceptPath   = "/v2/activity/growth/tasks/accept"
+	autoTasksPath = "/v2/activity/growth/tasks"
+	// autoSubscribePath 订阅任务状态：网页拉列表前先查（失败不影响列表）。
+	autoSubscribePath = "/v2/activity/growth/subscribe-task/status"
+	// autoAcceptPath 网页接受任务走这条路径（不带 /v2）；小程序 AcceptTasksMP 共用。
+	autoAcceptPath   = "/activity/growth/tasks/accept"
 	autoReportPath   = "/v2/report"
 	autoChatPath     = "/v2/chat/completions"
 	autoMarketPath   = "/portal/operation-platform/market/expert/list"
@@ -48,6 +51,19 @@ type autoReq struct {
 	Path   string
 	Header http.Header
 	Body   []byte
+}
+
+// autoToken 取请求的账号令牌：登录码请求带 Bearer，网页业务请求带 session Cookie。
+func autoToken(r autoReq) string {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
+	}
+	for _, part := range strings.Split(r.Header.Get("Cookie"), ";") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(part), "session="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // autoHandler 按请求给出假响应；status 0 视为 200。
@@ -71,6 +87,10 @@ func autoRouteKey(method, host, path, platform string) string {
 
 // RoundTrip 实现 http.RoundTripper：记录请求 → 查表 → 回预设响应。
 func (f *autoUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
+	// 网页登录态的两个端点统一在这里答复；不记入 reqs，用例只关心业务请求。
+	if resp, ok := upstreamtest.WebSessionRoundTrip(r); ok {
+		return resp, nil
+	}
 	var raw []byte
 	if r.Body != nil {
 		raw, _ = io.ReadAll(r.Body)
@@ -87,10 +107,13 @@ func (f *autoUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
 	if h == nil {
 		// 积分汇总 / 付费包 / 签到状态是每个账号维护流程都会发的伴随请求，各用例不必逐条登记。
 		// 免费包（余额本体）与签到仍须显式登记，避免用例漏测。
+		// 订阅任务状态是网页拉任务列表前的伴随请求，失败也不影响列表，统一回成功。
 		switch r.URL.Path {
 		case upstreamtest.SummaryPath, upstreamtest.PaidPath, upstreamtest.CheckinStatusPath:
 			status, body, _ := upstreamtest.Respond(r.URL.Path)
 			return autoHTTPResponse(status, body), nil
+		case autoSubscribePath:
+			return autoHTTPResponse(200, autoEnvelope("{}")), nil
 		}
 		f.t.Errorf("假上游收到未登记的请求: %s %s%s", r.Method, host, r.URL.Path)
 		return autoHTTPResponse(400, `{"code":400,"msg":"unexpected"}`), nil
@@ -118,16 +141,17 @@ func (f *autoUpstream) on(method, host, path, platform string, h autoHandler) {
 
 // 固定端点登记辅助。
 func (f *autoUpstream) onDefaultTasks(h autoHandler) {
-	f.on(http.MethodGet, autoChatHost, autoTasksPath, "", h)
+	// 默认任务列表按官网网页形状发往 webBase，带 X-Client-Platform: web。
+	f.on(http.MethodGet, autoWebHost, autoTasksPath, "web", h)
 }
 func (f *autoUpstream) onMPTasks(h autoHandler) {
-	f.on(http.MethodGet, autoChatHost, autoTasksPath, "miniprogram", h)
+	f.on(http.MethodGet, autoWebHost, autoTasksPath, "miniprogram", h)
 }
 func (f *autoUpstream) onAccept(h autoHandler) {
-	f.on(http.MethodPost, autoChatHost, autoAcceptPath, "", h)
+	f.on(http.MethodPost, autoWebHost, autoAcceptPath, "web", h)
 }
 func (f *autoUpstream) onAcceptMP(h autoHandler) {
-	f.on(http.MethodPost, autoChatHost, autoAcceptPath, "miniprogram", h)
+	f.on(http.MethodPost, autoWebHost, autoAcceptPath, "miniprogram", h)
 }
 func (f *autoUpstream) onBillingReport(h autoHandler) {
 	f.on(http.MethodPost, autoBillingHost, autoReportPath, "", h)
@@ -139,7 +163,8 @@ func (f *autoUpstream) onDesktopReport(h autoHandler) {
 	f.on(http.MethodPost, autoChatHost, autoReportPath, "", h)
 }
 func (f *autoUpstream) onWebReport(h autoHandler) {
-	f.on(http.MethodPost, autoWebHost, autoReportPath, "web", h)
+	// 网页上报照官网 sendBeacon 形状，不带 X-Client-Platform。
+	f.on(http.MethodPost, autoWebHost, autoReportPath, "", h)
 }
 func (f *autoUpstream) onChat(h autoHandler) {
 	f.on(http.MethodPost, autoChatHost, autoChatPath, "", h)
@@ -148,7 +173,7 @@ func (f *autoUpstream) onMarket(h autoHandler) {
 	f.on(http.MethodPost, autoChatHost, autoMarketPath, "", h)
 }
 func (f *autoUpstream) onMPClaim(code string, h autoHandler) {
-	f.on(http.MethodPost, autoChatHost, "/activity/growth/tasks/"+code+"/claim", "miniprogram", h)
+	f.on(http.MethodPost, autoWebHost, "/activity/growth/tasks/"+code+"/claim", "miniprogram", h)
 }
 func (f *autoUpstream) onWebClaim(code string, h autoHandler) {
 	f.on(http.MethodPost, autoWebHost, "/activity/growth/tasks/"+code+"/claim", "web", h)
@@ -636,7 +661,7 @@ func TestAccountTaskAutoClaim(t *testing.T) {
 		if msg, _ := resp["message"].(string); !strings.Contains(msg, "任务点亮并领取奖励（+100c +5e）") {
 			t.Fatalf("动作内部应完成领奖: %v", resp)
 		}
-		claims := up.requestsTo(http.MethodPost, autoChatHost,
+		claims := up.requestsTo(http.MethodPost, autoWebHost,
 			"/activity/growth/tasks/school_season/claim", "miniprogram")
 		if len(claims) != 1 {
 			t.Fatalf("应走 ClaimRewardMP 一次，实际 %d 次", len(claims))
@@ -645,7 +670,7 @@ func TestAccountTaskAutoClaim(t *testing.T) {
 			"/activity/growth/tasks/school_season/claim", "web")); got != 0 {
 			t.Fatalf("mp 任务不应走 Web 领奖，实际 %d 次", got)
 		}
-		if got := len(up.requestsTo(http.MethodGet, autoChatHost, autoTasksPath, "miniprogram")); got < 2 {
+		if got := len(up.requestsTo(http.MethodGet, autoWebHost, autoTasksPath, "miniprogram")); got < 2 {
 			t.Fatalf("动作与回读都应查小程序列表，实际 %d 次", got)
 		}
 		reports := up.requestsTo(http.MethodPost, autoBillingHost, autoReportPath, "mp-weixin")
@@ -983,7 +1008,7 @@ func TestAccountTaskAutoAllTaskStatuses(t *testing.T) {
 		if it := autoItem(t, items, "Library_read"); it["status"] != "done" {
 			t.Fatalf("后续 Library_read 应继续执行: %v", it)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoReportPath, "web")); got != 1 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoReportPath, "")); got != 1 {
 			t.Fatalf("Library_read 应上报一次，实际 %d", got)
 		}
 	})
@@ -1101,7 +1126,7 @@ func TestAccountTaskAutoAllTaskStatuses(t *testing.T) {
 		if it["status"] != "done" || it["claimed"] != true {
 			t.Fatalf("mp 任务应由 handler 走 ClaimRewardMP 领奖: %v", it)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost,
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost,
 			"/activity/growth/tasks/school_season/claim", "miniprogram")); got != 1 {
 			t.Fatalf("应走 ClaimRewardMP 一次，实际 %d", got)
 		}
@@ -1223,9 +1248,9 @@ func TestRunChat5(t *testing.T) {
 			}
 			seen[cid] = true
 		}
-		// 先查列表，再逐条上报。
+		// 先查订阅任务状态与任务列表，再逐条上报。
 		all := up.requests()
-		if len(all) != 4 || all[0].Path != autoTasksPath {
+		if len(all) != 5 || all[0].Path != autoSubscribePath || all[1].Path != autoTasksPath {
 			t.Fatalf("请求顺序不对: %v", autoSequence(all))
 		}
 	})
@@ -1250,7 +1275,8 @@ func TestRunChat5(t *testing.T) {
 		if err != nil || msg != "进度已达标，无需上报" {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
-		if n := len(up.requests()); n != 1 {
+		// 订阅任务状态 + 任务列表各一次。
+		if n := len(up.requests()); n != 2 {
 			t.Fatalf("只应查一次列表，实际 %d 个请求", n)
 		}
 	})
@@ -1295,8 +1321,8 @@ func TestRunFirstBuddy(t *testing.T) {
 	t.Run("成功链路顺序", func(t *testing.T) {
 		p, up := newAutoPanel(t)
 		up.onBillingReport(autoOK(autoEnvelope("{}")))
-		up.on(http.MethodPost, autoChatHost, agreementPath, "", autoOK(autoEnvelope("{}")))
-		up.on(http.MethodPost, autoChatHost, firstPath, "", autoOK(autoEnvelope("{}")))
+		up.on(http.MethodPost, autoWebHost, agreementPath, "web", autoOK(autoEnvelope("{}")))
+		up.on(http.MethodPost, autoWebHost, firstPath, "web", autoOK(autoEnvelope("{}")))
 		msg, err := runFirstBuddy(p, autoAuth(t, p))
 		if err != nil {
 			t.Fatalf("不应报错: %v", err)
@@ -1306,10 +1332,10 @@ func TestRunFirstBuddy(t *testing.T) {
 		}
 		autoWantSequence(t, up.requests(),
 			"POST "+autoBillingHost+autoReportPath,
-			"POST "+autoChatHost+agreementPath,
-			"POST "+autoChatHost+firstPath,
+			"POST "+autoWebHost+agreementPath,
+			"POST "+autoWebHost+firstPath,
 		)
-		agree := up.requestsTo(http.MethodPost, autoChatHost, agreementPath, "")
+		agree := up.requestsTo(http.MethodPost, autoWebHost, agreementPath, "web")
 		if len(agree) != 1 || autoBodyMap(t, agree[0].Body)["agree"] != true {
 			t.Fatalf("同意协议请求体不对: %s", agree)
 		}
@@ -1326,11 +1352,11 @@ func TestRunFirstBuddy(t *testing.T) {
 	t.Run("同意协议失败", func(t *testing.T) {
 		p, up := newAutoPanel(t)
 		up.onBillingReport(autoOK(autoEnvelope("{}")))
-		up.on(http.MethodPost, autoChatHost, agreementPath, "", autoFail(400, `{"code":400}`))
+		up.on(http.MethodPost, autoWebHost, agreementPath, "web", autoFail(400, `{"code":400}`))
 		if _, err := runFirstBuddy(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "同意协议") {
 			t.Fatalf("应返回同意协议错误: %v", err)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, firstPath, "")); got != 0 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, firstPath, "web")); got != 0 {
 			t.Fatalf("协议失败后不应领养，实际 %d 次", got)
 		}
 	})
@@ -1338,8 +1364,8 @@ func TestRunFirstBuddy(t *testing.T) {
 	t.Run("门槛未过返回提示", func(t *testing.T) {
 		p, up := newAutoPanel(t)
 		up.onBillingReport(autoOK(autoEnvelope("{}")))
-		up.on(http.MethodPost, autoChatHost, agreementPath, "", autoOK(autoEnvelope("{}")))
-		up.on(http.MethodPost, autoChatHost, firstPath, "",
+		up.on(http.MethodPost, autoWebHost, agreementPath, "web", autoOK(autoEnvelope("{}")))
+		up.on(http.MethodPost, autoWebHost, firstPath, "web",
 			autoFail(400, `{"code":400,"msg":"first_buddy task not completed yet"}`))
 		msg, err := runFirstBuddy(p, autoAuth(t, p))
 		if err != nil {
@@ -1353,8 +1379,8 @@ func TestRunFirstBuddy(t *testing.T) {
 	t.Run("领取失败返回错误", func(t *testing.T) {
 		p, up := newAutoPanel(t)
 		up.onBillingReport(autoOK(autoEnvelope("{}")))
-		up.on(http.MethodPost, autoChatHost, agreementPath, "", autoOK(autoEnvelope("{}")))
-		up.on(http.MethodPost, autoChatHost, firstPath, "", autoFail(500, `{"code":500}`))
+		up.on(http.MethodPost, autoWebHost, agreementPath, "web", autoOK(autoEnvelope("{}")))
+		up.on(http.MethodPost, autoWebHost, firstPath, "web", autoFail(500, `{"code":500}`))
 		if _, err := runFirstBuddy(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "领取 Buddy") {
 			t.Fatalf("应返回领取 Buddy 错误: %v", err)
 		}
@@ -1379,7 +1405,7 @@ func TestRunModelChat(t *testing.T) {
 			t.Fatalf("message 不对: %q", msg)
 		}
 		autoWantSequence(t, up.requests(),
-			"POST "+autoChatHost+autoAcceptPath,
+			"POST "+autoWebHost+autoAcceptPath,
 			"POST "+autoChatHost+autoChatPath,
 			"POST "+autoBillingHost+autoReportPath,
 		)
@@ -1403,7 +1429,7 @@ func TestRunModelChat(t *testing.T) {
 		if err != nil || msg != "已完成 glm-5.2 对话并上报" {
 			t.Fatalf("accept 失败不应阻塞: msg=%q err=%v", msg, err)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "")); got != 1 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "web")); got != 1 {
 			t.Fatalf("应尝试 accept 一次，实际 %d", got)
 		}
 	})
@@ -1461,7 +1487,7 @@ func TestRunDesktopReportActions(t *testing.T) {
 		{"rich_meow", runRichMeow, autoChatHost, autoReportPath, "", []string{"agent_task_created", "chat_message_response"}, "桌面端指纹"},
 		{"buddy_app", runBuddyApp, autoChatHost, autoReportPath, "", []string{"buddyapp_discover_click", "buddyapp_show", "buddyapp_enter_click", "buddyapp_auth_confirm_click", "buddyapp_bindaccount_skip_click"}, "buddyapp"},
 		{"automation", runAutomationCreate, autoChatHost, autoReportPath, "", []string{"automated_task_create_suc"}, "定时任务创建事件"},
-		{"library_read", runLibraryRead, autoWebHost, autoReportPath, "web", []string{"web_element_click"}, "资料库介绍"},
+		{"library_read", runLibraryRead, autoWebHost, autoReportPath, "", []string{"web_element_click"}, "资料库介绍"},
 		{"playbook_prompt", runPlaybookPrompt, autoChatHost, autoReportPath, "", []string{"playbook_cta_click", "playbook_prompt_send"}, "playbook_cta_click"},
 		{"create_canvas", runCreateCanvas, autoChatHost, autoReportPath, "", []string{"wbx_design_canvas_task_create", "wbx_design_canvas_open"}, "wbx_design_canvas"},
 	}
@@ -1971,14 +1997,15 @@ func TestRunBlackCat(t *testing.T) {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
 		autoWantSequence(t, up.requests(),
-			"GET "+autoChatHost+autoTasksPath,
+			"GET "+autoWebHost+autoSubscribePath,
+			"GET "+autoWebHost+autoTasksPath,
 			"POST "+autoChatHost+autoChatPath,
 			"POST "+autoBillingHost+autoReportPath,
 		)
-		if model := autoBodyMap(t, up.requests()[1].Body)["model"]; model != "glm-5.2" {
+		if model := autoBodyMap(t, up.requests()[2].Body)["model"]; model != "glm-5.2" {
 			t.Fatalf("夜间对话应用 glm-5.2，got %v", model)
 		}
-		evs := autoEvents(t, up.requests()[2].Body)
+		evs := autoEvents(t, up.requests()[3].Body)
 		if evs[0]["requestModelId"] != "glm-5.2" {
 			t.Fatalf("夜间上报应带 glm-5.2: %v", evs[0])
 		}
@@ -2099,7 +2126,7 @@ func TestRunMPMiniChatTask(t *testing.T) {
 		if !strings.HasPrefix(msg, "accept 未登记生效") {
 			t.Fatalf("message 不对: %q", msg)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "miniprogram")); got != 2 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "miniprogram")); got != 2 {
 			t.Fatalf("应重试 accept 两次，实际 %d", got)
 		}
 		if got := len(up.requestsTo(http.MethodPost, autoBillingHost, autoReportPath, "mp-weixin")); got != 0 {
@@ -2119,7 +2146,7 @@ func TestRunMPMiniChatTask(t *testing.T) {
 		if !strings.HasPrefix(msg, "accept 未登记生效") {
 			t.Fatalf("message 不对: %q", msg)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "miniprogram")); got != 2 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "miniprogram")); got != 2 {
 			t.Fatalf("accept 失败也应重试两次，实际 %d", got)
 		}
 	})
@@ -2146,7 +2173,7 @@ func TestRunMPMiniChatTask(t *testing.T) {
 		if err != nil || msg != "任务点亮并领取奖励（+100c +5e）" {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "miniprogram")); got != 1 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "miniprogram")); got != 1 {
 			t.Fatalf("accept 登记生效后不应重试，实际 %d 次", got)
 		}
 	})
@@ -2174,7 +2201,7 @@ func TestRunMPMiniChatTask(t *testing.T) {
 		if err != nil || msg != "已上报 1 次但进度未达 0/1（异步计分未归账，下次重试）" {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost,
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost,
 			"/activity/growth/tasks/school_season/claim", "miniprogram")); got != 0 {
 			t.Fatalf("未达标不应领奖，实际 %d 次", got)
 		}
@@ -2257,10 +2284,14 @@ func TestRunMPMiniChatTask(t *testing.T) {
 		if _, err := runSchoolSeason(p, autoAuth(t, p)); err == nil {
 			t.Fatal("领奖失败应返回 error")
 		}
-		// ClaimRewardMP 400 后降级 Web 领奖，两个路径都应尝试。
+		// ClaimRewardMP 400 直接返回错误，不再降级 Web 领奖。
 		if got := len(up.requestsTo(http.MethodPost, autoWebHost,
-			"/activity/growth/tasks/school_season/claim", "web")); got != 1 {
-			t.Fatalf("应降级 Web 领奖一次，实际 %d", got)
+			"/activity/growth/tasks/school_season/claim", "miniprogram")); got != 1 {
+			t.Fatalf("应走小程序口径领奖一次，实际 %d", got)
+		}
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost,
+			"/activity/growth/tasks/school_season/claim", "web")); got != 0 {
+			t.Fatalf("不应降级 Web 领奖，实际 %d", got)
 		}
 	})
 
@@ -2398,7 +2429,7 @@ func TestRunSequentialEventTask(t *testing.T) {
 		if err != nil || msg != "任务点亮并领取奖励（+100c +5e）" {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "miniprogram")); got != 1 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "miniprogram")); got != 1 {
 			t.Fatalf("应接受一次，实际 %d", got)
 		}
 	})
@@ -2415,7 +2446,7 @@ func TestRunSequentialEventTask(t *testing.T) {
 		if !strings.HasPrefix(msg, "accept 未登记生效") {
 			t.Fatalf("message 不对: %q", msg)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "miniprogram")); got != 2 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "miniprogram")); got != 2 {
 			t.Fatalf("应重试两次，实际 %d", got)
 		}
 	})
@@ -2674,7 +2705,7 @@ func TestRunMiniExpert(t *testing.T) {
 		if err != nil || msg != "任务点亮并领取奖励（+200c +5e）" {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "miniprogram")); got != 1 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "miniprogram")); got != 1 {
 			t.Fatalf("accept 应一次生效，实际 %d", got)
 		}
 		reports := up.requestsTo(http.MethodPost, autoBillingHost, autoReportPath, "mp-weixin")
@@ -2734,7 +2765,7 @@ func TestRunMiniExpert(t *testing.T) {
 		if err != nil || !strings.HasPrefix(msg, "accept 未登记生效") {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoAcceptPath, "miniprogram")); got != 2 {
+		if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "miniprogram")); got != 2 {
 			t.Fatalf("应重试两次，实际 %d", got)
 		}
 	})

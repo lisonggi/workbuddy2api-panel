@@ -139,8 +139,8 @@ func TestGlobalRegisterHeaders(t *testing.T) {
 		if r.method != http.MethodPost {
 			t.Errorf("方法 = %s，应为 POST", r.method)
 		}
-		if r.header.Get("User-Agent") != globalWebUA {
-			t.Errorf("UA = %q，应为 globalWebUA", r.header.Get("User-Agent"))
+		if r.header.Get("User-Agent") != browserUA {
+			t.Errorf("UA = %q，应为 browserUA", r.header.Get("User-Agent"))
 		}
 		if r.header.Get("Origin") != registerTestBase {
 			t.Errorf("Origin = %q，应为 %q", r.header.Get("Origin"), registerTestBase)

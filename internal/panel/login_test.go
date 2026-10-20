@@ -408,7 +408,7 @@ func TestLoginPollGlobalSuccess(t *testing.T) {
 	loginRouteToken(up, loginGlobalHost, `{"accessToken":"at-glb","refreshToken":"rt-glb","expiresIn":3600,"domain":"www.workbuddy.ai"}`)
 	loginRouteAccount(up, loginGlobalHost, `{"uid":"u-glb","nickname":"国际号"}`)
 	up.on(http.MethodGet, loginGlobalHost, globalRegisterStatus, "", autoOK(`{"code":200}`))
-	up.on(http.MethodPost, loginGlobalHost, globalTrialPath, "", autoOK(autoEnvelope("{}")))
+	up.on(http.MethodPost, loginGlobalHost, globalTrialPath, "web", autoOK(autoEnvelope("{}")))
 	up.on(http.MethodPost, loginGlobalHost, resourcePathGlobal, "", autoOK(loginResourceBody(88, 100)))
 	seedLogin(p, "st-glb", "global")
 
@@ -424,7 +424,7 @@ func TestLoginPollGlobalSuccess(t *testing.T) {
 	if got := len(up.requestsTo(http.MethodGet, loginGlobalHost, globalRegisterStatus, "")); got != 1 {
 		t.Fatalf("应查注册激活状态一次，实际 %d", got)
 	}
-	if got := len(up.requestsTo(http.MethodPost, loginGlobalHost, globalTrialPath, "")); got != 1 {
+	if got := len(up.requestsTo(http.MethodPost, loginGlobalHost, globalTrialPath, "web")); got != 1 {
 		t.Fatalf("应领取 trial 一次，实际 %d", got)
 	}
 	if a := loadAuth(t, dir, "u-glb"); a.Realm() != "global" {
@@ -461,7 +461,7 @@ func TestLoginPollAuxFailures(t *testing.T) {
 		loginRouteToken(up, loginGlobalHost, `{"accessToken":"at-glb","refreshToken":"rt-glb","expiresIn":3600,"domain":"www.workbuddy.ai"}`)
 		loginRouteAccount(up, loginGlobalHost, `{"uid":"u-glb","nickname":"国际号"}`)
 		up.on(http.MethodGet, loginGlobalHost, globalRegisterStatus, "", autoOK(`{"code":1,"msg":"register boom"}`))
-		up.on(http.MethodPost, loginGlobalHost, globalTrialPath, "", autoFail(400, `{"code":400,"msg":"trial boom"}`))
+		up.on(http.MethodPost, loginGlobalHost, globalTrialPath, "web", autoFail(400, `{"code":400,"msg":"trial boom"}`))
 		up.on(http.MethodPost, loginGlobalHost, resourcePathGlobal, "", autoOK(loginResourceBody(88, 100)))
 		seedLogin(p, "st-glb", "global")
 

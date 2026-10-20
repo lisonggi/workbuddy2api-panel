@@ -16,20 +16,26 @@ import (
 	"net/http"
 )
 
-// streakRedeemPath / lottery 路径（growth 域，growthJSON 走 www.workbuddy.cn）。
+// streakRedeemPath / lottery 路径（growth 域，webJSON 走网页域）。
 const (
 	streakRedeemPath   = "/activity/growth/redeem"
 	lotterySummaryPath = "/activity/growth/lottery/summary"
 	lotteryDrawPath    = "/activity/growth/lottery/draw"
 )
 
-// clientToken 幂等令牌（前端 randomUUID 同款语义）。
-func clientToken() string {
+// clientToken 幂等令牌：网页写 `${prefix}-${crypto.randomUUID()}`（兑换前缀
+// "redeem-<tier>"、抽奖前缀 "draw"）；UUID 部分保持 8-4-4-4-12 小写十六进制。
+// 前缀可选：school.go（不许动）调无参形式，保持只返回裸 UUID。
+func clientToken(prefix ...string) string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
-	return fmt.Sprintf("%s-%s-%s-%s-%s",
+	uuid := fmt.Sprintf("%s-%s-%s-%s-%s",
 		hex.EncodeToString(b[0:4]), hex.EncodeToString(b[4:6]), hex.EncodeToString(b[6:8]),
 		hex.EncodeToString(b[8:10]), hex.EncodeToString(b[10:16]))
+	if len(prefix) > 0 && prefix[0] != "" {
+		return prefix[0] + "-" + uuid
+	}
+	return uuid
 }
 
 // StreakFull 连登完整状态（GET /activity/growth/streak）。
@@ -62,7 +68,7 @@ type StreakFull struct {
 
 // GrowthStreakFull 拉取连登完整状态。
 func (c *Client) GrowthStreakFull(a *auth.Auth) (*StreakFull, error) {
-	data, err := c.growthJSON(a, http.MethodGet, streakPath, nil)
+	data, err := c.webJSON(a, http.MethodGet, streakPath, webPageGrowthCenter, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -76,14 +82,14 @@ func (c *Client) GrowthStreakFull(a *auth.Auth) (*StreakFull, error) {
 // GrowthRedeemTier 兑换连登档位（tier: "7d"|"14d"|"28d"）。
 // 未解锁返回 *Error（HTTP 403「连续登录天数不足」），调用方按 locked 状态跳过即可。
 func (c *Client) GrowthRedeemTier(a *auth.Auth, tier string) error {
-	_, err := c.growthJSON(a, http.MethodPost, streakRedeemPath,
-		map[string]any{"tier": tier, "client_token": clientToken()})
+	_, err := c.webJSON(a, http.MethodPost, streakRedeemPath, webPageGrowthCenter,
+		map[string]any{"tier": tier, "client_token": clientToken("redeem-" + tier)})
 	return err
 }
 
 // LotteryChances 当前抽奖次数（GET /activity/growth/lottery/summary）。
 func (c *Client) LotteryChances(a *auth.Auth) (int, error) {
-	data, err := c.growthJSON(a, http.MethodGet, lotterySummaryPath, nil)
+	data, err := c.webJSON(a, http.MethodGet, lotterySummaryPath, webPageGrowthCenter, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -101,6 +107,6 @@ func (c *Client) LotteryChances(a *auth.Auth) (int, error) {
 
 // LotteryDraw 抽奖一次，返回原始奖品载荷（prize 字段形状由活动期决定，透传给调用方）。
 func (c *Client) LotteryDraw(a *auth.Auth) (json.RawMessage, error) {
-	return c.growthJSON(a, http.MethodPost, lotteryDrawPath,
-		map[string]any{"client_token": clientToken()})
+	return c.webJSON(a, http.MethodPost, lotteryDrawPath, webPageGrowthCenter,
+		map[string]any{"client_token": clientToken("draw")})
 }

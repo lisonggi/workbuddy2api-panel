@@ -14,8 +14,9 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 )
 
-// TestDeviceTokenInjected_WhenSet auth.Auth.DeviceToken 非空时签到请求带；对话与积分等后台服务的
-// 其他请求不带（官方 getCheckinRequestHeaders 只用在签到上）。小程序请求的头还没改，仍带。
+// TestDeviceTokenInjected_WhenSet auth.Auth.DeviceToken 非空时只有签到请求带；
+// 对话、积分与小程序（网页在 web-view 里的形状）请求都不带（官方 getCheckinRequestHeaders
+// 只用在签到上）。
 func TestDeviceTokenInjected_WhenSet(t *testing.T) {
 	a := &auth.Auth{AccessToken: "at", UID: "u1", DeviceToken: "tok-from-auth"}
 	// 用 server 端验证而非 RoundTripper 捕获：更贴近真实注入路径。
@@ -31,7 +32,7 @@ func TestDeviceTokenInjected_WhenSet(t *testing.T) {
 			c.BillingHeaders(req, a)
 			c.withDeviceToken(a)(req)
 		}, "/v2/billing/meter/checkin", "tok-from-auth"},
-		{"miniprogram", func(c *Client, req *http.Request) { c.miniProgramHeaders(req, a) }, "/v2/growth", "tok-from-auth"},
+		{"miniprogram", func(c *Client, req *http.Request) { c.webMPHeaders(req, a) }, "/v2/growth", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got string

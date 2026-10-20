@@ -436,34 +436,48 @@ func DesktopAppearanceApplyEvent(theme AppearanceTheme, edition string) DesktopE
 // ReportWebEvent 以 Web 端指纹向 www.workbuddy.cn/v2/report 上报单事件。
 // 与桌面指纹（copilot 域）不同：web 域事件是浏览器形状（os/machineId/userAgent），
 // 用于 Library_read 等页面行为类任务（实测 library_doc_intro_click 4 秒点亮）。
+//
+// 形状照官网网页：上报走 navigator.sendBeacon(url, JSON 字符串)，浏览器给它带
+// Content-Type: text/plain;charset=UTF-8、Accept: */*、Origin、Referer 与浏览器 UA；
+// 网页靠 Cookie 认人，这里用同一个账号的网页登录态（见 websession.go），不带 Authorization，
+// 其余网页不发的头（X-User-Id、X-Client-Platform、X-Requested-With、X-Product）都不带。
 func (c *Client) ReportWebEvent(a *auth.Auth, eventCode, pageURL, elementID, elementName string) error {
-	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+	ua := c.webUserAgent()
+	osName, osVersion := webOSFromUA(ua)
+	now := time.Now().UnixMilli()
+	// 官网前端的上报（W4 + report）：公共参数 os / osVersion 由 UA 解析，sessionId 是
+	// 「毫秒时间戳-9 位随机 36 进制」，machineId 是浏览器指纹，product 固定 UserCenter；
+	// 元素点击另带 type、elementId、elementName。username 网页取账号资料，网关没有，用昵称（未确认）。
 	ev := map[string]any{
-		"eventCode": eventCode, "timestamp": time.Now().UnixMilli(), "reportDelay": 0,
-		"pageURL": pageURL, "elementId": elementID, "elementName": elementName,
-		"os": "Win32", "arch": "", "osVersion": "10.0", "userAgent": ua,
-		"machineId": webVisitorID(a), "userId": a.UID,
-		"userNickname": a.Nickname, "enterpriseId": a.EnterpriseID,
+		"type": eventCode, "elementId": elementID, "elementName": elementName,
+		"eventCode": eventCode, "os": osName, "osVersion": osVersion, "userAgent": ua,
+		"sessionId": webPageSessionID(now), "machineId": webVisitorID(a),
+		"userId": a.UID, "userNickname": a.Nickname, "username": a.Nickname,
+		"enterpriseId": a.EnterpriseID, "pageURL": pageURL, "product": "UserCenter",
+		"timestamp": now, "reportDelay": 0,
 	}
 	raw, err := json.Marshal([]map[string]any{ev})
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.webBase(a)+"/v2/report", bytes.NewReader(raw))
-	if err != nil {
-		return err
+	build := func() (*http.Request, error) {
+		req, err := http.NewRequest(http.MethodPost, c.webBase(a)+"/v2/report", bytes.NewReader(raw))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Origin", c.webBase(a))
+		req.Header.Set("Referer", pageURL)
+		req.Header.Set("User-Agent", ua)
+		c.webClientHints(req, a)
+		// sendBeacon 的 Sec-Fetch-*：同源 no-cors 请求。
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Sec-Fetch-Mode", "no-cors")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		return req, nil
 	}
-	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-client-platform", "web")
-	req.Header.Set("Origin", c.webBase(a))
-	req.Header.Set("Referer", pageURL)
-	req.Header.Set("User-Agent", ua)
-	if a.UID != "" {
-		req.Header.Set("X-User-Id", a.UID)
-	}
-	_, err = c.doJSON(req)
+	_, err = c.doWebJSON(a, pageURL, build)
 	return err
 }
 
