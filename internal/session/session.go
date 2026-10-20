@@ -43,6 +43,11 @@ type Config struct {
 	// 校验，会话会被钉在这个号上反复失败——正是"限额后换不动号"的观感来源。
 	// 域由调用方（handler）按前缀与跨域开关定好再传入，这里不再自己解析模型名。
 	AvailableForModel func(model, realm string) []string
+	// AssignableForModel 新会话（或绑定失效后重新分配）挑号的候选，在 AvailableForModel 之上
+	// 再按成本分层只留最便宜那一层（pool.CheapestWeightedUIDsForModelRealm）。只用于分配，
+	// 已绑定会话的续用仍按 AvailableForModel 校验，免得免费号一出现就把会话全挪走。
+	// nil 时分配也用 AvailableForModel。
+	AssignableForModel func(model, realm string) []string
 }
 
 // Router 会话粘性路由器。
@@ -182,7 +187,7 @@ func (r *Router) ResolveForModel(key, model, realm string) (string, bool) {
 		delete(r.entries, key) // 失效：清掉再分配
 	}
 
-	uids := r.availableSlice(model, realm)
+	uids := r.assignableSlice(model, realm)
 	if len(uids) == 0 {
 		return "", false
 	}
@@ -283,6 +288,14 @@ func (r *Router) availableSet(model, realm string) map[string]bool {
 		set[u] = true
 	}
 	return set
+}
+
+// assignableSlice 分配新绑定用的候选：注入了 AssignableForModel 就用它，否则同 availableSlice。
+func (r *Router) assignableSlice(model, realm string) []string {
+	if r.cfg.AssignableForModel != nil {
+		return r.cfg.AssignableForModel(model, realm)
+	}
+	return r.availableSlice(model, realm)
 }
 
 // availableSlice 安全调用 AvailableForModel；未注入时回落 Available（nil 视空池）。

@@ -2,6 +2,7 @@
 package pool
 
 import (
+	"log"
 	"sort"
 	"time"
 )
@@ -78,8 +79,41 @@ func (p *Pool) WeightedAvailableUIDsForModelRealm(model, realm string) []string 
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
-	uids := make([]string, 0, len(p.byUID))
-	for uid, e := range p.byUID {
+	return p.weightedUIDsLocked(p.servableEntriesLocked(model, realm, now), now)
+}
+
+// CheapestWeightedUIDsForModelRealm 新会话分配用：同 WeightedAvailableUIDsForModelRealm，
+// 但先按成本分层只留生效层（实测免费 > 无观测 > 实测收费，含条件探索，见
+// effectiveCostTierLocked），与 pick 普通轮换同一口径。model 为空不分层。
+// 已绑定会话的续用校验仍走 WeightedAvailableUIDsForModelRealm（不分层），免得免费号
+// 一出现就把绑在收费号上的会话全部挪走、丢掉上游前缀缓存。
+// 取写锁：条件探索会写探索计时器。
+func (p *Pool) CheapestWeightedUIDsForModelRealm(model, realm string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	cands := p.servableEntriesLocked(model, realm, now)
+	if model != "" && len(cands) > 0 {
+		best, explored := p.effectiveCostTierLocked(cands, model, realm, now)
+		kept := cands[:0]
+		for _, e := range cands {
+			if ti, _ := e.costTierOf(model, now); ti == best {
+				kept = append(kept, e)
+			}
+		}
+		cands = kept
+		if explored {
+			log.Printf("[pool] cost explore model=%s realm=%q (新会话) window=%s", model, realm, p.costExploreInterval)
+		}
+	}
+	return p.weightedUIDsLocked(cands, now)
+}
+
+// servableEntriesLocked 在该模型与域上可接请求（servableFor 且在途未满）的账号，按 UID 排序。
+// 调用方持 p.mu（读锁即可）。
+func (p *Pool) servableEntriesLocked(model, realm string, now time.Time) []*entry {
+	out := make([]*entry, 0, len(p.byUID))
+	for _, e := range p.byUID {
 		if realm != "" && e.a.Realm() != realm {
 			continue
 		}
@@ -89,20 +123,23 @@ func (p *Pool) WeightedAvailableUIDsForModelRealm(model, realm string) []string 
 		if p.inFlightFull(e) {
 			continue
 		}
-		uids = append(uids, uid)
+		out = append(out, e)
 	}
-	sort.Strings(uids)
+	sort.Slice(out, func(i, j int) bool { return out[i].a.UID < out[j].a.UID })
+	return out
+}
 
-	out := make([]string, 0, len(uids))
-	for _, uid := range uids {
+// weightedUIDsLocked 把账号展开成带虚拟实例权重的 UID 列表（快过期账号出现
+// expiringVirtualSlots 次，见 WeightedAvailableUIDsForModelRealm）。调用方持 p.mu。
+func (p *Pool) weightedUIDsLocked(es []*entry, now time.Time) []string {
+	out := make([]string, 0, len(es))
+	for _, e := range es {
 		slots := 1
-		if p.preferExpiring {
-			if e := p.byUID[uid]; expiringNow(e, now) {
-				slots = expiringVirtualSlots
-			}
+		if p.preferExpiring && expiringNow(e, now) {
+			slots = expiringVirtualSlots
 		}
 		for i := 0; i < slots; i++ {
-			out = append(out, uid)
+			out = append(out, e.a.UID)
 		}
 	}
 	return out

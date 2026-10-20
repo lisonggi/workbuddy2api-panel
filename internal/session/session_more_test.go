@@ -205,3 +205,24 @@ func TestExpiredHelper(t *testing.T) {
 		t.Error("刚活动不应过期")
 	}
 }
+
+// TestAssignableForModel 新分配用 AssignableForModel，已绑定会话的续用只按 AvailableForModel 校验：
+// 绑在不在最便宜层的号上的会话不被挪走；没注入时分配也用 AvailableForModel。
+func TestAssignableForModel(t *testing.T) {
+	r := New(Config{
+		TTL:                time.Minute,
+		AvailableForModel:  func(model, realm string) []string { return []string{"paid", "free"} },
+		AssignableForModel: func(model, realm string) []string { return []string{"free"} },
+	})
+	if uid, ok := r.ResolveForModel("c1", "m", ""); !ok || uid != "free" {
+		t.Fatalf("新会话应从 AssignableForModel 里挑，got %q/%v", uid, ok)
+	}
+	r.Bind("c2", "paid")
+	if uid, ok := r.ResolveForModel("c2", "m", ""); !ok || uid != "paid" {
+		t.Fatalf("已绑定且仍可用的会话不该换号，got %q/%v", uid, ok)
+	}
+	r2 := New(Config{TTL: time.Minute, AvailableForModel: func(model, realm string) []string { return []string{"a1"} }})
+	if got := r2.assignableSlice("m", ""); !reflect.DeepEqual(got, []string{"a1"}) {
+		t.Fatalf("没注入 AssignableForModel 时应回落 AvailableForModel，got %v", got)
+	}
+}

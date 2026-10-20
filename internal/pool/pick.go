@@ -89,57 +89,8 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 			maxCredits = e.credits
 		}
 	}
-	// 成本分层（reqModel 非空时）：按该模型的实测扣费把候选分层，只保留最优层。
-	//   0 = 已实测免费（限免期/夜间免费的号，最强偏好）
-	//   1 = 无观测（含观测过期）
-	//   2 = 已实测收费
-	// 为什么"无观测"排在"已实测收费"之前：新号的限免状态只能靠实测发现，
-	// 若已知收费的号恒压过未知号，那台免费的号永远轮不到，也就永远学不到。
-	// 为什么用硬过滤而非仅排序：pickWeighted 会在候选内加权随机，只排序的话
-	// 收费号仍有机会抽中，达不到"优先免费"的语义。
-	costTier := func(e *entry) (int, float64) {
-		mc, ok := e.modelCostOf(reqModel, now)
-		if !ok {
-			return 1, 0
-		}
-		if mc.CostPer1k <= 0 {
-			return 0, 0
-		}
-		return 2, mc.CostPer1k
-	}
-	bestTier := 2
-	hasTier1 := false
-	explored := false // 本次 pick 是否切了探索层（事件日志在选中号确定后打）
-	for _, e := range cands {
-		if ti, _ := costTier(e); ti < bestTier {
-			bestTier = ti
-		}
-	}
-	// 条件探索（issue #136 方案 a′）：tier 0 垄断层存在（bestTier==0 且 reqModel
-	// 非空）且候选含 tier 1（冻结存在）且距上次探索 ≥ 窗口（零值 timer=从未探索
-	// →首次满足即探）时，本次 pick 生效层切 tier 1-only——探索=搭车改道，把一个
-	// 既有真实用户请求改道给未知号（零新增上游请求；IP 维度零增量，WAF 友好）。
-	// 成功 → NoteModelCost 首观测 → 毕业（tier 0/2，下一轮 pick 立即生效）；
-	// 失败 → 既有错误策略照常，无探测风暴。
-	// hasTier1 复用本循环上方 costTier 的预计算口径（每候选一次的契约不变）。
-	// timer 同锁写入：并发 pick 串行进入写锁，只有一个进入者能通过窗口判定
-	//（天然防重复探索）。key = realm + "\x1f" + reqModel：同模型名可跨域，
-	// 探索节奏按 (域, 模型) 独立；realm==""（Pick 老语义）单独成键。
-	if p.costExploreInterval > 0 && bestTier == 0 && reqModel != "" {
-		for _, e := range cands {
-			if ti, _ := costTier(e); ti == 1 {
-				hasTier1 = true
-				break
-			}
-		}
-		key := realm + "\x1f" + reqModel
-		if hasTier1 && now.Sub(p.exploreLast[key]) >= p.costExploreInterval {
-			p.exploreLast[key] = now
-			p.costExploreEvents++
-			bestTier = 1
-			explored = true
-		}
-	}
+	// 成本分层与条件探索见 effectiveCostTierLocked：只保留生效层的候选。
+	bestTier, explored := p.effectiveCostTierLocked(cands, reqModel, realm, now)
 	// 权重只算一次：顶 5 截断要排序，若在 sort 比较器里现算 weightOf 会翻成 O(n log n) 次
 	// 冗余浮点计算（46 账号约 500 次）。先做 O(n) 预计算，再按 (权重, uid) 排序。
 	// costTier/modelCostOf 同样每候选只算一次（存入 tier/cost1k），比较器只读缓存字段。
@@ -151,7 +102,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	}
 	ws := make([]weighted, 0, len(cands))
 	for _, e := range cands {
-		ti, ci := costTier(e)
+		ti, ci := e.costTierOf(reqModel, now)
 		if ti == bestTier {
 			ws = append(ws, weighted{e: e, w: p.routingWeightOf(e, maxCredits, now), tier: ti, cost1k: ci})
 		}
@@ -232,6 +183,65 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	p.pickSeq++
 	e.usedSeq = p.pickSeq // 单调序号：保证 usedSeq 严格全序（防惊群/LRU 的权威依据）
 	return e.a
+}
+
+// costTierOf 该号在 reqModel 上的成本层与单价（每千 token 积分）：
+//
+//	0 = 已实测免费（限免期/夜间免费的号，最强偏好）
+//	1 = 无观测（含观测过期）
+//	2 = 已实测收费
+//
+// 为什么"无观测"排在"已实测收费"之前：新号的限免状态只能靠实测发现，
+// 若已知收费的号恒压过未知号，那台免费的号永远轮不到，也就永远学不到。
+func (e *entry) costTierOf(reqModel string, now time.Time) (int, float64) {
+	mc, ok := e.modelCostOf(reqModel, now)
+	if !ok {
+		return 1, 0
+	}
+	if mc.CostPer1k <= 0 {
+		return 0, 0
+	}
+	return 2, mc.CostPer1k
+}
+
+// effectiveCostTierLocked 返回候选集在 reqModel 上的生效成本层：通常是最优层（硬过滤，
+// 而非仅排序：pickWeighted 会在候选内加权随机，只排序的话收费号仍有机会抽中，达不到
+// "优先免费"的语义）。pick 与新会话分配（CheapestWeightedUIDsForModelRealm）共用。
+//
+// 条件探索（issue #136 方案 a′）：tier 0 垄断层存在（bestTier==0 且 reqModel
+// 非空）且候选含 tier 1（冻结存在）且距上次探索 ≥ 窗口（零值 timer=从未探索
+// →首次满足即探）时，本次生效层切 tier 1-only——探索=搭车改道，把一个
+// 既有真实用户请求改道给未知号（零新增上游请求；IP 维度零增量，WAF 友好）。
+// 成功 → NoteModelCost 首观测 → 毕业（tier 0/2，下一轮立即生效）；
+// 失败 → 既有错误策略照常，无探测风暴。
+// timer 同锁写入：并发调用串行进入写锁，只有一个进入者能通过窗口判定
+// （天然防重复探索）。key = realm + "\x1f" + reqModel：同模型名可跨域，
+// 探索节奏按 (域, 模型) 独立；realm==""（Pick 老语义）单独成键。
+// 调用方必须持 p.mu 写锁。
+func (p *Pool) effectiveCostTierLocked(cands []*entry, reqModel, realm string, now time.Time) (best int, explored bool) {
+	best = 2
+	for _, e := range cands {
+		if ti, _ := e.costTierOf(reqModel, now); ti < best {
+			best = ti
+		}
+	}
+	if p.costExploreInterval <= 0 || best != 0 || reqModel == "" {
+		return best, false
+	}
+	hasTier1 := false
+	for _, e := range cands {
+		if ti, _ := e.costTierOf(reqModel, now); ti == 1 {
+			hasTier1 = true
+			break
+		}
+	}
+	key := realm + "\x1f" + reqModel
+	if hasTier1 && now.Sub(p.exploreLast[key]) >= p.costExploreInterval {
+		p.exploreLast[key] = now
+		p.costExploreEvents++
+		return 1, true
+	}
+	return best, false
 }
 
 // floorBlockedForRealmModel 积分保底拦截判定（pick 普通轮换与 PickByUIDForModel 粘性

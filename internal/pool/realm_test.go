@@ -225,3 +225,43 @@ func TestCatalogUIDForRealm(t *testing.T) {
 		t.Fatalf("没有国际版号时应为空，got %q", got)
 	}
 }
+
+// TestCheapestWeightedUIDsForModelRealm 新会话分配只留最便宜那一层：实测免费 > 无观测 > 实测收费；
+// 条件探索窗口到了切到无观测层；模型为空不分层；快过期虚拟实例权重照常。
+func TestCheapestWeightedUIDsForModelRealm(t *testing.T) {
+	p := realmPool(t)
+	p.SetCostExploreInterval(0)
+	p.NoteModelCost("cn1", "glm-5.2", 0, 1000) // 免费
+	p.NoteModelCost("cn2", "glm-5.2", 5, 1000) // 收费
+	if got := p.CheapestWeightedUIDsForModelRealm("glm-5.2", "cn"); !reflect.DeepEqual(got, []string{"cn1"}) {
+		t.Fatalf("有免费号时只留免费号，got %v", got)
+	}
+	// 续用校验不分层：收费号仍算可用，绑在它上面的会话不会被挪走。
+	if got := p.WeightedAvailableUIDsForModelRealm("glm-5.2", "cn"); !reflect.DeepEqual(got, []string{"cn1", "cn2"}) {
+		t.Fatalf("续用校验不该分层，got %v", got)
+	}
+	// 合池：国际版两个号都没观测，排在收费号之前、免费号之后。
+	if got := p.CheapestWeightedUIDsForModelRealm("glm-5.2", ""); !reflect.DeepEqual(got, []string{"cn1"}) {
+		t.Fatalf("合池时仍只留免费号，got %v", got)
+	}
+	p.NoteModelCost("cn1", "kimi", 3, 1000)
+	if got := p.CheapestWeightedUIDsForModelRealm("kimi", ""); !reflect.DeepEqual(got, []string{"cn2", "g1", "g2"}) {
+		t.Fatalf("没有免费号时留无观测的号，got %v", got)
+	}
+	if got := p.CheapestWeightedUIDsForModelRealm("", "cn"); !reflect.DeepEqual(got, []string{"cn1", "cn2"}) {
+		t.Fatalf("模型为空不分层，got %v", got)
+	}
+	// 条件探索：免费层垄断、存在无观测的号、窗口已到 → 这一次切到无观测层。
+	p.SetCostExploreInterval(time.Hour)
+	if got := p.CheapestWeightedUIDsForModelRealm("glm-5.2", ""); !reflect.DeepEqual(got, []string{"g1", "g2"}) {
+		t.Fatalf("探索窗口到了应切到无观测层，got %v", got)
+	}
+	if got := p.CheapestWeightedUIDsForModelRealm("glm-5.2", ""); !reflect.DeepEqual(got, []string{"cn1"}) {
+		t.Fatalf("同一窗口内不再探索，got %v", got)
+	}
+	// 快过期虚拟实例权重照常。
+	p.SetCreditsDetailed("cn1", 100, 100, 100, time.Now().Add(time.Hour), 100)
+	if got := p.CheapestWeightedUIDsForModelRealm("glm-5.2", "cn"); !reflect.DeepEqual(got, []string{"cn1", "cn1", "cn1"}) {
+		t.Fatalf("快过期号应出现 3 次，got %v", got)
+	}
+}

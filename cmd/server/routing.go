@@ -13,14 +13,15 @@ import (
 
 // sessionConfig 会话粘性路由的配置。按 handler 定好的域过滤可用账号（跨 realm 不泄漏；
 // 跨域合池时域为 "" 即两域都算）；返回列表对快过期账号重复同一 UID 作虚拟实例权重，
-// 会话哈希分配无需感知。
+// 会话哈希分配无需感知。新会话分配时再按成本分层只留最便宜那一层。
 func sessionConfig(ttl, gcInterval time.Duration, store redisstore.Store, p *pool.Pool) session.Config {
 	return session.Config{
-		TTL:               ttl,
-		GCInterval:        gcInterval,
-		Store:             store,
-		Available:         p.AvailableUIDs,
-		AvailableForModel: p.WeightedAvailableUIDsForModelRealm,
+		TTL:                ttl,
+		GCInterval:         gcInterval,
+		Store:              store,
+		Available:          p.AvailableUIDs,
+		AvailableForModel:  p.WeightedAvailableUIDsForModelRealm,
+		AssignableForModel: p.CheapestWeightedUIDsForModelRealm,
 	}
 }
 
