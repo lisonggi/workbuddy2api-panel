@@ -705,28 +705,26 @@ func TestFetchV3ConfigTrialBanner(t *testing.T) {
 	})
 }
 
-// TestCreditPackageBranches 逐包构成解析：扣减窗口时间、三种到期字段回退、
-// 周期/非周期额度、负余额钳零与面额降序。
+// TestCreditPackageBranches 逐包构成解析：扣减窗口时间、三种到期字段回退、额度与剩余
+// （剩余超过额度按额度算）、缺字段当 0 与面额降序。
 func TestCreditPackageBranches(t *testing.T) {
 	deduct := time.Now().Add(48 * time.Hour).UnixMilli()
 	created := time.Now().Add(-24 * time.Hour).UnixMilli()
 	f := newUpFake(t)
-	f.on(http.MethodPost, "/v2/billing/meter/get-user-resource", 200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[
-		{"PackageName":"deduct","DeductionEndTime":`+strconv.FormatInt(deduct, 10)+`,"CreateTime":`+strconv.FormatInt(created, 10)+`,
-		 "CapacityRemain":10,"CapacityUsed":0,"CapacitySize":30},
-		{"PackageName":"expired","ExpiredTime":"2026-10-24 00:00:00","CapacityRemain":5,"CapacitySize":5},
-		{"PackageName":"pkgend","PackageEndTime":"2026-10-25 00:00:00","CapacityRemain":6,"CapacitySize":6},
-		{"PackageName":"cycle","CycleCapacitySize":100,"CycleCapacityRemain":120,"CycleCapacityUsed":0},
-		{"PackageName":"cycleused","CycleCapacitySize":100,"CycleCapacityRemain":90,"CycleCapacityUsed":95},
-		{"PackageName":"nosize","CapacityRemain":7,"CapacitySize":0},
-		{}
-	]}}}}`)
+	f.onResources("",
+		`{"PackageName":"deduct","DeductionEndTime":`+strconv.FormatInt(deduct, 10)+`,"CreateTime":`+strconv.FormatInt(created, 10)+`,
+		 "CycleCapacityRemainPrecise":"10","CycleCapacitySizePrecise":"30"}`,
+		`{"PackageName":"expired","ExpiredTime":"2026-10-24 00:00:00","CycleCapacityRemainPrecise":"5","CycleCapacitySizePrecise":"5"}`,
+		`{"PackageName":"pkgend","PackageEndTime":"2026-10-25 00:00:00","CycleCapacityRemainPrecise":"6","CycleCapacitySizePrecise":"6"}`,
+		`{"PackageName":"cycle","CycleCapacitySizePrecise":"100","CycleCapacityRemainPrecise":"120"}`,
+		`{"PackageName":"nosize","CycleCapacityRemainPrecise":"7"}`,
+		`{}`)
 	c := upClient(f)
 	packs, remain, size, err := c.CreditPackages(upAuth())
 	if err != nil {
 		t.Fatalf("CreditPackages: %v", err)
 	}
-	if len(packs) != 7 {
+	if len(packs) != 6 {
 		t.Fatalf("packs = %d", len(packs))
 	}
 	byName := map[string]CreditPackage{}
@@ -743,28 +741,17 @@ func TestCreditPackageBranches(t *testing.T) {
 		t.Errorf("pkgend = %+v", p)
 	}
 	if cy := byName["cycle"]; !cy.Cycle || cy.Remain != 100 || cy.Size != 100 || cy.Used != 0 {
-		t.Errorf("cycle = %+v（remain 负值应钳零后 used 取周期值）", cy)
+		t.Errorf("cycle = %+v（剩余超过额度应按额度算）", cy)
 	}
-	if cy := byName["cycleused"]; !cy.Cycle || cy.Used != 95 || cy.Remain != 5 {
-		t.Errorf("cycleused = %+v", cy)
+	if n := byName["nosize"]; n.Remain != 0 || n.Size != 0 {
+		t.Errorf("nosize = %+v（没有额度时剩余也按 0 算）", n)
 	}
-	if n := byName["nosize"]; n.Remain != 7 || n.Size != 0 {
-		t.Errorf("nosize = %+v", n)
-	}
-	if remain != 10+5+6+100+5+7 || size != 30+5+6+100+100 {
+	if remain != 10+5+6+100 || size != 30+5+6+100 {
 		t.Errorf("合集 remain/size = %d/%d", remain, size)
 	}
-	// 面额降序：cycle/cycleused(100) 在 nosize(0) 之前。
+	// 面额降序：cycle(100) 在 nosize(0) 之前。
 	if packs[0].Size < packs[len(packs)-1].Size {
 		t.Errorf("应按面额降序: %+v", packs)
-	}
-	r := f.seen()[0]
-	if r.path != "/v2/billing/meter/get-user-resource" {
-		t.Errorf("path = %q", r.path)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(r.body, &body); err != nil || body["ProductCode"] != "p_tcaca" || body["PageSize"] != float64(100) {
-		t.Errorf("请求体 = %v (%v)", body, err)
 	}
 }
 

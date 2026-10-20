@@ -48,12 +48,6 @@ func TestFull7ClientBaseSelectors(t *testing.T) {
 	if got := c.chatBase(ca); got != "https://cn.example" {
 		t.Fatalf("cn chatBase = %q", got)
 	}
-	if got := c.billingMeterPaths(ga); !reflect.DeepEqual(got, []string{billingMeterPath, billingMeterPathV2}) {
-		t.Fatalf("global billingMeterPaths = %v", got)
-	}
-	if got := c.billingMeterPaths(ca); !reflect.DeepEqual(got, []string{billingMeterPathV2}) {
-		t.Fatalf("cn billingMeterPaths = %v", got)
-	}
 	if got := c.checkinMeterPaths(ga); !reflect.DeepEqual(got, []string{dailyCheckinPath, dailyCheckinPathV2}) {
 		t.Fatalf("global checkinMeterPaths = %v", got)
 	}
@@ -323,28 +317,29 @@ func TestFull7FetchV3ConfigModelMapErrors(t *testing.T) {
 func TestFull7CreditPackagesErrors(t *testing.T) {
 	t.Run("计费请求失败", func(t *testing.T) {
 		f := newUpFake(t)
-		f.on(http.MethodPost, "/v2/billing/meter/get-user-resource", 400, `{"code":10001,"msg":"no"}`)
+		f.onResources("")
+		f.on(http.MethodPost, resourceFreePath, 400, `{"code":10001,"msg":"no"}`)
 		if _, _, _, err := upClient(f).CreditPackages(upAuth()); err == nil {
 			t.Fatal("应返回上游错误")
 		}
 	})
 	t.Run("响应解析失败", func(t *testing.T) {
 		f := newUpFake(t)
-		f.on(http.MethodPost, "/v2/billing/meter/get-user-resource", 200, `{"code":0,"data":"oops"}`)
-		if _, _, _, err := upClient(f).CreditPackages(upAuth()); err == nil || !strings.Contains(err.Error(), "packages parse") {
+		f.onResources("")
+		f.on(http.MethodPost, resourcePaidPath, 200, `{"code":0,"data":"oops"}`)
+		if _, _, _, err := upClient(f).CreditPackages(upAuth()); err == nil || !strings.Contains(err.Error(), "resource parse") {
 			t.Fatalf("err = %v", err)
 		}
 	})
-	t.Run("周期额度越界归零", func(t *testing.T) {
+	t.Run("剩余超过额度按额度算", func(t *testing.T) {
 		f := newUpFake(t)
-		f.on(http.MethodPost, "/v2/billing/meter/get-user-resource", 200,
-			`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"PackageName":"p","CycleCapacitySize":10,"CycleCapacityRemain":5,"CycleCapacityUsed":12}]}}}}`)
-		packs, _, _, err := upClient(f).CreditPackages(upAuth())
+		f.onResources("", `{"PackageName":"p","CycleCapacitySizePrecise":"10","CycleCapacityRemainPrecise":"12.5"}`)
+		packs, remain, size, err := upClient(f).CreditPackages(upAuth())
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		if len(packs) != 1 || !packs[0].Cycle || packs[0].Remain != 0 || packs[0].Used != 12 {
-			t.Fatalf("packs = %+v", packs)
+		if len(packs) != 1 || !packs[0].Cycle || packs[0].Remain != 10 || packs[0].Used != 0 || remain != 10 || size != 10 {
+			t.Fatalf("packs = %+v remain=%d size=%d", packs, remain, size)
 		}
 	})
 }
@@ -392,7 +387,8 @@ func TestFull7UserResourceDetailedWithExpiryBranches(t *testing.T) {
 	call := func(t *testing.T, status int, body string) (int64, int64, error) {
 		t.Helper()
 		f := newUpFake(t)
-		f.on(http.MethodPost, "/v2/billing/meter/get-user-resource", status, body)
+		f.onResources("")
+		f.on(http.MethodPost, resourceFreePath, status, body)
 		remain, total, _, _, _, err := upClient(f).UserResourceDetailedWithExpiry(upAuth(), 0)
 		return remain, total, err
 	}
@@ -406,29 +402,17 @@ func TestFull7UserResourceDetailedWithExpiryBranches(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
-	t.Run("单包剩余与总量夹取", func(t *testing.T) {
-		remain, total, err := call(t, 200,
-			`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacityRemain":-5,"CapacitySize":10},{"CapacityRemain":10,"CapacitySize":5}]}}}}`)
+	t.Run("负数当 0、剩余按额度夹取", func(t *testing.T) {
+		remain, total, err := call(t, 200, resourceList(
+			`{"CycleCapacityRemainPrecise":"-5","CycleCapacitySizePrecise":"10"}`,
+			`{"CycleCapacityRemainPrecise":"10","CycleCapacitySizePrecise":"5"}`))
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		if remain != 10 || total != 20 {
-			t.Fatalf("remain=%d total=%d，期望 10/20", remain, total)
+		if remain != 5 || total != 15 {
+			t.Fatalf("remain=%d total=%d，期望 5/15", remain, total)
 		}
 	})
-}
-
-func TestFull7PackageRemainUsedClamps(t *testing.T) {
-	remain, _, size := packageRemainUsed(respAccount{CycleCapacitySize: 5, CycleCapacityRemain: 10})
-	if remain != 5 || size != 5 {
-		t.Fatalf("remain>size 夹取: remain=%d size=%d", remain, size)
-	}
-	remain, used, size := packageRemainUsed(respAccount{
-		CycleCapacitySize: 10, CycleCapacityRemain: 8, CycleCapacityUsed: 5,
-	})
-	if remain != 5 || used != 5 || size != 10 {
-		t.Fatalf("已用反推剩余: remain=%d used=%d size=%d", remain, used, size)
-	}
 }
 
 func TestFull7IsAlreadyCheckinEdges(t *testing.T) {

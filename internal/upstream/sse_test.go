@@ -2,8 +2,6 @@ package upstream
 
 import (
 	"encoding/json"
-	"errors"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -877,18 +875,12 @@ func TestUserResourceDetailedWithExpirySnapshot(t *testing.T) {
 	now := time.Now().In(softRateResetLoc)
 	soon := now.Add(24 * time.Hour).Truncate(time.Second)
 	later := now.Add(10 * 24 * time.Hour).Truncate(time.Second)
-	payload := `{"code":0,"data":{"Response":{"Data":{"Accounts":[` +
-		`{"PackageName":"soon-a","CycleCapacitySize":10,"CycleCapacityRemain":10,"CycleCapacityUsed":0,"CycleEndTime":"` + soon.Format(packageEndLayout) + `"},` +
-		`{"PackageName":"soon-b","CycleCapacitySize":15,"CycleCapacityRemain":15,"CycleCapacityUsed":0,"CycleEndTime":"` + soon.Format(packageEndLayout) + `"},` +
-		`{"PackageName":"later","CycleCapacitySize":20,"CycleCapacityRemain":20,"CycleCapacityUsed":0,"CycleEndTime":"` + later.Format(packageEndLayout) + `"},` +
-		`{"PackageName":"unknown","CycleCapacitySize":5,"CycleCapacityRemain":5,"CycleCapacityUsed":0}` +
-		`]}}}}`
-	c := testClient(func(r *http.Request) (*http.Response, error) {
-		if !strings.HasSuffix(r.URL.Path, "/v2/billing/meter/get-user-resource") {
-			return nil, errors.New("wrong path: " + r.URL.Path)
-		}
-		return jsonResp(200, payload), nil
-	})
+	c := testClient(resourceRT(
+		cyclePkg("soon-a", 10, 10, `"CycleEndTime":"`+soon.Format(packageEndLayout)+`"`),
+		cyclePkg("soon-b", 15, 15, `"CycleEndTime":"`+soon.Format(packageEndLayout)+`"`),
+		cyclePkg("later", 20, 20, `"CycleEndTime":"`+later.Format(packageEndLayout)+`"`),
+		cyclePkg("unknown", 5, 5, ""),
+	))
 
 	remain, total, expiring, earliestAt, earliestRemaining, err := c.UserResourceDetailedWithExpiry(
 		&auth.Auth{AccessToken: "at", UID: "u1"}, 48*time.Hour,
@@ -905,16 +897,10 @@ func TestUserResourceDetailedWithExpirySnapshot(t *testing.T) {
 }
 func TestCreditPackagesExpiryTimestamp(t *testing.T) {
 	end := time.Now().In(softRateResetLoc).Add(7 * 24 * time.Hour).Truncate(time.Second)
-	c := testClient(func(r *http.Request) (*http.Response, error) {
-		if !strings.HasSuffix(r.URL.Path, "/v2/billing/meter/get-user-resource") {
-			return nil, errors.New("wrong path: " + r.URL.Path)
-		}
-		return jsonResp(200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[`+
-			`{"PackageName":"gift","CycleCapacitySize":100,"CycleCapacityRemain":80,"CycleCapacityUsed":20,"CycleEndTime":"`+
-			end.Format(packageEndLayout)+`"},`+
-			`{"PackageName":"unknown","CycleCapacitySize":10,"CycleCapacityRemain":10,"CycleCapacityUsed":0}`+
-			`]}}}}`), nil
-	})
+	c := testClient(resourceRT(
+		cyclePkg("gift", 100, 80, `"CycleEndTime":"`+end.Format(packageEndLayout)+`"`),
+		cyclePkg("unknown", 10, 10, ""),
+	))
 	packs, remain, size, err := c.CreditPackages(&auth.Auth{AccessToken: "at", UID: "u1"})
 	if err != nil {
 		t.Fatalf("packages: %v", err)

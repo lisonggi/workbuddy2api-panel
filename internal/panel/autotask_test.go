@@ -22,6 +22,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 const (
@@ -84,6 +85,13 @@ func (f *autoUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
 	h := f.route[autoRouteKey(r.Method, host, r.URL.Path, r.Header.Get("X-Client-Platform"))]
 	f.mu.Unlock()
 	if h == nil {
+		// 积分汇总 / 付费包是每个账号查余额都会发的伴随请求，各用例不必逐条登记。
+		// 免费包（余额本体）仍须显式登记，避免用例漏测。
+		switch r.URL.Path {
+		case upstreamtest.SummaryPath, upstreamtest.PaidPath:
+			status, body, _ := upstreamtest.Respond(r.URL.Path)
+			return autoHTTPResponse(status, body), nil
+		}
 		f.t.Errorf("假上游收到未登记的请求: %s %s%s", r.Method, host, r.URL.Path)
 		return autoHTTPResponse(400, `{"code":400,"msg":"unexpected"}`), nil
 	}
@@ -327,10 +335,14 @@ func autoBodyMap(t *testing.T, raw []byte) map[string]any {
 	return m
 }
 
-// autoSequence 请求序列的可读形式，供断言先后顺序。
+// autoSequence 请求序列的可读形式，供断言先后顺序。跳过积分汇总与付费包两条：
+// 三个积分请求并发发出，它们的先后顺序不确定，断言序列会随机失败。
 func autoSequence(reqs []autoReq) []string {
 	out := make([]string, 0, len(reqs))
 	for _, r := range reqs {
+		if r.Path == upstreamtest.SummaryPath || r.Path == upstreamtest.PaidPath {
+			continue
+		}
 		out = append(out, r.Method+" "+r.Host+r.Path)
 	}
 	return out

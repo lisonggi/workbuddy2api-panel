@@ -10,6 +10,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // 签到后的连登管家自动领取一次，并在到账后立即刷新余额、解除余额冷却。
@@ -26,9 +27,11 @@ func TestStreakBonusClaimsCompensationOnce(t *testing.T) {
 			claims++
 			claimed = true
 			w.Write([]byte(`{"code":0,"data":{}}`))
-		case "/v2/billing/meter/get-user-resource":
+		case upstreamtest.FreePath:
 			balances++
-			w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacitySize":500,"CapacityRemain":500}]}}}}`))
+			w.Write([]byte(upstreamtest.List(upstreamtest.Package(500, 500, ""))))
+		case upstreamtest.SummaryPath, upstreamtest.PaidPath:
+			upstreamtest.Write(w, r.URL.Path)
 		default:
 			// 其他连登操作不影响本测试的补偿行为。
 			w.WriteHeader(http.StatusBadRequest)

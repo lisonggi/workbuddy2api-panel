@@ -18,6 +18,7 @@ import (
 
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 const (
@@ -29,8 +30,8 @@ const (
 	loginAccountPath = "/v2/plugin/login/account"
 
 	checkinPathCN        = "/v2/billing/meter/daily-checkin"
-	resourcePathCN       = "/v2/billing/meter/get-user-resource"
-	resourcePathGlobal   = "/billing/meter/get-user-resource" // global 先试无 /v2 前缀
+	resourcePathCN       = upstreamtest.FreePath
+	resourcePathGlobal   = upstreamtest.FreePath // 两个域路径相同，都不带 /v2
 	enterpriseUsagePath  = "/v2/billing/meter/get-enterprise-user-usage"
 	globalRegisterStatus = "/auth/realms/copilot/overseas/user/register"
 	globalTrialPath      = "/billing/ide/trial"
@@ -73,9 +74,9 @@ func loginRouteAccount(up *autoUpstream, host, data string) {
 	up.on(http.MethodGet, host, loginAccountPath, "", autoOK(autoEnvelope(data)))
 }
 
-// loginResourceBody 个人余额响应（Response.Data.Accounts[]）。
+// loginResourceBody 个人余额响应：官方逐包列表（data.Accounts[]，额度读 *Precise 字符串）。
 func loginResourceBody(remain, total int64) string {
-	return autoEnvelope(fmt.Sprintf(`{"Response":{"Data":{"Accounts":[{"CapacityRemain":%d,"CapacitySize":%d}]}}}`, remain, total))
+	return upstreamtest.List(upstreamtest.Package(total, remain, ""))
 }
 
 // seedLogin 直接往面板塞一个进行中的登录会话。

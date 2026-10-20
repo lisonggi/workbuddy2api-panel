@@ -12,6 +12,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // 批量领取隔离单号失败，包含暂停账号，过滤国际/企业账号，禁用账号只查不领，并刷新权威余额。
@@ -38,9 +39,13 @@ func TestCompensationBulkClaim(t *testing.T) {
 			claims[uid]++
 			mu.Unlock()
 			w.Write([]byte(`{"code":0,"data":{}}`))
-		case "/v2/billing/meter/get-user-resource":
-			w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacitySize":800,"CapacityRemain":700}]}}}}`))
 		default:
+			// 领完补偿后的余额刷新走官方三个积分接口；汇总 404 时按逐包合计。
+			if status, body, ok := upstreamtest.Respond(r.URL.Path, upstreamtest.Package(800, 700, "")); ok {
+				w.WriteHeader(status)
+				w.Write([]byte(body))
+				return
+			}
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}

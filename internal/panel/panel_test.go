@@ -21,6 +21,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/reqlog"
 	"github.com/yreidev/workbuddy2api-panel/internal/scheduler"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 	"github.com/yreidev/workbuddy2api-panel/internal/usage"
 )
 
@@ -394,7 +395,7 @@ func TestPanelAccountOps(t *testing.T) {
 // 单号签到：个人号 / 已签到 / 普通失败 / 企业号 / 余额失败。
 func TestPanelAccountCheckin(t *testing.T) {
 	checkinPath := "/v2/billing/meter/daily-checkin"
-	resourcePath := "/v2/billing/meter/get-user-resource"
+	resourcePath := upstreamtest.FreePath
 	enterprisePath := "/v2/billing/meter/get-enterprise-user-usage"
 
 	t.Run("未知 uid 404", func(t *testing.T) {
@@ -477,7 +478,7 @@ func TestPanelAccountCheckin(t *testing.T) {
 		glb := taskTestAuth("g1", "国际号")
 		glb.Domain = "www.workbuddy.ai"
 		p.cfg.Pool.Add(glb)
-		up.on(http.MethodPost, autoBillingHost, "/billing/meter/get-user-resource", "", autoOK(loginResourceBody(475, 480)))
+		up.on(http.MethodPost, autoBillingHost, upstreamtest.FreePath, "", autoOK(loginResourceBody(475, 480)))
 		resp := autoDecode(t, postJSON(t, p, "/panel/api/accounts/g1/checkin", ``))
 		if resp["checkin_done"] != false || resp["credits"] != float64(475) {
 			t.Fatalf("国际版号结果不对: %v", resp)
@@ -512,7 +513,7 @@ func TestPanelAccountCheckin(t *testing.T) {
 
 // 单号余额刷新：成功写回池、失败 502。
 func TestPanelAccountBalance(t *testing.T) {
-	resourcePath := "/v2/billing/meter/get-user-resource"
+	resourcePath := upstreamtest.FreePath
 
 	t.Run("未知 uid 404", func(t *testing.T) {
 		p, _ := newPanelFor(t, Config{})
@@ -652,7 +653,7 @@ func TestPanelBatchTriggers(t *testing.T) {
 		p.cfg.Pool.Disable("u3", "测试禁用")
 		p.cfg.Scheduler = scheduler.New(scheduler.Config{Pool: p.cfg.Pool, Upstream: p.cfg.Upstream})
 
-		up.on(http.MethodPost, autoBillingHost, "/v2/billing/meter/get-user-resource", "", func(r autoReq) (int, string) {
+		up.on(http.MethodPost, autoBillingHost, upstreamtest.FreePath, "", func(r autoReq) (int, string) {
 			return 200, loginResourceBody(88, 100)
 		})
 		up.on(http.MethodGet, autoWebHost, "/console/account", "web", func(r autoReq) (int, string) {
@@ -741,11 +742,11 @@ func TestPanelPackages(t *testing.T) {
 	p, up := newPanelFor(t, Config{Pool: pool.New("")})
 	p.cfg.Pool.Add(taskTestAuth("u1", "一号"))
 	p.cfg.Pool.Add(taskTestAuth("u2", "二号"))
-	up.on(http.MethodPost, autoBillingHost, "/v2/billing/meter/get-user-resource", "", func(r autoReq) (int, string) {
+	up.on(http.MethodPost, autoBillingHost, upstreamtest.FreePath, "", func(r autoReq) (int, string) {
 		if r.Header.Get("X-User-Id") == "u2" {
 			return 400, `{"code":400,"msg":"pkg boom"}`
 		}
-		return 200, autoEnvelope(`{"Response":{"Data":{"Accounts":[{"PackageName":"包A","CapacityRemain":60,"CapacityUsed":40,"CapacitySize":100}]}}}`)
+		return 200, upstreamtest.List(upstreamtest.Package(100, 60, `"PackageName":"包A"`))
 	})
 
 	rec := get(p, http.MethodGet, "/panel/api/packages")

@@ -94,15 +94,19 @@ func TestUserResourceDetailedRetriesTransient500(t *testing.T) {
 	shortBillingRetry(t)
 	var calls int32
 	c := testClient(func(r *http.Request) (*http.Response, error) {
-		if !strings.HasSuffix(r.URL.Path, "/v2/billing/meter/get-user-resource") {
+		switch r.URL.Path {
+		case resourceSummaryPath:
+			return jsonResp(200, `{"code":0,"data":{"Packages":[{"CycleTotalCapacity":"100","CycleRemainCapacity":"60"}]}}`), nil
+		case resourcePaidPath:
+			return jsonResp(200, resourceList()), nil
+		case resourceFreePath:
+		default:
 			return nil, errors.New("wrong path")
 		}
 		if atomic.AddInt32(&calls, 1) == 1 {
 			return jsonResp(500, `{"code":10000,"msg":"API request failed with status code: 500"}`), nil
 		}
-		return jsonResp(200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[
-			{"PackageName":"p","CapacitySize":100,"CapacityRemain":60}
-		]}}}}`), nil
+		return jsonResp(200, resourceList(`{"PackageName":"p","CycleCapacitySizePrecise":"100","CycleCapacityRemainPrecise":"60"}`)), nil
 	})
 	remain, _, _, _, _, err := c.UserResourceDetailedWithExpiry(&auth.Auth{AccessToken: "at"}, 0)
 	if err != nil || remain != 60 {

@@ -403,22 +403,21 @@ func TestChatStreamReadsMultipleChunksOverRealTransport(t *testing.T) {
 	}
 }
 
+// TestUserResourceAggregation 汇总查不到时按逐包合计：付费包与免费包两个列表相加。
 func TestUserResourceAggregation(t *testing.T) {
 	c := testClient(func(r *http.Request) (*http.Response, error) {
-		if !strings.HasSuffix(r.URL.Path, "/v2/billing/meter/get-user-resource") {
-			return nil, errors.New("wrong path: " + r.URL.Path)
-		}
 		if r.Method != http.MethodPost {
 			return nil, errors.New("want POST")
 		}
-		body, _ := io.ReadAll(r.Body)
-		if !bytes.Contains(body, []byte(`"ProductCode":"p_tcaca"`)) {
-			return nil, errors.New("missing ProductCode: " + string(body))
+		switch r.URL.Path {
+		case resourceSummaryPath:
+			return jsonResp(404, `{"code":404,"msg":"not found"}`), nil
+		case resourcePaidPath:
+			return jsonResp(200, resourceList(`{"PackageName":"专业版","CycleCapacitySizePrecise":"2000","CycleCapacityRemainPrecise":"1200"}`)), nil
+		case resourceFreePath:
+			return jsonResp(200, resourceList(`{"PackageName":"体验包","CycleCapacitySizePrecise":"1000","CycleCapacityRemainPrecise":"300"}`)), nil
 		}
-		return jsonResp(200, `{"code":0,"data":{"Response":{"Data":{"TotalCount":2,"TotalDosage":3000,"Accounts":[
-			{"PackageName":"签到包","CapacitySize":2000,"CapacityRemain":1200,"CapacityUsed":800,"CycleCapacitySize":2000,"CycleCapacityRemain":1200,"CycleCapacityUsed":800},
-			{"PackageName":"体验包","CapacitySize":1000,"CapacityRemain":300,"CapacityUsed":700,"CycleCapacitySize":1000,"CycleCapacityRemain":300,"CycleCapacityUsed":700}
-		]}}}}`), nil
+		return nil, errors.New("wrong path: " + r.URL.Path)
 	})
 	a := &auth.Auth{AccessToken: "at", UID: "u1"}
 	remain, total, err := c.UserResource(a)
@@ -434,11 +433,7 @@ func TestUserResourceAggregation(t *testing.T) {
 }
 
 func TestUserResourceNegativeClamped(t *testing.T) {
-	c := testClient(func(r *http.Request) (*http.Response, error) {
-		return jsonResp(200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[
-			{"PackageName":"p","CycleCapacitySize":100,"CycleCapacityRemain":-50,"CycleCapacityUsed":150}
-		]}}}}`), nil
-	})
+	c := testClient(resourceRT(`{"PackageName":"p","CycleCapacitySizePrecise":"100","CycleCapacityRemainPrecise":"-50"}`))
 	remain, total, err := c.UserResource(&auth.Auth{AccessToken: "at"})
 	if err != nil || remain != 0 {
 		t.Errorf("remain=%d err=%v, want 0 (clamped)", remain, err)

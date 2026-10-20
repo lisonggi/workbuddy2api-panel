@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // signinExit 捕获 exitFunc 的退出码。
@@ -72,9 +73,12 @@ func TestSigninSaveFailureLog(t *testing.T) {
 			return 200, `{"code":0,"data":{"accessToken":"new-at","refreshToken":"new-rt","expiresIn":7200,"domain":"www.codebuddy.cn"}}`
 		case "/v2/billing/meter/daily-checkin":
 			return 200, `{"code":0,"data":{}}`
-		case "/v2/billing/meter/get-user-resource":
-			return 200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacityRemain":5,"CapacitySize":10}]}}}}`
+		case upstreamtest.FreePath:
+			return 200, upstreamtest.List(upstreamtest.Package(10, 5, ""))
 		default:
+			if status, body, ok := signinDefaultResponse(r.URL.Path); ok {
+				return status, body
+			}
 			t.Errorf("未登记的请求: %s %s", r.Method, r.URL.Path)
 			return 400, `{"code":400}`
 		}
@@ -96,7 +100,7 @@ func TestSigninSaveFailureLog(t *testing.T) {
 	if !strings.Contains(out.String(), "| OK ") {
 		t.Fatalf("写回失败不应影响签到结果:\n%s", out.String())
 	}
-	if got := fake.count("r-save", "/v2/billing/meter/get-user-resource"); got != 1 {
+	if got := fake.count("r-save", upstreamtest.FreePath); got != 1 {
 		t.Fatalf("应照常查余额，实际 %d 次", got)
 	}
 }

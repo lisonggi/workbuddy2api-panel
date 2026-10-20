@@ -13,9 +13,11 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
-// schedCounter 记录各路径命中次数的假上游；respond 可按请求定制响应（返回 false 走默认成功）。
+// schedCounter 记录各路径命中次数的假上游；respond 可按请求定制响应（返回 false 走默认：积分
+// 按 upstreamtest 的默认响应，其余回成功）。
 type schedCounter struct {
 	mu      sync.Mutex
 	hits    map[string]int
@@ -33,6 +35,9 @@ func (c *schedCounter) server(t *testing.T) *httptest.Server {
 		c.hits[r.URL.Path]++
 		c.mu.Unlock()
 		if c.respond != nil && c.respond(w, r, r.URL.Path) {
+			return
+		}
+		if upstreamtest.Write(w, r.URL.Path) {
 			return
 		}
 		w.Write([]byte(`{"code":0,"msg":"ok","data":{}}`))
@@ -265,8 +270,8 @@ func TestRunCheckinGates(t *testing.T) {
 		case strings.HasSuffix(path, "/daily-checkin"):
 			w.Write([]byte(`{"code":10001,"msg":"今天已签到"}`))
 			return true
-		case strings.HasSuffix(path, "/get-user-resource"):
-			w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,"CycleCapacityRemain":150,"CycleCapacityUsed":0}]}}}}`))
+		case path == upstreamtest.FreePath:
+			w.Write([]byte(upstreamtest.List(upstreamtest.Package(1000, 150, ""))))
 			return true
 		}
 		return false
@@ -292,7 +297,7 @@ func TestRunCheckinGates(t *testing.T) {
 	if st.Credits != 150 {
 		t.Errorf("u1 credits = %d，应为 150", st.Credits)
 	}
-	if got := c.count("/get-user-resource"); got == 0 {
+	if got := c.count(upstreamtest.FreePath); got == 0 {
 		t.Error("签到后应查询余额")
 	}
 }
@@ -369,9 +374,8 @@ func TestStartBalanceRefresh(t *testing.T) {
 	replies.Store(123)
 	c := newSchedCounter()
 	c.respond = func(w http.ResponseWriter, r *http.Request, path string) bool {
-		if strings.HasSuffix(path, "/get-user-resource") {
-			w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,"CycleCapacityRemain":` +
-				itoa(replies.Load()) + `,"CycleCapacityUsed":0}]}}}}`))
+		if path == upstreamtest.FreePath {
+			w.Write([]byte(upstreamtest.List(upstreamtest.Package(1000, replies.Load(), ""))))
 			return true
 		}
 		return false
@@ -383,14 +387,14 @@ func TestStartBalanceRefresh(t *testing.T) {
 
 	// interval<=0 不启动。
 	s.StartBalanceRefresh(context.Background(), 0)
-	if got := c.count("/get-user-resource"); got != 0 {
+	if got := c.count(upstreamtest.FreePath); got != 0 {
 		t.Errorf("interval<=0 不应启动刷新，got %d", got)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.StartBalanceRefresh(ctx, 10*time.Millisecond)
-	waitUntil(t, "首轮余额刷新", func() bool { return c.count("/get-user-resource") >= 1 })
+	waitUntil(t, "首轮余额刷新", func() bool { return c.count(upstreamtest.FreePath) >= 1 })
 	waitUntil(t, "号池余额更新", func() bool {
 		st, ok := p.Status("u1")
 		return ok && st.Credits == 123
@@ -415,23 +419,9 @@ func TestStartBalanceRefresh(t *testing.T) {
 	}
 	cancel()
 	time.Sleep(30 * time.Millisecond)
-	before := c.count("/get-user-resource")
+	before := c.count(upstreamtest.FreePath)
 	time.Sleep(30 * time.Millisecond)
-	if after := c.count("/get-user-resource"); after != before {
+	if after := c.count(upstreamtest.FreePath); after != before {
 		t.Errorf("取消后仍在刷新: %d → %d", before, after)
 	}
-}
-
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	pos := len(buf)
-	for n > 0 {
-		pos--
-		buf[pos] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[pos:])
 }

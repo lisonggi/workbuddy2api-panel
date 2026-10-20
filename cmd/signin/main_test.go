@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 type signinRT func(*http.Request) (*http.Response, error)
@@ -50,6 +51,17 @@ func (f *signinFake) requests() []signinRec {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]signinRec(nil), f.recs...)
+}
+
+// signinDefaultResponse 汇总 / 付费包走 upstreamtest 的默认响应，
+// 免费包（余额本体）与签到响应由各用例显式登记。
+func signinDefaultResponse(path string) (int, string, bool) {
+	switch path {
+	case upstreamtest.SummaryPath, upstreamtest.PaidPath:
+		status, body, _ := upstreamtest.Respond(path)
+		return status, body, true
+	}
+	return 0, "", false
 }
 
 func (f *signinFake) count(uid, path string) int {
@@ -133,16 +145,19 @@ func TestSigninAccounts(t *testing.T) {
 			default:
 				return 400, `{"code":500,"msg":"boom"}`
 			}
-		case "/v2/billing/meter/get-user-resource":
+		case upstreamtest.FreePath:
 			switch uid {
 			case "u-ok":
-				return 200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacityRemain":42,"CapacitySize":100}]}}}}`
+				return 200, upstreamtest.List(upstreamtest.Package(100, 42, ""))
 			case "u-fail":
-				return 200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacityRemain":7,"CapacitySize":10}]}}}}`
+				return 200, upstreamtest.List(upstreamtest.Package(10, 7, ""))
 			default:
 				return 400, `{"code":400,"msg":"balance boom"}`
 			}
 		default:
+			if status, body, ok := signinDefaultResponse(r.URL.Path); ok {
+				return status, body
+			}
 			t.Errorf("未登记的请求: %s %s", r.Method, r.URL.Path)
 			return 400, `{"code":400}`
 		}
@@ -167,7 +182,7 @@ func TestSigninAccounts(t *testing.T) {
 	if !strings.Contains(text, "| 7 ") {
 		t.Fatalf("签到失败账号仍应查余额:\n%s", text)
 	}
-	if got := fake.count("u-already", "/v2/billing/meter/get-user-resource"); got != 1 {
+	if got := fake.count("u-already", upstreamtest.FreePath); got != 1 {
 		t.Fatalf("已签到账号也应查余额，实际 %d 次", got)
 	}
 }
@@ -198,9 +213,12 @@ func TestSigninRefresh(t *testing.T) {
 				t.Errorf("刷新失败/会话失效不应签到: uid=%s", uid)
 			}
 			return 200, `{"code":0,"data":{}}`
-		case "/v2/billing/meter/get-user-resource":
-			return 200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacityRemain":1,"CapacitySize":2}]}}}}`
+		case upstreamtest.FreePath:
+			return 200, upstreamtest.List(upstreamtest.Package(2, 1, ""))
 		default:
+			if status, body, ok := signinDefaultResponse(r.URL.Path); ok {
+				return status, body
+			}
 			t.Errorf("未登记的请求: %s %s", r.Method, r.URL.Path)
 			return 400, `{"code":400}`
 		}

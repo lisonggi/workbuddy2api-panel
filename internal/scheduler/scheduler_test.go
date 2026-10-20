@@ -14,6 +14,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 func TestNextFire(t *testing.T) {
@@ -204,15 +205,13 @@ func (f *fakeUpstream) server() *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/daily-checkin"):
 			f.checkinCalls.Add(1)
 			w.Write([]byte(`{"code":0,"msg":"ok","data":{}}`))
-		case strings.HasSuffix(r.URL.Path, "/get-user-resource"):
-			// remain 需 <= size（取数钳 [0,size]：脏数据 remain>size 会被钳到 size
-			// ——上游真实数据恒一致，实测 Cycle{17,482,500}）。
+		case r.URL.Path == upstreamtest.FreePath:
+			// remain 需 <= size（剩余超过额度会按额度算——上游真实数据恒一致）。
 			end := ""
 			if f.resourceEnd != "" {
-				end = `,"CycleEndTime":` + jsonString(f.resourceEnd)
+				end = `"CycleEndTime":` + jsonString(f.resourceEnd)
 			}
-			w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,"CycleCapacityRemain":` +
-				jsonI64(f.resourceRemain) + `,"CycleCapacityUsed":0` + end + `}]}}}}`))
+			w.Write([]byte(upstreamtest.List(upstreamtest.Package(1000, f.resourceRemain, end))))
 		case strings.HasSuffix(r.URL.Path, "/token/refresh"):
 			f.refreshCalls.Add(1)
 			w.Write([]byte(`{"code":0,"data":{"accessToken":"new","expiresIn":3600}}`))
@@ -223,15 +222,11 @@ func (f *fakeUpstream) server() *httptest.Server {
 			// daily_limit_reached=true：状态查询计一次调用即止，不发 depart/claim。
 			f.travelCalls.Add(1)
 			w.Write([]byte(`{"code":0,"data":{"state":"idle","daily_limit_reached":true}}`))
+		case upstreamtest.Write(w, r.URL.Path):
 		default:
 			http.Error(w, "not found", 404)
 		}
 	}))
-}
-
-func jsonI64(v int64) string {
-	b, _ := json.Marshal(v)
-	return string(b)
 }
 
 func jsonString(v string) string {

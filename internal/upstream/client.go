@@ -766,27 +766,14 @@ func (c *Client) globalOn(a *auth.Auth) bool {
 // 路径，此注释即"坏了再说"的锚点。
 const chatCompletionsPath = "/v2/chat/completions"
 
-// billing 域端点路径（billingBase + path）。balance/checkin 与 report（report.go）同域，
-// 统一走 billingJSON 发请求。
+// 签到路径（billingBase + path）：国际版先试不带 /v2 的，404 时退到 /v2。
 const (
-	billingMeterPath   = "/billing/meter/get-user-resource"    // global 首选（国际版无 /v2 前缀）
-	dailyCheckinPath   = "/billing/meter/daily-checkin"        // global 首选
-	billingMeterPathV2 = "/v2/billing/meter/get-user-resource" // CN 现状 / global fallback
+	dailyCheckinPath   = "/billing/meter/daily-checkin" // global 首选
 	dailyCheckinPathV2 = "/v2/billing/meter/daily-checkin"
 )
 
-// billingMeterPaths 按 realm 返回 billing/meter 域路径候选序列：
-// global → [无 /v2, 有 /v2]（404 时 fallback）；cn → [有 /v2]（现状逐字，零回归）。
-// 仅作用于 get-user-resource / daily-checkin（/billing/meter/* 族）；report /v2/report 不参与，
-// 其他 billing 端点（growth 等）路径不含 /billing/meter 前缀，走原常量不受影响。
-func (c *Client) billingMeterPaths(a *auth.Auth) []string {
-	if c.globalOn(a) {
-		return []string{billingMeterPath, billingMeterPathV2}
-	}
-	return []string{billingMeterPathV2}
-}
-
-// checkinMeterPaths 同上，针对 daily-checkin。
+// checkinMeterPaths 按 realm 返回 daily-checkin 路径候选序列：
+// global → [无 /v2, 有 /v2]（404 时 fallback）；cn → [有 /v2]。
 func (c *Client) checkinMeterPaths(a *auth.Auth) []string {
 	if c.globalOn(a) {
 		return []string{dailyCheckinPath, dailyCheckinPathV2}
@@ -1833,63 +1820,14 @@ type CreditPackage struct {
 
 // CreditPackages 返回账号当前的逐包构成。remain/size 为各包求和。
 //
-// 字段选择与 UserResourceDetailed 的聚合口径一致：CycleCapacitySize > 0 时按
-// 周期字段算，否则按 Capacity 字段算——两条路径不能混，否则同一个包会被算两次。
+// 包来自官方的付费包、免费包两个逐包接口，单包额度按官方算法（见 resources.go）。
 func (c *Client) CreditPackages(a *auth.Auth) ([]CreditPackage, int64, int64, error) {
-	now := time.Now()
-	body := map[string]any{
-		"PageNumber":               1,
-		"PageSize":                 100,
-		"ProductCode":              "p_tcaca",
-		"Status":                   []int{0, 3},
-		"PackageEndTimeRangeBegin": now.Format(packageEndLayout),
-		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format(packageEndLayout),
-	}
-	data, err := c.billingMeterJSON(a, c.billingMeterPaths(a), http.MethodPost, body, withBillingLanguage(a))
+	packs, _, err := c.userResources(a)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	// 注意层级：doJSON 已经解过 apiEnvelope 并返回 env.Data，所以这里从
-	// Response 开始解析——**不能**再套一层 Code/Data，否则 Accounts 恒为空，
-	// 表现为「每个号都 0 个包」（实测踩过）。
-	var resp struct {
-		Response struct {
-			Data struct {
-				Accounts []struct {
-					PackageName         string `json:"PackageName"`
-					CapacityRemain      int64  `json:"CapacityRemain"`
-					CapacityUsed        int64  `json:"CapacityUsed"`
-					CapacitySize        int64  `json:"CapacitySize"`
-					CycleCapacityRemain int64  `json:"CycleCapacityRemain"`
-					CycleCapacityUsed   int64  `json:"CycleCapacityUsed"`
-					CycleCapacitySize   int64  `json:"CycleCapacitySize"`
-					// 到期时间字段名在上游存在三种口径：ExpiredTime / PackageEndTime
-					// 在 CN/global 实测字段全集里均恒 miss（见 UserResourceDetailed
-					// 处注释），真实下发的是 CycleEndTime——三者都读，谁有值用谁。
-					ExpiredTime    string `json:"ExpiredTime"`
-					PackageEndTime string `json:"PackageEndTime"`
-					CycleEndTime   string `json:"CycleEndTime"`
-					// DeductionEndTime 可抵扣窗口结束（epoch 毫秒）——「这个包什么时候
-					// 不能再花」的真失效时刻。CycleEndTime 是周期边界（额度重置点），
-					// 两者语义不同：判「用不完就没了」以本字段为准，CycleEndTime 兜底
-					//（OkRoromori 分支实测结论：请求参数叫 PackageEndTimeRange*，但
-					// 响应里 ExpiredTime 恒空，真正的失效时刻只有这里下发）。
-					DeductionEndTime int64 `json:"DeductionEndTime"`
-					// 发放时刻（epoch 毫秒）。
-					CreateTime     int64  `json:"CreateTime"`
-					PackageCode    string `json:"PackageCode"`
-					SubProductCode string `json:"SubProductCode"`
-					SubProductName string `json:"SubProductName"`
-				} `json:"Accounts"`
-			} `json:"Data"`
-		} `json:"Response"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, 0, 0, fmt.Errorf("packages parse: %w", err)
-	}
-	packs := resp.Response.Data.Accounts
 	out := make([]CreditPackage, 0, len(packs))
-	var sumRemain, sumSize int64
+	var sumRemain, sumSize float64
 	for _, p := range packs {
 		cp := CreditPackage{
 			Name:           p.PackageName,
@@ -1899,10 +1837,10 @@ func (c *Client) CreditPackages(a *auth.Auth) ([]CreditPackage, int64, int64, er
 		}
 		switch {
 		case p.DeductionEndTime > 0:
-			// 真失效时刻（可抵扣窗口结束），语义见上方字段注释：判「用不完就没了」
-			// 用它而不是周期边界。epoch 毫秒 → RFC3339，与 CycleEndTime 字符串口径
-			// 共存（前端统一 slice(0,10) 取日期）。ExpiresAt 直接用原始毫秒——
-			// RFC3339 不是 packageEndLayout 形态，交给下方解析会静默失败得 0。
+			// 真失效时刻（可抵扣窗口结束）：判「用不完就没了」用它而不是周期边界。
+			// epoch 毫秒 → RFC3339，与 CycleEndTime 字符串口径共存（前端统一 slice(0,10)
+			// 取日期）。ExpiresAt 直接用原始毫秒——RFC3339 不是 packageEndLayout 形态，
+			// 交给下方解析会静默失败得 0。
 			cp.EndTime = time.UnixMilli(p.DeductionEndTime).Format(time.RFC3339)
 			cp.ExpiresAt = p.DeductionEndTime
 		case p.ExpiredTime != "":
@@ -1921,30 +1859,17 @@ func (c *Client) CreditPackages(a *auth.Auth) ([]CreditPackage, int64, int64, er
 		if p.CreateTime > 0 {
 			cp.CreatedAt = time.UnixMilli(p.CreateTime).Format(time.RFC3339)
 		}
-		if p.CycleCapacitySize > 0 {
-			cp.Cycle = true
-			cp.Remain, cp.Size = p.CycleCapacityRemain, p.CycleCapacitySize
-			cp.Used = cp.Size - cp.Remain
-			if p.CycleCapacityUsed > cp.Used {
-				cp.Used = p.CycleCapacityUsed
-				cp.Remain = cp.Size - cp.Used
-			}
-			if cp.Remain < 0 {
-				cp.Remain = 0
-			}
-		} else {
-			cp.Remain, cp.Used, cp.Size = p.CapacityRemain, p.CapacityUsed, p.CapacitySize
-			if cp.Used == 0 && cp.Size > cp.Remain {
-				cp.Used = cp.Size - cp.Remain
-			}
-		}
-		sumRemain += cp.Remain
-		sumSize += cp.Size
+		size, left := p.capacity()
+		cp.Cycle = p.CapacityType != sliceCapacityType || len(p.SlicePeriodUsageDetails) == 0
+		cp.Size, cp.Remain = credits(size), credits(left)
+		cp.Used = cp.Size - cp.Remain
+		sumRemain += left
+		sumSize += size
 		out = append(out, cp)
 	}
 	// 面额降序：大包一眼可见，正是差异最可能出现的地方。
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Size > out[j].Size })
-	return out, sumRemain, sumSize, nil
+	return out, credits(sumRemain), credits(sumSize), nil
 }
 
 func (c *Client) UserResource(a *auth.Auth) (remain, total int64, err error) {
@@ -2089,66 +2014,21 @@ func (c *Client) UserResourceDetailedWithExpiry(a *auth.Auth, soon time.Duration
 	if a.IsEnterprise() {
 		return c.enterpriseResource(a, soon)
 	}
-	now := time.Now()
-	body := map[string]any{
-		"PageNumber":               1,
-		"PageSize":                 100,
-		"ProductCode":              "p_tcaca",
-		"Status":                   []int{0, 3},
-		"PackageEndTimeRangeBegin": now.Format(packageEndLayout),
-		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format(packageEndLayout),
-	}
-	// 余额查询同样做瞬时错误有界重试（签到后紧接着的 user-resource 偶发 500 会让
-	// 该账号错过本次解冻/到期快照更新，只能等下一个刷新周期）。
-	var data json.RawMessage
-	err = c.retryBillingTransient(func() error {
-		var e error
-		data, e = c.billingMeterJSON(a, c.billingMeterPaths(a), http.MethodPost, body, withBillingLanguage(a))
-		return e
-	})
+	packs, summary, err := c.userResources(a)
 	if err != nil {
 		return 0, 0, 0, time.Time{}, 0, err
 	}
-	var resp struct {
-		Response struct {
-			Data struct {
-				Accounts []struct {
-					PackageName         string `json:"PackageName"`
-					CycleEndTime        string `json:"CycleEndTime"` // "2006-01-02 15:04:05"，缺省/空 = 无到期
-					CapacitySize        int64  `json:"CapacitySize"`
-					CapacityRemain      int64  `json:"CapacityRemain"`
-					CapacityUsed        int64  `json:"CapacityUsed"`
-					CycleCapacitySize   int64  `json:"CycleCapacitySize"`
-					CycleCapacityRemain int64  `json:"CycleCapacityRemain"`
-					CycleCapacityUsed   int64  `json:"CycleCapacityUsed"`
-				} `json:"Accounts"`
-			} `json:"Data"`
-		} `json:"Response"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return 0, 0, 0, time.Time{}, 0, fmt.Errorf("resource parse: %w", err)
-	}
-	for _, acct := range resp.Response.Data.Accounts {
-		r, _, size := packageRemainUsed(respAccount{
-			CapacityRemain:      acct.CapacityRemain,
-			CapacityUsed:        acct.CapacityUsed,
-			CapacitySize:        acct.CapacitySize,
-			CycleCapacityRemain: acct.CycleCapacityRemain,
-			CycleCapacityUsed:   acct.CycleCapacityUsed,
-			CycleCapacitySize:   acct.CycleCapacitySize,
-		})
-		if r < 0 {
-			r = 0
-		}
-		if size < r {
-			size = r
-		}
-		remain += r
-		total += size
+	now := time.Now()
+	var sumLeft, sumSize float64
+	for _, p := range packs {
+		size, left := p.capacity()
+		sumLeft += left
+		sumSize += size
+		r := credits(left)
 		if r <= 0 {
 			continue
 		}
-		end, ok := parsePackageEndTime(acct.CycleEndTime)
+		end, ok := parsePackageEndTime(p.CycleEndTime)
 		if !ok || !end.After(now) {
 			continue
 		}
@@ -2163,48 +2043,14 @@ func (c *Client) UserResourceDetailedWithExpiry(a *auth.Auth, soon time.Duration
 			expiring += r
 		}
 	}
+	// 余额与总额取汇总（官方桌面端显示的剩余积分就是汇总相加）；汇总没查到时用逐包合计。
+	if summary != nil {
+		sumLeft, sumSize = summary.left, summary.total
+	}
+	remain, total = credits(sumLeft), credits(sumSize)
+	expiring = min(expiring, remain)
+	earliestRemaining = min(earliestRemaining, remain)
 	return remain, total, expiring, earliestAt, earliestRemaining, nil
-}
-
-// respAccount 供 packageRemainUsed 解析的套餐字段（CreditPackages 的逐包结构同构）。
-type respAccount struct {
-	CapacityRemain      int64
-	CapacityUsed        int64
-	CapacitySize        int64
-	CycleCapacityRemain int64
-	CycleCapacityUsed   int64
-	CycleCapacitySize   int64
-}
-
-// packageRemainUsed 聚合单套餐的 remain/used/size（与 CreditPackages/cmd/credit 的
-// 历史口径一致，收敛至此作为单一事实来源）。Cycle 期套餐优先：用 CycleCapacity
-// 三字段，used 取 CycleUsed 与 size-remain 的较大者；否则回退 Capacity 三字段。
-func packageRemainUsed(a respAccount) (remain, used, size int64) {
-	if a.CycleCapacitySize > 0 {
-		remain = a.CycleCapacityRemain
-		size = a.CycleCapacitySize
-		if remain < 0 {
-			remain = 0
-		}
-		if remain > size {
-			remain = size
-		}
-		used = size - remain
-		if a.CycleCapacityUsed > used {
-			used = a.CycleCapacityUsed
-			if size >= used {
-				remain = size - used
-			}
-		}
-		return remain, used, size
-	}
-	remain = a.CapacityRemain
-	used = a.CapacityUsed
-	size = a.CapacitySize
-	if used == 0 && size > remain {
-		used = size - remain
-	}
-	return remain, used, size
 }
 
 // DailyCheckin 执行每日签到。已签到（业务 code 非 0）也返回错误，调用方按 msg 区分。

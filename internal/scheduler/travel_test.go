@@ -14,6 +14,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // travelStub 模拟 growth 域全部端点，记录调用次数与请求参数。
@@ -81,8 +82,7 @@ func billingAndGrowthServer(stub *travelStub) *httptest.Server {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/daily-checkin"):
 			w.Write([]byte(`{"code":0,"msg":"ok","data":{}}`))
-		case strings.HasSuffix(r.URL.Path, "/get-user-resource"):
-			w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,"CycleCapacityRemain":500,"CycleCapacityUsed":0}]}}}}`))
+		case upstreamtest.Write(w, r.URL.Path, upstreamtest.Package(1000, 500, "")):
 		case strings.HasSuffix(r.URL.Path, "/token/refresh"):
 			w.Write([]byte(`{"code":0,"data":{"accessToken":"new","expiresIn":3600}}`))
 		default:

@@ -1,9 +1,11 @@
 package upstream
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,14 +107,20 @@ func TestEnterpriseResourceSnakeCase(t *testing.T) {
 // TestPersonalResourceStaysOnPackageEndpoint 个人号零回归：仍走资源包端点，
 // 企业端点一次都不发。
 func TestPersonalResourceStaysOnPackageEndpoint(t *testing.T) {
-	var paths []string
+	var (
+		mu    sync.Mutex
+		paths []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock() // 积分的三个接口并发请求
 		paths = append(paths, r.URL.Path)
+		mu.Unlock()
 		if strings.Contains(r.URL.Path, "get-enterprise-user-usage") {
 			t.Errorf("个人号不应调用企业额度端点")
 		}
-		w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":` +
-			`[{"CycleCapacitySize":1000,"CycleCapacityRemain":900,"CycleCapacityUsed":100}]}}}}`))
+		resp, _ := resourceRT(cyclePkg("p", 1000, 900, ""))(r)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
 	}))
 	defer srv.Close()
 

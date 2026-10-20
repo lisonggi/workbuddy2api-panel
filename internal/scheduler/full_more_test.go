@@ -17,6 +17,7 @@ import (
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // lockedBuffer 并发安全的日志缓冲（后台 goroutine 与测试 goroutine 同时读写）。
@@ -185,7 +186,7 @@ func TestBalanceRefreshUpstreamError(t *testing.T) {
 	p.Add(&auth.Auth{UID: "u1", Nickname: "一号", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
 	s := schedWithPool(srv, p, Config{})
 	s.RunBalanceRefreshNow()
-	if c.count("/get-user-resource") == 0 {
+	if c.count(upstreamtest.FreePath) == 0 {
 		t.Fatal("应发起余额查询")
 	}
 	if !strings.Contains(logs.String(), "balance") || !strings.Contains(logs.String(), "balance boom") {

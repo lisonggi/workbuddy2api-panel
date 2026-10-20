@@ -12,6 +12,7 @@ import (
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // streakReply 构造 streak 域成功信封。
@@ -199,13 +200,13 @@ func TestStreakBonusCompensation(t *testing.T) {
 			case strings.HasSuffix(path, "/claim-compensation"):
 				w.Write([]byte(streakReply(`{"credit":50}`)))
 				return true
-			case strings.HasSuffix(path, "/get-user-resource"):
+			case path == upstreamtest.FreePath:
 				if balanceFails {
 					w.WriteHeader(400)
 					w.Write([]byte(`{"code":400,"msg":"balance boom"}`))
 					return true
 				}
-				w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,"CycleCapacityRemain":66,"CycleCapacityUsed":0}]}}}}`))
+				w.Write([]byte(upstreamtest.List(upstreamtest.Package(1000, 66, ""))))
 				return true
 			case strings.HasSuffix(path, "/activity/growth/streak"):
 				w.Write([]byte(streakReply(`{"redemption_status":{}}`)))
