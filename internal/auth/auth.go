@@ -41,9 +41,18 @@ type Auth struct {
 	// enterprise；个人号为空。登录时取，刷新令牌后随取账号更新（RefreshToken 在锁内改写，
 	// 读用 DepartmentValue）。
 	DepartmentFullName string
-	// DepartmentSet 凭证里有 departmentFullName 这个键（值可以为空），写回时照样保留。
+	// DepartmentSet 凭证里有 departmentFullName 这个键（值可以为空）。官方核对身份时缺这个键和
+	// 空串算不同的值，见 AccountType。
 	DepartmentSet bool
-	FilePath      string // 来源文件；refresh 后原子写回此处
+	// AccountType、OneIDAccountID、IDP、TokenType 是官方刷新令牌后核对身份用的其余字段
+	// （getAuthenticationAuthorityKey：account 的 type、oneidAccountId、idp 与 auth 的 tokenType），
+	// 网关别处不用，原样存在凭证里原来的位置。指针为 nil 表示凭证里没有这个键。AccountType 为
+	// nil 也说明凭证是 1.1.2 以前的网关写的（账号接口恒有 type），刷新时只补字段、不比对。
+	AccountType    *string
+	OneIDAccountID *string
+	IDP            *string
+	TokenType      *string
+	FilePath       string // 来源文件；refresh 后原子写回此处
 
 	// DeviceToken 设备风控 Token（X-Device-Token 头），来源 auth 文件的 device_token 键。
 	// 缺省为空 = 不注入该头（容器内无桌面端 Turing SDK 的常见部署）。
@@ -94,6 +103,19 @@ func (a *Auth) DepartmentValue() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.DepartmentFullName
+}
+
+// AccountTypeValue 加锁读取账号类型，没有时为空串（RefreshToken 在锁内改写 AccountType）。
+func (a *Auth) AccountTypeValue() string {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.AccountType == nil {
+		return ""
+	}
+	return *a.AccountType
 }
 
 // RefreshTokenValue 加锁读取 RefreshToken（同 AccessTokenValue：RefreshToken 在锁内
@@ -260,17 +282,21 @@ func Parse(raw []byte) (*Auth, error) {
 	if _, nested := probe["auth"]; nested {
 		var n struct {
 			Auth struct {
-				AccessToken  string `json:"accessToken"`
-				RefreshToken string `json:"refreshToken"`
-				ExpiresAt    int64  `json:"expiresAt"`
-				Domain       string `json:"domain"`
-				Realm        string `json:"realm"`
+				AccessToken  string  `json:"accessToken"`
+				RefreshToken string  `json:"refreshToken"`
+				ExpiresAt    int64   `json:"expiresAt"`
+				Domain       string  `json:"domain"`
+				Realm        string  `json:"realm"`
+				TokenType    *string `json:"tokenType"`
 			} `json:"auth"`
 			Account struct {
-				UID          string  `json:"uid"`
-				EnterpriseID string  `json:"enterpriseId"`
-				Nickname     string  `json:"nickname"`
-				Department   *string `json:"departmentFullName"`
+				UID            string  `json:"uid"`
+				EnterpriseID   string  `json:"enterpriseId"`
+				Nickname       string  `json:"nickname"`
+				Department     *string `json:"departmentFullName"`
+				Type           *string `json:"type"`
+				OneIDAccountID *string `json:"oneidAccountId"`
+				IDP            *string `json:"idp"`
 			} `json:"account"`
 			// DeviceToken 顶层 device_token（嵌套形与扁平形共用；手写时无需嵌进 auth 对象）。
 			DeviceToken string `json:"device_token"`
@@ -289,20 +315,28 @@ func Parse(raw []byte) (*Auth, error) {
 			Nickname:           n.Account.Nickname,
 			DepartmentFullName: deref(n.Account.Department),
 			DepartmentSet:      n.Account.Department != nil,
+			AccountType:        n.Account.Type,
+			OneIDAccountID:     n.Account.OneIDAccountID,
+			IDP:                n.Account.IDP,
+			TokenType:          n.Auth.TokenType,
 			DeviceToken:        n.DeviceToken,
 		}
 	} else {
 		var f struct {
-			AccessToken  string  `json:"accessToken"`
-			RefreshToken string  `json:"refreshToken"`
-			ExpiresAt    int64   `json:"expiresAt"`
-			Domain       string  `json:"domain"`
-			Realm        string  `json:"realm"`
-			UID          string  `json:"uid"`
-			EnterpriseID string  `json:"enterpriseId"`
-			Nickname     string  `json:"nickname"`
-			Department   *string `json:"departmentFullName"`
-			DeviceToken  string  `json:"device_token"`
+			AccessToken    string  `json:"accessToken"`
+			RefreshToken   string  `json:"refreshToken"`
+			ExpiresAt      int64   `json:"expiresAt"`
+			Domain         string  `json:"domain"`
+			Realm          string  `json:"realm"`
+			UID            string  `json:"uid"`
+			EnterpriseID   string  `json:"enterpriseId"`
+			Nickname       string  `json:"nickname"`
+			Department     *string `json:"departmentFullName"`
+			Type           *string `json:"type"`
+			OneIDAccountID *string `json:"oneidAccountId"`
+			IDP            *string `json:"idp"`
+			TokenType      *string `json:"tokenType"`
+			DeviceToken    string  `json:"device_token"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -318,6 +352,10 @@ func Parse(raw []byte) (*Auth, error) {
 			Nickname:           f.Nickname,
 			DepartmentFullName: deref(f.Department),
 			DepartmentSet:      f.Department != nil,
+			AccountType:        f.Type,
+			OneIDAccountID:     f.OneIDAccountID,
+			IDP:                f.IDP,
+			TokenType:          f.TokenType,
 			DeviceToken:        f.DeviceToken,
 		}
 	}
@@ -359,9 +397,18 @@ func (a *Auth) documentLocked() map[string]any {
 			"nickname":     a.Nickname,
 		},
 	}
-	// 部门全名：有这个键才写，个人号没有部门全名这个键。
+	// 部门全名与官方核对身份用的字段：有这个键才写，个人号没有部门全名这个键。
+	account, authDoc := doc["account"].(map[string]any), doc["auth"].(map[string]any)
 	if a.DepartmentSet || a.DepartmentFullName != "" {
-		doc["account"].(map[string]any)["departmentFullName"] = a.DepartmentFullName
+		account["departmentFullName"] = a.DepartmentFullName
+	}
+	for k, v := range map[string]*string{"type": a.AccountType, "oneidAccountId": a.OneIDAccountID, "idp": a.IDP} {
+		if v != nil {
+			account[k] = *v
+		}
+	}
+	if a.TokenType != nil {
+		authDoc["tokenType"] = *a.TokenType
 	}
 	// DeviceToken 非空才写回顶层 device_token：避免在无该字段的旧文件里引入空键
 	// （保持与插件 OAuth 输出形状一致，插件读取忽略未知键）。

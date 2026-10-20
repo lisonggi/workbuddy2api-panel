@@ -208,6 +208,12 @@ func TestSigninRefresh(t *testing.T) {
 			default:
 				return 500, `{"code":500,"msg":"refresh boom"}`
 			}
+		case "/v2/plugin/account":
+			// 刷新后用新令牌核对账号。
+			if r.Header.Get("Authorization") != "Bearer new-at" {
+				t.Errorf("核对账号应带新令牌: %q", r.Header.Get("Authorization"))
+			}
+			return 200, `{"code":0,"data":{"uid":"r-ok"}}`
 		case "/v2/billing/meter/daily-checkin":
 			if uid != "r-ok" {
 				t.Errorf("刷新失败/会话失效不应签到: uid=%s", uid)

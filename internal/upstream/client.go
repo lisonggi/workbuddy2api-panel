@@ -857,35 +857,54 @@ func (c *Client) webBase(a *auth.Auth) string {
 	return cnProductEndpoint
 }
 
+// jsonAttempt 一次 JSON 请求的结果。status 为 0 表示传输错误（没拿到 HTTP 状态）；
+// parseFailed 表示 HTTP 2xx 但响应体不是合法信封。
+type jsonAttempt struct {
+	data        json.RawMessage
+	raw         []byte
+	status      int
+	err         error
+	parseFailed bool
+}
+
 // doJSON 发请求并解信封；HTTP 非 2xx 或业务 code != 0 时返回带 body 片段的 *Error。
 // body 读失败（连接中断/空闲掐流/截断）返回普通错误（非 *Error）——半截 body 不进
 // Classify，不参与账号惩罚（传输层故障不该喂熔断误罚号）。
 func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
+	res := c.doJSONAttempt(req)
+	return res.data, res.err
+}
+
+// doJSONAttempt 同 doJSON，但返回完整结果。
+func (c *Client) doJSONAttempt(req *http.Request) jsonAttempt {
 	resp, err := doDecoded(c.HTTP, req)
 	if err != nil {
-		return nil, err
+		return jsonAttempt{err: err}
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
+		return jsonAttempt{status: resp.StatusCode, err: fmt.Errorf("read body: %w", err)}
 	}
 	if resp.StatusCode >= 400 {
 		kind := Classify(resp.StatusCode, string(raw))
-		return nil, &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
+		return jsonAttempt{status: resp.StatusCode, raw: raw,
+			err: &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}}
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("parse failed: %w (body: %s)", err, truncate(string(raw), 120))
+		return jsonAttempt{status: resp.StatusCode, raw: raw, parseFailed: true,
+			err: fmt.Errorf("parse failed: %w (body: %s)", err, truncate(string(raw), 120))}
 	}
 	if env.Code != 0 {
 		kind := Classify(resp.StatusCode, env.Msg)
 		if kind == ErrNone {
 			kind = ErrClient
 		}
-		return nil, &Error{Kind: kind, Status: resp.StatusCode, Msg: fmt.Sprintf("code=%d msg=%s", env.Code, truncate(env.Msg, 160))}
+		return jsonAttempt{status: resp.StatusCode, raw: raw,
+			err: &Error{Kind: kind, Status: resp.StatusCode, Msg: fmt.Sprintf("code=%d msg=%s", env.Code, truncate(env.Msg, 160))}}
 	}
-	return env.Data, nil
+	return jsonAttempt{data: env.Data, raw: raw, status: resp.StatusCode}
 }
 
 // RefreshToken 刷新 access token；成功时更新 a 的字段（缺省值保留旧值），
@@ -893,8 +912,14 @@ func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
 // refreshIOTimeout 刷新端点网络 I/O 上限（两段式锁外执行，防上游 hang 长占锁）。
 const refreshIOTimeout = 30 * time.Second
 
+// refreshTimeoutCN 国内版刷新令牌的超时（官方桌面端 8 秒；只在原超时更长时下调）；测试可调。
+var refreshTimeoutCN = 8 * time.Second
+
+// refreshAccountTimeout 刷新后取账号的超时（官方桌面端 4 秒）；测试可调。
+var refreshAccountTimeout = 4 * time.Second
+
 // refreshTokenExpiresInMax refresh 响应 expiresIn 的量级上限（10 年，纯防御值：
-// 实测 R-D 响应恒 5184000=60d）。超限视为上游脏数据，不写 ExpiresAt（保留旧值），
+// 早先实测 R-D 响应恒 5184000=60d，2026-10-20 生产实测是 2592000=30d）。超限视为上游脏数据，不写 ExpiresAt（保留旧值），
 // 防止 NeedsRefresh 永假导致 token 永不刷新反而真过期失效。
 const refreshTokenExpiresInMax = 10 * 365 * 24 * time.Hour
 
@@ -907,6 +932,17 @@ const refreshTokenExpiresInMax = 10 * 365 * 24 * time.Hour
 //     独占 a.mu，阻塞同账号的 SaveAtomic / 其他刷新（issue:持锁 120s I/O）。
 //   - 写回前重新校验快照一致性：若锁外期间另一 goroutine 已完成刷新（refreshToken
 //     已变），本次结果直接采用（新 token 已生效），不再重复写回。
+//
+// 请求形状照官方 refreshSession（两个安装包，10-20 读包确认）：POST
+// /v2/plugin/auth/token/refresh，请求体 {}，头见 RefreshHeaders，另带这次刷新的根 span
+// 链路头（trace.go）。拿到新令牌后官方用新令牌取一次账号——国内版 fetchCurrentAccount
+// （GET /v2/plugin/account），国际版 getAccountSnapshot（GET /v2/plugin/accounts）——把对得上
+// 的账号合并进本地（mergeCurrentAccountDetails，见 refreshAccountCheck）。取不到账号、合并后
+// 部门全名变了（normalizeAndAssertRefreshedAuthority），或者新访问令牌和旧的一样，这次刷新都
+// 算失败，不保存新令牌。网关照做：不写回，返回普通错误（不是 12153 会话失效，调用方只记一次
+// 失败，下轮再刷）。10-20 生产实测刷新后旧访问令牌仍然可用，所以丢掉这次的新令牌不会让账号
+// 失效。官方还核对账号类型、登录域等，网关不存类型、登录域照旧换成新值（见
+// docs/official-client.md 的刷新令牌一节）。
 func (c *Client) RefreshToken(a *auth.Auth) error {
 	// 第 1 段（锁内）：读快照。
 	a.Lock()
@@ -918,9 +954,16 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	}
 
 	endpoint := c.chatBase(a) + "/v2/plugin/auth/token/refresh"
-	ctx, cancel := context.WithTimeout(context.Background(), refreshIOTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	// 超时：国内版照官方各自限时（刷新 8 秒、刷新后取账号 4 秒，见 refreshTokenCall 与
+	// refreshAccountCheck）；国际版官方没有设，整个刷新（含取账号）仍以 refreshIOTimeout 兜底。
+	cn := !c.globalOn(a)
+	ctx := context.Background()
+	if !cn {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, refreshIOTimeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return err
 	}
@@ -928,31 +971,70 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	// 用一个显式逐字段拷贝的临时 auth 构造头（不拷贝 sync.Mutex，避免 vet copies-lock）。
 	a.Lock()
 	hdrSnapshot := auth.Auth{
-		AccessToken:  a.AccessToken,
-		RefreshToken: rtSnapshot,
-		ExpiresAt:    a.ExpiresAt,
-		Domain:       a.Domain,
-		UID:          a.UID,
-		EnterpriseID: a.EnterpriseID,
-		Nickname:     a.Nickname,
-		DeviceToken:  a.DeviceToken,
+		AccessToken:        a.AccessToken,
+		RefreshToken:       rtSnapshot,
+		ExpiresAt:          a.ExpiresAt,
+		Domain:             a.Domain,
+		UID:                a.UID,
+		EnterpriseID:       a.EnterpriseID,
+		Nickname:           a.Nickname,
+		DeviceToken:        a.DeviceToken,
+		DepartmentFullName: a.DepartmentFullName,
+		DepartmentSet:      a.DepartmentSet,
+		AccountType:        a.AccountType,
+		OneIDAccountID:     a.OneIDAccountID,
+		IDP:                a.IDP,
+		TokenType:          a.TokenType,
 	}
 	a.Unlock()
 	c.RefreshHeaders(req, &hdrSnapshot)
+	tr := newDaemonTrace()
+	tr.setRoot(req)
 
-	// 网络 I/O（锁外，30s 上限）。
-	data, err := c.doJSON(req)
+	// 网络 I/O（锁外，国内版 8s / 国际版 30s 上限）。
+	res := c.refreshTokenCall(req, cn)
+	data := res.data
+	if res.err != nil {
+		return res.err
+	}
+	var tok struct {
+		AccessToken  string  `json:"accessToken"`
+		RefreshToken string  `json:"refreshToken"`
+		ExpiresIn    int64   `json:"expiresIn"`
+		Domain       *string `json:"domain"`
+		TokenType    *string `json:"tokenType"`
+	}
+	jsonData := data
+	// data 缺失（或为 null）时看顶层（官方 refresh 响应的兼容口径）。
+	if len(bytes.TrimSpace(data)) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		jsonData = res.raw
+	}
+	if err := json.Unmarshal(jsonData, &tok); err != nil || tok.AccessToken == "" {
+		return fmt.Errorf("refresh_failed: no accessToken in response — re-login required")
+	}
+	if tok.AccessToken == atBefore {
+		return fmt.Errorf("refresh_failed: refresh did not produce a new access token")
+	}
+	// 用新令牌取账号（官方 refreshSession 的第二步），通过了才写回。
+	checkAuth := auth.Auth{
+		AccessToken:        tok.AccessToken,
+		RefreshToken:       rtSnapshot,
+		Domain:             hdrSnapshot.Domain,
+		UID:                hdrSnapshot.UID,
+		EnterpriseID:       hdrSnapshot.EnterpriseID,
+		DepartmentFullName: hdrSnapshot.DepartmentFullName,
+	}
+	if tok.Domain != nil && *tok.Domain != "" {
+		checkAuth.Domain = *tok.Domain
+	}
+	accounts, err := c.refreshAccountCheck(ctx, c.chatBase(a), c.globalOn(a), &checkAuth, tr)
 	if err != nil {
 		return err
 	}
-	var tok struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ExpiresIn    int64  `json:"expiresIn"`
-		Domain       string `json:"domain"`
-	}
-	if err := json.Unmarshal(data, &tok); err != nil || tok.AccessToken == "" {
-		return fmt.Errorf("refresh_failed: no accessToken in response — re-login required")
+	// 官方 mergeCurrentAccountDetails 合并账号，normalizeAndAssertRefreshedAuthority 核对身份。
+	merged := mergeRefreshedAccount(&hdrSnapshot, matchRefreshedAccount(accounts, &hdrSnapshot))
+	if !refreshIdentityKept(&hdrSnapshot, merged, tok.TokenType, tok.Domain) {
+		return fmt.Errorf("refresh_failed: refresh changed authority context")
 	}
 
 	// 第 2 段（锁内）：校验快照一致后写回。
@@ -973,9 +1055,13 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	if tok.RefreshToken != "" {
 		a.RefreshToken = tok.RefreshToken
 	}
-	if tok.Domain != "" {
-		a.Domain = tok.Domain
+	if tok.Domain != nil && *tok.Domain != "" {
+		a.Domain = *tok.Domain
 	}
+	if tok.TokenType != nil {
+		a.TokenType = tok.TokenType
+	}
+	merged.applyTo(a)
 	// preserveExpiry：响应缺 expiresIn 时保留旧过期时间，避免刷新风暴。
 	// 实测 R-D 响应恒带 expiresIn=5184000（60d）——缺省分支仅为防御，保留旧值
 	// 避免过期判定漂移。同理，超过 10 年的 expiresIn 按脏值处理保留旧值：
@@ -986,6 +1072,76 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 		a.ExpiresAt = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).Unix()
 	}
 	return nil
+}
+
+// refreshTokenCall 发刷新请求；国内版限时 refreshTimeoutCN（官方桌面端 8 秒）。
+func (c *Client) refreshTokenCall(req *http.Request, cn bool) jsonAttempt {
+	if cn {
+		ctx, cancel := context.WithTimeout(req.Context(), refreshTimeoutCN)
+		defer cancel() // doJSONAttempt 读完响应体才返回
+		req = req.WithContext(ctx)
+	}
+	return c.doJSONAttempt(req)
+}
+
+// refreshAccountCheck 刷新令牌后的取账号：国内版 GET /v2/plugin/account（data 是账号），国际版
+// GET /v2/plugin/accounts（data.accounts[]）。base、global 取自刷新的账号；a 是换上新令牌
+// 的快照。头是请求框架的头加 X-Domain（同 RefreshHeaders：国际版固定 www.workbuddy.ai，国内版
+// 令牌的 domain，没有就用产品入口域）和这次刷新的链路头。
+//
+// 取不到账号（请求失败、国内版 data 为空、国际版列表为空）返回错误；取到的账号交给
+// matchRefreshedAccount 挑（见 refresh_identity.go）。
+func (c *Client) refreshAccountCheck(ctx context.Context, base string, global bool, a *auth.Auth, tr daemonTrace) ([]refreshAccountJSON, error) {
+	if !global {
+		// 国内版刷新后取账号按官方 4 秒（只在原 ctx 期限更长时下调）。
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, refreshAccountTimeout)
+		defer cancel()
+	}
+	path := "/v2/plugin/account"
+	if global {
+		path = "/v2/plugin/accounts"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.frameworkHeaders(req, a, c.userAgent(a))
+	d := a.Domain
+	if global {
+		d = "www.workbuddy.ai"
+	} else if d == "" {
+		d = "www.workbuddy.cn" // 国内版产品入口 https://www.workbuddy.cn 的 authority
+	}
+	req.Header.Set("X-Domain", d)
+	tr.setRoot(req)
+	data, err := c.doJSON(req)
+	if err != nil {
+		return nil, fmt.Errorf("refresh_failed: fetch account after refresh: %w", err)
+	}
+	var accounts []refreshAccountJSON
+	if global {
+		var list struct {
+			Accounts []refreshAccountJSON `json:"accounts"`
+		}
+		if err := json.Unmarshal(data, &list); err != nil {
+			return nil, fmt.Errorf("refresh_failed: parse account after refresh: %w", err)
+		}
+		if len(list.Accounts) == 0 {
+			return nil, fmt.Errorf("refresh_failed: account list is empty after refresh")
+		}
+		accounts = list.Accounts
+	} else {
+		if t := bytes.TrimSpace(data); len(t) == 0 || bytes.Equal(t, []byte("null")) {
+			return nil, fmt.Errorf("refresh_failed: no account after refresh")
+		}
+		var one refreshAccountJSON
+		if err := json.Unmarshal(data, &one); err != nil {
+			return nil, fmt.Errorf("refresh_failed: parse account after refresh: %w", err)
+		}
+		accounts = []refreshAccountJSON{one}
+	}
+	return accounts, nil
 }
 
 // ChatStream 发 chat 请求并返回原始 SSE body 流（调用方负责 Close）。

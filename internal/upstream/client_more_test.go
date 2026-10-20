@@ -247,7 +247,7 @@ func TestRefreshTokenEdges(t *testing.T) {
 	t.Run("正常写回与超长 expiresIn", func(t *testing.T) {
 		a := &auth.Auth{AccessToken: "at0", RefreshToken: "rt0", ExpiresAt: 222}
 		c := &Client{HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-			if r.Header.Get("X-Refresh-Token") != "rt0" {
+			if r.URL.Path == "/v2/plugin/auth/token/refresh" && r.Header.Get("X-Refresh-Token") != "rt0" {
 				t.Errorf("X-Refresh-Token = %q", r.Header.Get("X-Refresh-Token"))
 			}
 			return jsonResp(200, `{"code":0,"data":{"accessToken":"new-at","refreshToken":"new-rt","expiresIn":999999999999,"domain":"www.workbuddy.ai"}}`), nil

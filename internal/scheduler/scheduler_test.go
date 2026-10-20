@@ -215,6 +215,9 @@ func (f *fakeUpstream) server() *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/token/refresh"):
 			f.refreshCalls.Add(1)
 			w.Write([]byte(`{"code":0,"data":{"accessToken":"new","expiresIn":3600}}`))
+		case r.URL.Path == "/v2/plugin/account":
+			// 刷新后核对账号：uid 与本地一致才算刷新成功。
+			w.Write([]byte(`{"code":0,"data":{"uid":"u1"}}`))
 		case strings.HasSuffix(r.URL.Path, "/activity/growth/buddy/info"):
 			// 已领养（data.buddy 非空）：跳过领养前置，直接进旅行状态查询。
 			w.Write([]byte(`{"code":0,"data":{"buddy":{"id":1,"name":"cat"}}}`))
@@ -334,6 +337,10 @@ func TestRunKeepaliveSessionDeadDisables(t *testing.T) {
 func TestRunKeepaliveSessionDeadResetBySuccess(t *testing.T) {
 	var fails atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/plugin/account" { // 刷新后核对账号（只在刷新成功后发）
+			w.Write([]byte(`{"code":0,"data":{"uid":"u1"}}`))
+			return
+		}
 		if fails.Add(1) == 3 { // 第 3 次（本次调度循环的第二轮）刷新成功
 			w.Write([]byte(`{"code":0,"data":{"accessToken":"new","expiresIn":3600}}`))
 			return

@@ -200,6 +200,13 @@ func testClient(fn rtFunc) *Client {
 
 func TestRefreshSuccess(t *testing.T) {
 	c := testClient(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/v2/plugin/account" {
+			// 刷新后的取账号用新令牌。
+			if r.Header.Get("Authorization") != "Bearer newat" {
+				return nil, errors.New("account fetch should use the new token")
+			}
+			return jsonResp(200, `{"code":0,"data":{"uid":""}}`), nil
+		}
 		if !strings.HasSuffix(r.URL.Path, "/v2/plugin/auth/token/refresh") {
 			return nil, errors.New("wrong path: " + r.URL.Path)
 		}

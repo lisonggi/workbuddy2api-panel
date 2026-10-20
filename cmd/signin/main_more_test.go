@@ -71,6 +71,8 @@ func TestSigninSaveFailureLog(t *testing.T) {
 		switch r.URL.Path {
 		case "/v2/plugin/auth/token/refresh":
 			return 200, `{"code":0,"data":{"accessToken":"new-at","refreshToken":"new-rt","expiresIn":7200,"domain":"www.codebuddy.cn"}}`
+		case "/v2/plugin/account":
+			return 200, `{"code":0,"data":{"uid":"r-save"}}`
 		case "/v2/billing/meter/daily-checkin":
 			return 200, `{"code":0,"data":{}}`
 		case upstreamtest.FreePath:

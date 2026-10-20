@@ -282,6 +282,9 @@ func TestFull8ChatRefreshSaveError(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/v2/plugin/auth/token/refresh") {
 			return fullJSONResp(200, `{"code":0,"data":{"accessToken":"new","refreshToken":"rt2","expiresIn":3600}}`), nil
 		}
+		if strings.HasSuffix(r.URL.Path, "/v2/plugin/account") { // 刷新后核对账号
+			return fullJSONResp(200, `{"code":0,"data":{"uid":"u1"}}`), nil
+		}
 		return fullSSEResp(sseOK), nil
 	})
 	a := &auth.Auth{
