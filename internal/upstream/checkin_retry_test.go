@@ -6,7 +6,6 @@ package upstream
 import (
 	"errors"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,11 +21,21 @@ func shortBillingRetry(t *testing.T) {
 	t.Cleanup(func() { billingRetryDelay = old })
 }
 
+// checkinClient 签到状态固定回「活动进行中、今天未签」，其余请求交给 fn（只数签到本身）。
+func checkinClient(fn func(r *http.Request) (*http.Response, error)) *Client {
+	return testClient(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == checkinStatusPath {
+			return jsonResp(200, `{"code":0,"data":{"active":true,"today_checked_in":false}}`), nil
+		}
+		return fn(r)
+	})
+}
+
 func TestDailyCheckinRetriesTransient500(t *testing.T) {
 	shortBillingRetry(t)
 	var calls int32
-	c := testClient(func(r *http.Request) (*http.Response, error) {
-		if !strings.HasSuffix(r.URL.Path, "/v2/billing/meter/daily-checkin") {
+	c := checkinClient(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != dailyCheckinPath {
 			return nil, errors.New("wrong path")
 		}
 		if atomic.AddInt32(&calls, 1) == 1 {
@@ -45,7 +54,7 @@ func TestDailyCheckinRetriesTransient500(t *testing.T) {
 func TestDailyCheckinRetriesExhausted(t *testing.T) {
 	shortBillingRetry(t)
 	var calls int32
-	c := testClient(func(r *http.Request) (*http.Response, error) {
+	c := checkinClient(func(r *http.Request) (*http.Response, error) {
 		atomic.AddInt32(&calls, 1)
 		return jsonResp(500, `{"code":10000,"msg":"API request failed with status code: 500"}`), nil
 	})
@@ -61,7 +70,7 @@ func TestDailyCheckinRetriesExhausted(t *testing.T) {
 func TestDailyCheckinNoRetryOnBusinessError(t *testing.T) {
 	shortBillingRetry(t)
 	var calls int32
-	c := testClient(func(r *http.Request) (*http.Response, error) {
+	c := checkinClient(func(r *http.Request) (*http.Response, error) {
 		atomic.AddInt32(&calls, 1)
 		// 「今天已签到」是业务幂等拒绝（code!=0），重试无意义。
 		return jsonResp(200, `{"code":14001,"msg":"今日已签到"}`), nil
@@ -78,7 +87,7 @@ func TestDailyCheckinNoRetryOnBusinessError(t *testing.T) {
 func TestDailyCheckinNoRetryOn4xx(t *testing.T) {
 	shortBillingRetry(t)
 	var calls int32
-	c := testClient(func(r *http.Request) (*http.Response, error) {
+	c := checkinClient(func(r *http.Request) (*http.Response, error) {
 		atomic.AddInt32(&calls, 1)
 		return jsonResp(403, `{"code":11140,"msg":"request illegal"}`), nil
 	})

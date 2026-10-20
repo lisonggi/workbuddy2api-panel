@@ -53,11 +53,11 @@ func (f *signinFake) requests() []signinRec {
 	return append([]signinRec(nil), f.recs...)
 }
 
-// signinDefaultResponse 汇总 / 付费包走 upstreamtest 的默认响应，
+// signinDefaultResponse 汇总 / 付费包 / 签到状态走 upstreamtest 的默认响应，
 // 免费包（余额本体）与签到响应由各用例显式登记。
 func signinDefaultResponse(path string) (int, string, bool) {
 	switch path {
-	case upstreamtest.SummaryPath, upstreamtest.PaidPath:
+	case upstreamtest.SummaryPath, upstreamtest.PaidPath, upstreamtest.CheckinStatusPath:
 		status, body, _ := upstreamtest.Respond(path)
 		return status, body, true
 	}

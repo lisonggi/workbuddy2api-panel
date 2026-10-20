@@ -85,10 +85,10 @@ func (f *autoUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
 	h := f.route[autoRouteKey(r.Method, host, r.URL.Path, r.Header.Get("X-Client-Platform"))]
 	f.mu.Unlock()
 	if h == nil {
-		// 积分汇总 / 付费包是每个账号查余额都会发的伴随请求，各用例不必逐条登记。
-		// 免费包（余额本体）仍须显式登记，避免用例漏测。
+		// 积分汇总 / 付费包 / 签到状态是每个账号维护流程都会发的伴随请求，各用例不必逐条登记。
+		// 免费包（余额本体）与签到仍须显式登记，避免用例漏测。
 		switch r.URL.Path {
-		case upstreamtest.SummaryPath, upstreamtest.PaidPath:
+		case upstreamtest.SummaryPath, upstreamtest.PaidPath, upstreamtest.CheckinStatusPath:
 			status, body, _ := upstreamtest.Respond(r.URL.Path)
 			return autoHTTPResponse(status, body), nil
 		}

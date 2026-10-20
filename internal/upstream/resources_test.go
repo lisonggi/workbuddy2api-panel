@@ -222,26 +222,78 @@ func TestUserResourcesListFailures(t *testing.T) {
 	}
 }
 
+// TestDailyCheckinOfficialFlow 照官方先查签到状态再签到，两条都带设备令牌、都走 /v2；活动没开或今天已签过就不再签到；
+// 状态查不到时照常签到。
+func TestDailyCheckinOfficialFlow(t *testing.T) {
+	old := billingRetryDelay
+	billingRetryDelay = 0
+	t.Cleanup(func() { billingRetryDelay = old })
+	for _, tc := range []struct {
+		name, status   string
+		statusCode     int
+		wantCheckin    bool
+		wantErr        string
+		wantAlreadyErr bool
+	}{
+		{"未签到", `{"code":0,"data":{"active":true,"today_checked_in":false}}`, 200, true, "", false},
+		{"已签到", `{"code":0,"data":{"active":true,"today_checked_in":true}}`, 200, false, "今天已签到", true},
+		{"活动未开", `{"code":0,"data":{"active":false}}`, 200, false, "签到活动未开启", false},
+		{"状态查不到", `{"code":10001,"msg":"no"}`, 400, true, "", false},
+		{"状态解析不了", `{"code":0,"data":"oops"}`, 200, true, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newUpFake(t)
+			f.on(http.MethodPost, checkinStatusPath, tc.statusCode, tc.status)
+			f.on(http.MethodPost, dailyCheckinPath, 200, `{"code":0,"data":{}}`)
+			a := upAuth()
+			a.DeviceToken = "dev-tok"
+			err := upClient(f).DailyCheckin(a)
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			if IsAlreadyCheckin(err) != tc.wantAlreadyErr {
+				t.Fatalf("IsAlreadyCheckin = %v", IsAlreadyCheckin(err))
+			}
+			if got := f.count(http.MethodPost, dailyCheckinPath); (got == 1) != tc.wantCheckin {
+				t.Fatalf("签到次数 = %d", got)
+			}
+			for _, r := range f.seen() {
+				if r.header.Get("X-Device-Token") != "dev-tok" || string(r.body) != "{}" {
+					t.Errorf("%s 应带设备令牌、请求体为 {}：%v %s", r.path, r.header, r.body)
+				}
+			}
+		})
+	}
+}
+
 // TestUpstreamTestPathsMatch 其他包测试用的 upstreamtest 路径与这里的常量一致。
 func TestUpstreamTestPathsMatch(t *testing.T) {
 	for got, want := range map[string]string{
-		upstreamtest.SummaryPath: resourceSummaryPath,
-		upstreamtest.PaidPath:    resourcePaidPath,
-		upstreamtest.FreePath:    resourceFreePath,
+		upstreamtest.SummaryPath:       resourceSummaryPath,
+		upstreamtest.PaidPath:          resourcePaidPath,
+		upstreamtest.FreePath:          resourceFreePath,
+		upstreamtest.CheckinStatusPath: checkinStatusPath,
+		upstreamtest.CheckinPath:       dailyCheckinPath,
 	} {
 		if got != want {
 			t.Errorf("upstreamtest 路径 %q，应为 %q", got, want)
 		}
 	}
-	// 默认响应能被网关解析：免费包里的包计入余额，汇总 404 时用逐包合计。
+	// 默认响应能被网关解析：免费包里的包计入余额，汇总 404 时用逐包合计，签到状态允许签到。
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		if st, body, ok := upstreamtest.Respond(r.URL.Path, upstreamtest.Package(100, 40, `"PackageName":"p"`)); ok {
 			return jsonResp(st, body), nil
+		}
+		if r.URL.Path == dailyCheckinPath {
+			return jsonResp(200, `{"code":0,"data":{}}`), nil
 		}
 		return nil, errors.New("wrong path: " + r.URL.Path)
 	})
 	if remain, total, err := c.UserResource(upAuth()); err != nil || remain != 40 || total != 100 {
 		t.Fatalf("remain=%d total=%d err=%v", remain, total, err)
+	}
+	if err := c.DailyCheckin(upAuth()); err != nil {
+		t.Fatalf("签到 err=%v", err)
 	}
 	if _, _, ok := upstreamtest.Respond("/other"); ok {
 		t.Fatal("别的路径应交给调用方")

@@ -1,5 +1,5 @@
 // Package upstreamtest 给其他包的测试用：官方 id 等请求形状的公共断言，以及按官方接口的形状
-// 造积分的假响应，免得每个包各写一遍。只在测试里导入。
+// 造积分与签到状态的假响应，免得每个包各写一遍。只在测试里导入。
 package upstreamtest
 
 import (
@@ -15,11 +15,13 @@ var (
 	UUIDv7Hex = regexp.MustCompile(`^[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$`)
 )
 
-// 官方桌面端查积分用的接口（与 internal/upstream 的常量相同，upstream 包里有测试核对）。
+// 官方桌面端查积分与签到用的接口（与 internal/upstream 的常量相同，upstream 包里有测试核对）。
 const (
-	SummaryPath = "/billing/meter/get-user-resource-summary"
-	PaidPath    = "/billing/meter/get-user-resource-paid-packages"
-	FreePath    = "/billing/meter/get-user-resource-free-packages"
+	SummaryPath       = "/billing/meter/get-user-resource-summary"
+	PaidPath          = "/billing/meter/get-user-resource-paid-packages"
+	FreePath          = "/billing/meter/get-user-resource-free-packages"
+	CheckinStatusPath = "/v2/billing/meter/checkin-activity-status"
+	CheckinPath       = "/v2/billing/meter/daily-checkin"
 )
 
 // Package 一个按周期发放的包：额度 size、剩余 remain，extra 是追加的 JSON 字段（可空）。
@@ -36,8 +38,8 @@ func List(packages ...string) string {
 	return fmt.Sprintf(`{"code":0,"data":{"Accounts":[%s],"TotalCount":%d}}`, strings.Join(packages, ","), len(packages))
 }
 
-// Respond 给积分三个接口的默认响应：汇总 404（网关改用逐包合计）、付费包为空、
-// 免费包为 packages。别的路径 ok=false，由调用方处理。
+// Respond 给积分三个接口和签到状态的默认响应：汇总 404（网关改用逐包合计）、付费包为空、
+// 免费包为 packages、签到状态为活动进行中且今天未签。别的路径 ok=false，由调用方处理。
 func Respond(path string, packages ...string) (status int, body string, ok bool) {
 	switch path {
 	case SummaryPath:
@@ -46,6 +48,8 @@ func Respond(path string, packages ...string) (status int, body string, ok bool)
 		return http.StatusOK, List(), true
 	case FreePath:
 		return http.StatusOK, List(packages...), true
+	case CheckinStatusPath:
+		return http.StatusOK, `{"code":0,"data":{"active":true,"today_checked_in":false}}`, true
 	}
 	return 0, "", false
 }

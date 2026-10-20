@@ -486,11 +486,9 @@ func TestPanelAccountCheckin(t *testing.T) {
 		if msg, _ := resp["checkin_message"].(string); !strings.Contains(msg, "国际版没有签到活动") {
 			t.Fatalf("国际版号应提示跳过签到: %v", resp)
 		}
-		// 国际版签到会先试不带 /v2 的路径，两条都不应发。
-		for _, path := range []string{checkinPath, "/billing/meter/daily-checkin"} {
-			if got := len(up.requestsTo(http.MethodPost, autoBillingHost, path, "")); got != 0 {
-				t.Fatalf("国际版号不应签到（%s），实际 %d", path, got)
-			}
+		// 两个域现在只有一条签到路径（/v2/billing/meter/daily-checkin），国际版照旧跳过。
+		if got := len(up.requestsTo(http.MethodPost, autoBillingHost, upstreamtest.CheckinPath, "")); got != 0 {
+			t.Fatalf("国际版号不应签到，实际 %d", got)
 		}
 	})
 

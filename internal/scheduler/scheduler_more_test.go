@@ -16,8 +16,8 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
-// schedCounter 记录各路径命中次数的假上游；respond 可按请求定制响应（返回 false 走默认：积分
-// 按 upstreamtest 的默认响应，其余回成功）。
+// schedCounter 记录各路径命中次数的假上游；respond 可按请求定制响应（返回 false 走默认：积分与签到
+// 状态按 upstreamtest 的默认响应，其余回成功）。
 type schedCounter struct {
 	mu      sync.Mutex
 	hits    map[string]int

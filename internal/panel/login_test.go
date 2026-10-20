@@ -298,6 +298,7 @@ func TestLoginPollCNPersonalSuccess(t *testing.T) {
 		"POST "+loginCNHost+loginStatePath,
 		"GET "+loginCNHost+loginTokenPath,
 		"GET "+loginCNHost+loginAccountPath,
+		"POST "+autoBillingHost+upstreamtest.CheckinStatusPath,
 		"POST "+autoBillingHost+checkinPathCN,
 		"POST "+autoBillingHost+resourcePathCN,
 	)

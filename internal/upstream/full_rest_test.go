@@ -162,13 +162,6 @@ func TestFull7BillingJSONErrors(t *testing.T) {
 	}
 }
 
-func TestFull7BillingMeterEmptyPaths(t *testing.T) {
-	data, err := (&Client{}).billingMeterJSON(upAuth(), nil, http.MethodPost, nil)
-	if err != nil || data != nil {
-		t.Fatalf("空路径 = (%v, %v)", data, err)
-	}
-}
-
 func TestFull7IsTransientBillingErr(t *testing.T) {
 	if isTransientBillingErr(nil) {
 		t.Fatal("nil 不应判为瞬时错误")

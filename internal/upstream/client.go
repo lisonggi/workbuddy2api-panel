@@ -766,20 +766,12 @@ func (c *Client) globalOn(a *auth.Auth) bool {
 // 路径，此注释即"坏了再说"的锚点。
 const chatCompletionsPath = "/v2/chat/completions"
 
-// 签到路径（billingBase + path）：国际版先试不带 /v2 的，404 时退到 /v2。
+// 签到：官方桌面端 DesktopAccountRepo（billingPrefix 为 /v2，两个域相同）。界面先查签到状态，
+// 用户点了再签到；两条都带设备令牌（getCheckinRequestHeaders）。
 const (
-	dailyCheckinPath   = "/billing/meter/daily-checkin" // global 首选
-	dailyCheckinPathV2 = "/v2/billing/meter/daily-checkin"
+	checkinStatusPath = "/v2/billing/meter/checkin-activity-status"
+	dailyCheckinPath  = "/v2/billing/meter/daily-checkin"
 )
-
-// checkinMeterPaths 按 realm 返回 daily-checkin 路径候选序列：
-// global → [无 /v2, 有 /v2]（404 时 fallback）；cn → [有 /v2]。
-func (c *Client) checkinMeterPaths(a *auth.Auth) []string {
-	if c.globalOn(a) {
-		return []string{dailyCheckinPath, dailyCheckinPathV2}
-	}
-	return []string{dailyCheckinPathV2}
-}
 
 func (c *Client) chatBase(a *auth.Auth) string {
 	if c.globalOn(a) {
@@ -2054,11 +2046,30 @@ func (c *Client) UserResourceDetailedWithExpiry(a *auth.Auth, soon time.Duration
 }
 
 // DailyCheckin 执行每日签到。已签到（业务 code 非 0）也返回错误，调用方按 msg 区分。
-// 偶发上游 5xx（code 10000）做有界重试（见 retryBillingTransient）——单次抖动不再
-// 让该账号整天漏签；「已签到」等业务错误不重试。
+// 照官方先查签到状态：活动没开就不签，今天已签过就直接返回「今天已签到」，不再多发一次签到。
+// 状态查不到时照常签到，免得一次抖动让账号整天漏签。偶发上游 5xx（code 10000）做有界重试
+// （见 retryBillingTransient）；「已签到」等业务错误不重试。
 func (c *Client) DailyCheckin(a *auth.Auth) error {
+	var data json.RawMessage
+	err := c.retryBillingTransient(func() error {
+		var e error
+		data, e = c.billingJSON(a, http.MethodPost, checkinStatusPath, map[string]any{}, c.withDeviceToken(a))
+		return e
+	})
+	var st struct {
+		Active         bool `json:"active"`
+		TodayCheckedIn bool `json:"today_checked_in"`
+	}
+	if err == nil && json.Unmarshal(data, &st) == nil {
+		if !st.Active {
+			return &Error{Kind: ErrClient, Status: http.StatusOK, Msg: "签到活动未开启"}
+		}
+		if st.TodayCheckedIn {
+			return &Error{Kind: ErrClient, Status: http.StatusOK, Msg: "今天已签到（签到状态）"}
+		}
+	}
 	return c.retryBillingTransient(func() error {
-		_, err := c.billingMeterJSON(a, c.checkinMeterPaths(a), http.MethodPost, map[string]any{}, c.withDeviceToken(a))
+		_, err := c.billingJSON(a, http.MethodPost, dailyCheckinPath, map[string]any{}, c.withDeviceToken(a))
 		return err
 	})
 }

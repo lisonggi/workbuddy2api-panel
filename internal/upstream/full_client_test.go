@@ -48,12 +48,6 @@ func TestFull7ClientBaseSelectors(t *testing.T) {
 	if got := c.chatBase(ca); got != "https://cn.example" {
 		t.Fatalf("cn chatBase = %q", got)
 	}
-	if got := c.checkinMeterPaths(ga); !reflect.DeepEqual(got, []string{dailyCheckinPath, dailyCheckinPathV2}) {
-		t.Fatalf("global checkinMeterPaths = %v", got)
-	}
-	if got := c.checkinMeterPaths(ca); !reflect.DeepEqual(got, []string{dailyCheckinPathV2}) {
-		t.Fatalf("cn checkinMeterPaths = %v", got)
-	}
 
 	if got := (&Client{GlobalEnabled: true}).webBase(ga); got != defaultGlobalBase {
 		t.Fatalf("global webBase = %q", got)

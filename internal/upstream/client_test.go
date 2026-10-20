@@ -444,8 +444,8 @@ func TestUserResourceNegativeClamped(t *testing.T) {
 }
 
 func TestDailyCheckinAlready(t *testing.T) {
-	c := testClient(func(r *http.Request) (*http.Response, error) {
-		if !strings.HasSuffix(r.URL.Path, "/v2/billing/meter/daily-checkin") {
+	c := checkinClient(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != dailyCheckinPath {
 			return nil, errors.New("wrong path")
 		}
 		return jsonResp(200, `{"code":14001,"msg":"今日已签到"}`), nil

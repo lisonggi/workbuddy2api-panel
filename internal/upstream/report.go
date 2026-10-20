@@ -46,26 +46,6 @@ func (c *Client) billingJSON(a *auth.Auth, method, path string, body any, extra 
 	return c.doJSON(req)
 }
 
-// billingMeterJSON 仅对 /billing/meter 族端点（get-user-resource / daily-checkin）
-// 按 realm 走双路径 fallback：global 先无 /v2 前缀，ErrNotFound 时二次换有 /v2 前缀
-// （上游新旧路径分叉）；cn 单路径（有 /v2）现状不变。仅 global realm 才有多路径。
-func (c *Client) billingMeterJSON(a *auth.Auth, paths []string, method string, body any, extra ...func(*http.Request)) (json.RawMessage, error) {
-	var lastErr error
-	for i, path := range paths {
-		data, err := c.billingJSON(a, method, path, body, extra...)
-		if err == nil {
-			return data, nil
-		}
-		lastErr = err
-		// 仅 404 换路径（路径不存在才值得 fallback）；其他错误直接返回。
-		var ue *Error
-		if !errors.As(err, &ue) || ue.Kind != ErrNotFound || i == len(paths)-1 {
-			return nil, err
-		}
-	}
-	return nil, lastErr
-}
-
 // withBillingLanguage 积分包查询才带的 Accept-Language（见 billingAcceptLanguage）。
 func withBillingLanguage(a *auth.Auth) func(*http.Request) {
 	return func(req *http.Request) { req.Header.Set("Accept-Language", billingAcceptLanguage(a)) }
