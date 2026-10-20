@@ -131,20 +131,22 @@ type Config struct {
 		HeaderTimeoutSeconds int `json:"header_timeout_seconds"`
 		// IdleTimeoutSeconds 聊天 SSE 流中空闲上限（活跃吐数据续命不掐）；<=0 回落默认 300。
 		IdleTimeoutSeconds int `json:"idle_timeout_seconds"`
-		// UserAgent 出站 User-Agent 显式覆盖（非空时全路径生效，优先于默认三段式）。
-		// 全部出站请求生效：chat/refresh/checkin/balance/report/travel/FetchModels。
-		// 默认值已对齐官方 WorkBuddy 桌面形态（三段式），用户仍可配完全自定义值改写。
+		// UserAgent 出站 User-Agent 显式覆盖：非空时对话、刷新令牌、模型目录、积分、签到、
+		// 成长任务、上报都用它（任务中心的桌面端上报除外）。空 = 按账号域取官方桌面端的 UA：
+		// 内置 CLI 发的请求 `WorkBuddy/<ver> <applicationName>/<ver> CLI/<cli>`，后台服务发的
+		// 请求前两段对调（applicationName 国内版 WorkBuddy、国际版 workbuddy-ai）。
 		UserAgent string `json:"user_agent"`
-		// ClientVersion WorkBuddy 客户端版本段（出站 UA 的 `WorkBuddy/<ver>` 与归属头
-		// X-IDE-Version）。空 = 内置默认（对齐官方 5.5.4 分发包）。
+		// ClientVersion 桌面端版本（UA 的版本段与 X-IDE-Version），两域共用一个值。
+		// 空 = 内置默认：国内版 5.8.3、国际版 5.8.4（官方安装包）。
 		ClientVersion string `json:"client_version"`
-		// CliVersion 出站 UA 中 `CLI/<ver>` 段的版本。空 = 内置默认（官方内置 CLI 2.137.1）。
+		// CliVersion 出站 UA 中 `CLI/<ver>` 段的版本。空 = 内置默认 2.161.0（两域桌面端内置的 CLI）。
 		CliVersion string `json:"cli_version"`
-		// ClientName 用量归属头取值（X-Product / X-IDE-Name / X-IDE-Type / X-IDE-Version）。
-		// 空 = 旧行为 X-Product="SaaS" 不设 X-IDE-*；配 "WorkBuddy" 则四头跟随。
+		// ClientName 对话请求的归属头 X-IDE-Name / X-IDE-Type 取值。空 = "WorkBuddy"，同官方
+		// 桌面端（带 X-Agent-Purpose 与 X-IDE-*）；配 "SaaS" 还原旧行为：对话不带这几个头，
+		// 后台服务的请求不设 UA。X-Product 不受影响，固定为官方的 "SaaS"。
 		ClientName string `json:"client_name"`
-		// DeviceToken 设备风控 Token（X-Device-Token 头）全局兜底；空 = 不注入。
-		// 每号 auth 文件的 device_token 键优先于本项。
+		// DeviceToken 设备风控 Token（X-Device-Token 头）全局兜底；空 = 不注入。官方只在签到请求上
+		// 带它，网关同样只在签到（和小程序接口）上带。每号 auth 文件的 device_token 键优先于本项。
 		DeviceToken string `json:"device_token"`
 		// DeviceTokenFile device token 文件路径兜底（宿主落盘的桌面端 token，5 分钟读取缓存）。
 		DeviceTokenFile string `json:"device_token_file"`
