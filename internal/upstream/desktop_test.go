@@ -1,11 +1,11 @@
 package upstream
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -145,25 +145,29 @@ func TestSetAppearanceTheme(t *testing.T) {
 	}
 }
 
-// TestDeriveID 设备标识稳定派生：同账号同 salt 恒定，换账号/换 salt 变化，
-// 形状为 36 位 hex。
-func TestDeriveID(t *testing.T) {
+// TestDeviceIDs 设备标识按账号稳定派生、形状照官方：桌面端 machineId 是大写 UUID
+// （IOPlatformUUID），CLI 的 sessionId 是小写 v4 UUID，网页 machineId 是 32 位小写十六进制。
+func TestDeviceIDs(t *testing.T) {
 	a := &auth.Auth{UID: "u-1"}
-	first := deriveID(a, "machine")
-	if len(first) != 36 {
-		t.Fatalf("len = %d，应为 36", len(first))
+	upperUUID := regexp.MustCompile(`^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$`)
+	v4UUID := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if id := desktopMachineID(a); !upperUUID.MatchString(id) {
+		t.Errorf("desktopMachineID = %q，应为大写 UUID", id)
 	}
-	if _, err := hex.DecodeString(first); err != nil {
-		t.Fatalf("不是 hex: %v", err)
+	if id := cliSessionID(a); !v4UUID.MatchString(id) {
+		t.Errorf("cliSessionID = %q，应为小写 v4 UUID", id)
 	}
-	if again := deriveID(a, "machine"); again != first {
-		t.Errorf("同账号同 salt 结果应相同: %q vs %q", first, again)
+	if id := webVisitorID(a); !hex32.MatchString(id) || strings.ToLower(id) != id {
+		t.Errorf("webVisitorID = %q，应为 32 位小写十六进制", id)
 	}
-	if other := deriveID(&auth.Auth{UID: "u-2"}, "machine"); other == first {
+	if desktopMachineID(a) != desktopMachineID(&auth.Auth{UID: "u-1"}) {
+		t.Error("同账号结果应相同")
+	}
+	if desktopMachineID(a) == desktopMachineID(&auth.Auth{UID: "u-2"}) {
 		t.Error("换账号结果应变")
 	}
-	if other := deriveID(a, "session"); other == first {
-		t.Error("换 salt 结果应变")
+	if strings.EqualFold(desktopMachineID(a), cliSessionID(a)) {
+		t.Error("不同用途结果应不同")
 	}
 }
 
@@ -728,5 +732,22 @@ func TestDesktopExpertSequences(t *testing.T) {
 	local := DesktopExpertActualUseLocal(bare, "conv-2", requestID)
 	if local["mode"] != "LOCAL" || local["type"] != "expert-all" || local["version"] != "1.0.0" {
 		t.Errorf("LOCAL 使用事件 = %v", local)
+	}
+}
+
+// TestDesktopFingerprintFollowsClientVersion 事件指纹的版本跟 UA 用同一个客户端版本，
+// commit / releaseDate 取国内版 5.8.3 安装包的值。
+func TestDesktopFingerprintFollowsClientVersion(t *testing.T) {
+	a := &auth.Auth{UID: "u-1"}
+	fp := (&Client{}).desktopFingerprint(a)
+	if fp["ideVersion"] != "5.8.3" || fp["extVersion"] != "5.8.3" {
+		t.Errorf("默认版本 = %v / %v，应为 5.8.3", fp["ideVersion"], fp["extVersion"])
+	}
+	if fp["commit"] != desktopCommit || fp["releaseDate"] != desktopReleaseDate {
+		t.Errorf("commit / releaseDate = %v / %v", fp["commit"], fp["releaseDate"])
+	}
+	fp = (&Client{ClientVersion: "6.0.0"}).desktopFingerprint(a)
+	if fp["ideVersion"] != "6.0.0" || fp["extVersion"] != "6.0.0" {
+		t.Errorf("配了 client_version 后版本 = %v / %v，应为 6.0.0", fp["ideVersion"], fp["extVersion"])
 	}
 }

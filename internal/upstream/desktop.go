@@ -1,4 +1,5 @@
-// desktop.go 桌面客户端（WorkBuddy Desktop 5.5.6）行为指纹上报。
+// desktop.go 桌面客户端行为指纹上报（事件链业务字段按 WorkBuddy Desktop 5.8.3 安装包核对，
+// 公共字段与请求头照 5.8.3 安装包，见 eventFingerprint）。
 //
 // 来源：2026-09-12 Sunny 抓包实测（data/desktop-task-protocol.md）。桌面端点亮
 // 「需电脑端」类任务的关键不是独立端点，而是同一 POST /v2/report 通道上
@@ -35,6 +36,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
@@ -52,56 +54,125 @@ const (
 // 不受 user_agent 覆盖影响（同以前）。
 func (c *Client) desktopUA(a *auth.Auth) string { return c.defaultDaemonUA(a) }
 
+// 国内版桌面端 5.8.3 安装包 product.json 的 commit 与 date（毫秒）。任务中心只对国内版个人号
+// 开放，这里只需要国内版的值。配了 client_version 时版本号跟着变，这两项不变。
+const (
+	desktopCommit      = "64d249bed3dec40edd720537d96f27e70a3f6a4f"
+	desktopReleaseDate = int64(1791972709257) // 2026-10-14T10:11:49.257Z
+)
+
 // desktopBase 桌面端 /v2/report 与 user-asset 走 chatBase（国内版 www.workbuddy.cn）。
 func (c *Client) desktopBase(a *auth.Auth) string { return c.chatBase(a) }
 
-// deriveID 由 uid 稳定派生一个 36 位 hex 设备标识（machineId/qimei36 复用），
-// 幂等：同一账号每次生成相同值，模拟固定设备。
-func deriveID(a *auth.Auth, salt string) string {
+// 上报事件里的设备信息按 macOS 版官方客户端（对照的两个安装包都是 darwin-arm64；用户 10-20
+// 定按 macOS 对齐）。官方由事件处理器从本机取（os.platform()、arch()、release()、cpus()、
+// totalmem()），网关挑一台常见配置：Apple M2、8 核、16 GB、macOS 15.6（Darwin 24.6.0）。
+// macOS 版官方拿不到 qimei36（见 docs/official-client.md#登录），事件里不带。
+const (
+	deviceOS        = "darwin"
+	deviceArch      = "arm64"
+	deviceOSRelease = "24.6.0"
+	deviceCPUModel  = "Apple M2"
+	deviceCPUCores  = 8
+	deviceMemoryGB  = 16
+)
+
+// eventReportDelay 官方上报服务攒 2 秒发一批（FIRE_DELAY），发送时按 now - timestamp 算
+// reportDelay；网关立即发，把 timestamp 往前推同样的时长。
+const eventReportDelay = 2000
+
+// deviceDigest 由 uid 与用途稳定派生的摘要：同一账号每次相同，模拟固定设备。
+func deviceDigest(a *auth.Auth, salt string) []byte {
 	sum := sha256.Sum256([]byte(salt + ":" + a.UID))
-	return hex.EncodeToString(sum[:18]) // 36 hex chars
+	return sum[:16]
+}
+
+// formatUUID 按 8-4-4-4-12 排 16 字节。
+func formatUUID(b []byte) string {
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// desktopMachineID 桌面端的 machineId：官方 macOS 版取 ioreg 的 IOPlatformUUID（machineIdSync），
+// 是大写的 UUID。
+func desktopMachineID(a *auth.Auth) string {
+	return strings.ToUpper(formatUUID(deviceDigest(a, "machine")))
+}
+
+// cliSessionID 内置 CLI 事件的 sessionId：官方是 CLI 进程启动时随机生成的 v4 UUID，网关按账号
+// 固定一个（相当于 CLI 一直开着）。后台服务的事件没有 sessionId（官方取空串）。
+func cliSessionID(a *auth.Auth) string {
+	b := deviceDigest(a, "cli-session")
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return formatUUID(b)
+}
+
+// webVisitorID 官网网页事件的 machineId：网页用 FingerprintJS 的 visitorId（32 位小写十六进制）。
+func webVisitorID(a *auth.Auth) string {
+	return hex.EncodeToString(deviceDigest(a, "webmachine"))
 }
 
 // DesktopEvent 桌面端事件：业务字段任意（map），公共指纹由 ReportDesktopEvent 注入。
 type DesktopEvent map[string]any
 
-// desktopFingerprint 公共桌面指纹字段（注入每个事件，覆盖同名业务键）。
-func desktopFingerprint(a *auth.Auth) map[string]any {
-	now := time.Now().UnixMilli()
-	return map[string]any{
+// eventFingerprint 官方上报服务给每个事件补的公共字段（5.8.3 后台服务与内置 CLI 的事件处理器，
+// 两边相同）：
+//   - ProductInfo：product、releaseDate（product.json 的 date 转毫秒）、commit；
+//   - Userinfo：userId、username 与 userNickname（官方都取昵称）、企业号的 enterpriseId 与
+//     enterprise（部门全名）；
+//   - Timezone；OS：os、arch、osVersion、cpuModel、cpuCores、memorySize；
+//   - ExtensionInfo：extName、extVersion；HostIDEInfo：ideName、ideType、ideVersion、machineId、
+//     sessionId。
+//
+// 官方有、网关没有值的不带：downloadChannel（安装包没配）、qimei36（macOS 版拿不到）、
+// clientIp（只有国际版查，任务中心不对国际版开放）、buddyId / buddyName、expKeys。
+func (c *Client) eventFingerprint(a *auth.Auth, sessionID string) map[string]any {
+	ver := c.clientVersion(a)
+	fp := map[string]any{
+		"timestamp":    time.Now().UnixMilli() - eventReportDelay,
+		"reportDelay":  eventReportDelay,
 		"timezone":     "Asia/Shanghai",
-		"reportDelay":  2000,
 		"userId":       a.UID,
 		"username":     a.Nickname,
 		"userNickname": a.Nickname,
 		"product":      "SaaS",
-		"releaseDate":  int64(1789036585355),
-		"commit":       "5f9692923c93033111c51ad7b003eb80204a9b75",
+		"releaseDate":  desktopReleaseDate,
+		"commit":       desktopCommit,
 		"ideName":      "WorkBuddy",
 		"ideType":      "WorkBuddy",
-		"ideVersion":   "5.5.6",
-		"machineId":    deriveID(a, "machine"),
-		"sessionId":    deriveID(a, "session"),
+		"ideVersion":   ver,
+		"machineId":    desktopMachineID(a),
+		"sessionId":    sessionID,
 		"extName":      "workbuddy-desktop",
-		"extVersion":   "5.5.6",
-		"os":           "win32",
-		"arch":         "x64",
-		"osVersion":    "10.0.26220",
-		"cpuCores":     20,
-		"memorySize":   24,
-		"timestamp":    now,
-		"presentAt":    now,
+		"extVersion":   ver,
+		"os":           deviceOS,
+		"arch":         deviceArch,
+		"osVersion":    deviceOSRelease,
+		"cpuModel":     deviceCPUModel,
+		"cpuCores":     deviceCPUCores,
+		"memorySize":   deviceMemoryGB,
 	}
+	if a.IsEnterprise() {
+		fp["enterpriseId"] = a.EnterpriseID
+	}
+	if d := a.DepartmentValue(); d != "" {
+		fp["enterprise"] = d
+	}
+	return fp
 }
 
-// ReportDesktopEvent 以桌面客户端指纹向 copilot.tencent.com/v2/report 批量上报事件。
+// desktopFingerprint 后台服务事件的公共字段（sessionId 为空，见 cliSessionID）。注入每个事件，
+// 业务字段优先。
+func (c *Client) desktopFingerprint(a *auth.Auth) map[string]any { return c.eventFingerprint(a, "") }
+
+// ReportDesktopEvent 以桌面客户端指纹向 chatBase 的 /v2/report 批量上报事件。
 // events 为业务载荷（eventCode 等字段由调用方给出）；公共指纹自动注入，
 // 业务字段优先（可用于覆盖 qimei36/machineId 等设备标识做真实设备对齐）。
 func (c *Client) ReportDesktopEvent(a *auth.Auth, events ...DesktopEvent) error {
 	if len(events) == 0 {
 		return fmt.Errorf("desktop report: no events")
 	}
-	fp := desktopFingerprint(a)
+	fp := c.desktopFingerprint(a)
 	arr := make([]map[string]any, 0, len(events))
 	for _, ev := range events {
 		m := map[string]any{}
@@ -266,7 +337,7 @@ func (c *Client) ReportWebEvent(a *auth.Auth, eventCode, pageURL, elementID, ele
 		"eventCode": eventCode, "timestamp": time.Now().UnixMilli(), "reportDelay": 0,
 		"pageURL": pageURL, "elementId": elementID, "elementName": elementName,
 		"os": "Win32", "arch": "", "osVersion": "10.0", "userAgent": ua,
-		"machineId": deriveID(a, "webmachine"), "userId": a.UID,
+		"machineId": webVisitorID(a), "userId": a.UID,
 		"userNickname": a.Nickname, "enterpriseId": a.EnterpriseID,
 	}
 	raw, err := json.Marshal([]map[string]any{ev})

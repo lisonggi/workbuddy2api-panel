@@ -1,7 +1,7 @@
 package upstream
 
 // department_test.go 企业号的部门全名：登录取账号时读进来、刷新后照官方 mergeCurrentAccountDetails
-// 合并、部门全名变了算刷新失败；有值时桌面端请求带 X-Department-Info。
+// 合并、部门全名变了算刷新失败；有值时桌面端请求带 X-Department-Info、上报事件带 enterprise。
 
 import (
 	"net/http"
@@ -40,6 +40,19 @@ func TestDepartmentHeader(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEventFingerprintDepartment 上报事件的 enterprise 是部门全名，没有时不带这个键。
+func TestEventFingerprintDepartment(t *testing.T) {
+	a := cnAuth()
+	a.EnterpriseID = "corp-cn"
+	if _, ok := (&Client{}).eventFingerprint(a, "")["enterprise"]; ok {
+		t.Error("没有部门全名时不应带 enterprise")
+	}
+	a.DepartmentFullName = "研发部"
+	if got := (&Client{}).eventFingerprint(a, "")["enterprise"]; got != "研发部" {
+		t.Errorf("enterprise = %v，应为部门全名", got)
 	}
 }
 

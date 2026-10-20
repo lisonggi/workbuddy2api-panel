@@ -134,8 +134,8 @@ type chatRequestEvent struct {
 }
 
 // ReportChatActivity 向上游发送一条对话活跃上报（chat_request_send）。
-// conversationID 由调用方生成（如 wb2api-<ms>），无需真实会话——服务端不校验一致性。
-// requestID 为本轮请求独立标识（多轮同会话上报时各条不同）；空时回落 conversationID。
+// conversationID 由调用方生成（NewConversationID，形状同官方会话 id），无需真实会话——服务端不校验一致性。
+// requestID 为本轮请求独立标识（多轮同会话上报时各条不同）；空时新生成一个（NewRequestID）。
 // 错误语义与 doJSON 一致：HTTP 非 2xx / 业务 code != 0 → *Error。
 func (c *Client) ReportChatActivity(a *auth.Auth, conversationID, requestID string) error {
 	return c.ReportChatActivityModel(a, conversationID, requestID, "deepseek-v4-flash", "DeepSeek V4 Flash")
@@ -145,7 +145,7 @@ func (c *Client) ReportChatActivity(a *auth.Auth, conversationID, requestID stri
 // 对齐实际模型（如 Model_chat_GLM5.2 需 requestModelId=glm-5.2 与独立 requestID）。
 func (c *Client) ReportChatActivityModel(a *auth.Auth, conversationID, requestID, modelID, modelName string) error {
 	if requestID == "" {
-		requestID = conversationID
+		requestID = NewRequestID()
 	}
 	if modelID == "" {
 		modelID = "deepseek-v4-flash"
@@ -153,11 +153,14 @@ func (c *Client) ReportChatActivityModel(a *auth.Auth, conversationID, requestID
 	if modelName == "" {
 		modelName = modelID
 	}
-	now := time.Now().UnixMilli()
+	// 内置 CLI 的上报服务同样补公共字段（eventFingerprint，sessionId 是 CLI 进程的 id），
+	// 也是攒一批再发，timestamp 与 presentAt 取事件发生的时刻。
+	fp := c.eventFingerprint(a, cliSessionID(a))
+	now, _ := fp["timestamp"].(int64)
 	ev := chatRequestEvent{
 		EventCode:             "chat_request_send",
 		Timestamp:             now,
-		ReportDelay:           0,
+		ReportDelay:           eventReportDelay,
 		Mode:                  "craft",
 		ConversationID:        conversationID,
 		RequestID:             requestID,
@@ -192,7 +195,21 @@ func (c *Client) ReportChatActivityModel(a *auth.Auth, conversationID, requestID
 		AgentType:             "conversation",
 		UserID:                a.UID,
 	}
-	raw, err := json.Marshal([]chatRequestEvent{ev})
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return err
+	}
+	// 业务字段优先，公共字段只补没有的。
+	for k, v := range fp {
+		if _, ok := m[k]; !ok {
+			m[k] = v
+		}
+	}
+	raw, err = json.Marshal([]map[string]any{m})
 	if err != nil {
 		return err
 	}

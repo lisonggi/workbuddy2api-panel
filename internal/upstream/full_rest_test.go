@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
+	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
 // 第七轮补齐：其余文件（desktop/global_models/travel/report/tasks/profile/
@@ -196,7 +197,7 @@ func TestFull7ReportChatActivityModelDefaults(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 	ev := events[0]
-	if ev["requestId"] != "conv-1" || ev["requestModelId"] != "deepseek-v4-flash" || ev["requestModelName"] != "deepseek-v4-flash" {
+	if id, _ := ev["requestId"].(string); !upstreamtest.UUIDv7Hex.MatchString(id) || ev["requestModelId"] != "deepseek-v4-flash" || ev["requestModelName"] != "deepseek-v4-flash" {
 		t.Fatalf("event = %+v", ev)
 	}
 }
