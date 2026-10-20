@@ -125,7 +125,6 @@ func TestFull7ProbeCatalogV3Only(t *testing.T) {
 	f := newUpFake(t)
 	f.on(http.MethodGet, "/v3/config", 200,
 		`{"code":0,"data":{"models":[{"id":"m1","maxOutputTokens":1000}]}}`)
-	f.on(http.MethodGet, "/console/enterprises/personal/models", 500, `{"code":500,"msg":"boom"}`)
 	c := upClient(f)
 	out, err := c.probeCatalog(upAuth())
 	if err != nil {
@@ -155,10 +154,17 @@ func fullEntClient(rt rtFunc) *Client {
 	return &Client{HTTP: &http.Client{Transport: rt}, ChatBaseCN: "https://ent.example"}
 }
 
+// fullEntAuth 国内版企业号（企业模型目录按账号身份下发，路径里带 enterpriseId）。
+func fullEntAuth() *auth.Auth {
+	a := upAuth()
+	a.EnterpriseID = "ent-1"
+	return a
+}
+
 func TestFull7FetchEnterpriseModelsErrors(t *testing.T) {
 	t.Run("URL 非法", func(t *testing.T) {
 		c := &Client{ChatBaseCN: "http://[::1"}
-		if _, err := c.fetchEnterpriseModels(upAuth()); err == nil {
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil {
 			t.Fatal("非法 base 应返回 NewRequest 错误")
 		}
 	})
@@ -166,7 +172,7 @@ func TestFull7FetchEnterpriseModelsErrors(t *testing.T) {
 		c := fullEntClient(func(*http.Request) (*http.Response, error) {
 			return nil, errors.New("dial boom")
 		})
-		if _, err := c.fetchEnterpriseModels(upAuth()); err == nil || !strings.Contains(err.Error(), "dial boom") {
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil || !strings.Contains(err.Error(), "dial boom") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -176,7 +182,7 @@ func TestFull7FetchEnterpriseModelsErrors(t *testing.T) {
 			resp.Body = io.NopCloser(errReader{})
 			return resp, nil
 		})
-		if _, err := c.fetchEnterpriseModels(upAuth()); err == nil || !strings.Contains(err.Error(), "read body") {
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil || !strings.Contains(err.Error(), "read body") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -184,7 +190,7 @@ func TestFull7FetchEnterpriseModelsErrors(t *testing.T) {
 		c := fullEntClient(func(*http.Request) (*http.Response, error) {
 			return jsonResp(200, "not-json"), nil
 		})
-		if _, err := c.fetchEnterpriseModels(upAuth()); err == nil || !strings.Contains(err.Error(), "models parse") {
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil || !strings.Contains(err.Error(), "models parse") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -192,23 +198,36 @@ func TestFull7FetchEnterpriseModelsErrors(t *testing.T) {
 		c := fullEntClient(func(*http.Request) (*http.Response, error) {
 			return jsonResp(200, `{"code":7}`), nil
 		})
-		if _, err := c.fetchEnterpriseModels(upAuth()); err == nil || !strings.Contains(err.Error(), "code=7") {
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil || !strings.Contains(err.Error(), "code=7") {
 			t.Fatalf("err = %v", err)
 		}
 	})
-	t.Run("没有 cli 清单", func(t *testing.T) {
+	t.Run("data 不是数组", func(t *testing.T) {
 		c := fullEntClient(func(*http.Request) (*http.Response, error) {
-			return jsonResp(200, `{"code":0,"data":{"models":[{"id":"m"}]}}`), nil
+			return jsonResp(200, `{"code":0,"data":{"models":[{"id":"m","tags":["chat"]}]}}`), nil
 		})
-		if _, err := c.fetchEnterpriseModels(upAuth()); err == nil || !strings.Contains(err.Error(), "no cli agent models") {
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil || !strings.Contains(err.Error(), "models parse") {
 			t.Fatalf("err = %v", err)
 		}
 	})
-	t.Run("剔除非对话模型", func(t *testing.T) {
+	t.Run("HTTP 非 200", func(t *testing.T) {
 		c := fullEntClient(func(*http.Request) (*http.Response, error) {
-			return jsonResp(200, `{"code":0,"data":{"models":[{"id":"nes-x"},{"id":"good","maxOutputTokens":1000}],"agents":[{"name":"cli","models":["nes-x","good"]}]}}`), nil
+			return jsonResp(500, `{"code":500,"msg":"boom"}`), nil
 		})
-		out, err := c.fetchEnterpriseModels(upAuth())
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil || !strings.Contains(err.Error(), "models api status 500") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("只收 chat 标签并剔除禁用与非对话模型", func(t *testing.T) {
+		c := fullEntClient(func(*http.Request) (*http.Response, error) {
+			return jsonResp(200, `{"code":0,"data":[
+				{"id":"no-tag","tags":["craft"]},
+				{"id":"nes-x","tags":["chat"]},
+				{"id":"tiny","maxOutputTokens":128,"tags":["chat"]},
+				{"id":"off","disabled":true,"tags":["chat"]},
+				{"id":"good","maxOutputTokens":1000,"tags":["chat"]}]}`), nil
+		})
+		out, err := c.fetchEnterpriseModels(fullEntAuth())
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -218,9 +237,17 @@ func TestFull7FetchEnterpriseModelsErrors(t *testing.T) {
 	})
 	t.Run("过滤后为空", func(t *testing.T) {
 		c := fullEntClient(func(*http.Request) (*http.Response, error) {
-			return jsonResp(200, `{"code":0,"data":{"models":[{"id":"nes-x"}],"agents":[{"name":"cli","models":["nes-x"]}]}}`), nil
+			return jsonResp(200, `{"code":0,"data":[{"id":"nes-x","tags":["chat"]}]}`), nil
 		})
-		if _, err := c.fetchEnterpriseModels(upAuth()); err == nil || !strings.Contains(err.Error(), "empty list") {
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil || !strings.Contains(err.Error(), "empty list") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("空数组", func(t *testing.T) {
+		c := fullEntClient(func(*http.Request) (*http.Response, error) {
+			return jsonResp(200, `{"code":0,"data":[]}`), nil
+		})
+		if _, err := c.fetchEnterpriseModels(fullEntAuth()); err == nil || !strings.Contains(err.Error(), "empty list") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -270,21 +297,12 @@ func TestFull7ModelRateEmptyInput(t *testing.T) {
 	}
 }
 
-func TestFull7V3ConfigDomainFallback(t *testing.T) {
-	if got := v3ConfigDomain(nil, "://bad"); got != "copilot.tencent.com" {
-		t.Fatalf("非法 base = %q", got)
-	}
-	if got := v3ConfigDomain(nil, ""); got != "copilot.tencent.com" {
-		t.Fatalf("空 base = %q", got)
-	}
-}
-
 func TestFull7FetchV3ConfigModelMapErrors(t *testing.T) {
 	t.Run("传输层错误", func(t *testing.T) {
 		c := fullEntClient(func(*http.Request) (*http.Response, error) {
 			return nil, errors.New("dial boom")
 		})
-		if _, err := c.fetchV3ConfigModelMap(upAuth(), ""); err == nil || !strings.Contains(err.Error(), "dial boom") {
+		if _, err := c.fetchV3ConfigModelMap(upAuth()); err == nil || !strings.Contains(err.Error(), "dial boom") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -292,7 +310,7 @@ func TestFull7FetchV3ConfigModelMapErrors(t *testing.T) {
 		c := fullEntClient(func(*http.Request) (*http.Response, error) {
 			return jsonResp(200, `{"code":0,"data":{"models":[{"id":""},{"id":"good"}]}}`), nil
 		})
-		out, err := c.fetchV3ConfigModelMap(upAuth(), "")
+		out, err := c.fetchV3ConfigModelMap(upAuth())
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}

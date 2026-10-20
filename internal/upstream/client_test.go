@@ -293,12 +293,13 @@ func TestFetchModelsEffortsDriveBodyDowngrade(t *testing.T) {
 	var outbound []byte
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/console/enterprises/personal/models"):
+		case strings.Contains(r.URL.Path, "/console/enterprises/"):
+			t.Errorf("个人号不应探企业端点")
+			return jsonResp(500, `{}`), nil
+		case strings.HasSuffix(r.URL.Path, "/v3/config"):
 			return jsonResp(200, `{"code":0,"data":{"models":[
 				{"id":"glm-5.2","name":"GLM-5.2","maxInputTokens":131072,"maxOutputTokens":8192,"reasoning":{"effort":"high","supportedEfforts":["low","high"]}}
-			],"agents":[{"name":"cli","models":["glm-5.2"]}]}}`), nil
-		case strings.HasSuffix(r.URL.Path, "/v3/config"):
-			return jsonResp(200, `{"code":0,"data":{"models":[]}}`), nil
+			]}}`), nil
 		default:
 			outbound, _ = io.ReadAll(r.Body)
 			return &http.Response{
@@ -598,21 +599,17 @@ func TestModelRateCacheEffectiveAndNormalized(t *testing.T) {
 }
 
 func TestFetchModelsOverlaysV3ConfigCapabilities(t *testing.T) {
-	// CLI 目录给 flash 精简字段（128K / 固定 high）；IDE /v3/config 给完整能力。
-	var sawIDE bool
+	// 个人号只拉 /v3/config（桌面端内置 CLI 的请求形状），不再探企业端点、不换 IDE UA。
+	var sawV3 bool
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/console/enterprises/personal/models"):
-			return jsonResp(200, `{"code":0,"data":{"models":[
-				{"id":"deepseek-v4.1-flash","name":"Deepseek-V4.1-Flash","maxInputTokens":1000000,"maxOutputTokens":128000,"credits":"x0.03 credits","supportsReasoning":true,"onlyReasoning":true,"reasoning":{"effort":"high","summary":"auto"}}
-			],"agents":[{"name":"cli","models":["deepseek-v4.1-flash"]}]}}`), nil
 		case strings.HasSuffix(r.URL.Path, "/v3/config"):
-			sawIDE = true
-			if r.Header.Get("User-Agent") != codeBuddyIDEUA {
-				t.Errorf("v3/config UA=%q want %s", r.Header.Get("User-Agent"), codeBuddyIDEUA)
+			sawV3 = true
+			if want := "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"; r.Header.Get("User-Agent") != want {
+				t.Errorf("v3/config UA=%q want %s", r.Header.Get("User-Agent"), want)
 			}
-			if r.Header.Get("X-Product") != "SaaS" {
-				t.Errorf("X-Product=%q want SaaS", r.Header.Get("X-Product"))
+			if r.Header.Get("X-Product") != "SaaS" || !r.Close {
+				t.Errorf("X-Product = %q want SaaS（请求框架给每个请求都加），且应 Connection: close（%v）", r.Header.Get("X-Product"), r.Close)
 			}
 			if r.Header.Get("X-User-Id") != "u1" {
 				t.Errorf("X-User-Id=%q want u1", r.Header.Get("X-User-Id"))
@@ -630,7 +627,7 @@ func TestFetchModelsOverlaysV3ConfigCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch models: %v", err)
 	}
-	if !sawIDE {
+	if !sawV3 {
 		t.Fatal("expected /v3/config request")
 	}
 	if len(infos) != 1 {

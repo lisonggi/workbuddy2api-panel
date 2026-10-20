@@ -262,7 +262,7 @@ func TestPanelRequestMetricsLogs(t *testing.T) {
 	})
 }
 
-// 模型页：无号 503；CN 个人号拉目录成功；两路全失败 502；global 探测失败 502。
+// 模型页：无号 503；CN 个人号拉目录成功；目录拉取失败 502；global 探测失败 502。
 func TestPanelModels(t *testing.T) {
 	t.Run("没有可用账号 503", func(t *testing.T) {
 		p, _ := newPanelFor(t, Config{})
@@ -272,11 +272,10 @@ func TestPanelModels(t *testing.T) {
 	t.Run("CN 个人号目录成功", func(t *testing.T) {
 		p, up := newPanelFor(t, Config{Pool: pool.New("")})
 		p.cfg.Pool.Add(taskTestAuth("u1", "一号"))
-		up.on(http.MethodGet, autoChatHost, "/console/enterprises/personal/models", "", autoOK(
+		// 个人号只拉 /v3/config。
+		up.on(http.MethodGet, autoChatHost, "/v3/config", "", autoOK(
 			`{"code":0,"data":{"models":[{"id":"glm-5.2","name":"GLM-5.2","maxInputTokens":1000000,`+
-				`"maxOutputTokens":131072,"reasoning":{"supportedEfforts":["low","high"],"defaultEffort":"high"}}],`+
-				`"agents":[{"name":"cli","models":["glm-5.2"]}]}}`))
-		up.on(http.MethodGet, autoChatHost, "/v3/config", "", autoFail(400, `{"code":400}`))
+				`"maxOutputTokens":131072,"reasoning":{"supportedEfforts":["low","high"],"defaultEffort":"high"}}]}}`))
 
 		rec := get(p, http.MethodGet, "/panel/api/models")
 		autoWantCode(t, rec, http.StatusOK)
@@ -295,10 +294,9 @@ func TestPanelModels(t *testing.T) {
 		}
 	})
 
-	t.Run("上游两路全失败 502", func(t *testing.T) {
+	t.Run("上游目录失败 502", func(t *testing.T) {
 		p, up := newPanelFor(t, Config{Pool: pool.New("")})
 		p.cfg.Pool.Add(taskTestAuth("u1", "一号"))
-		up.on(http.MethodGet, autoChatHost, "/console/enterprises/personal/models", "", autoFail(400, `{"code":400}`))
 		up.on(http.MethodGet, autoChatHost, "/v3/config", "", autoFail(400, `{"code":400}`))
 		rec := get(p, http.MethodGet, "/panel/api/models")
 		autoWantCode(t, rec, http.StatusBadGateway)
@@ -317,8 +315,6 @@ func TestPanelModels(t *testing.T) {
 		p.cfg.Upstream.GlobalEnabled = true
 		p.cfg.Upstream.ChatBaseGlobal = "https://" + loginGlobalHost
 		up.on(http.MethodGet, loginGlobalHost, "/v3/config", "", autoFail(400, `{"code":400}`))
-		up.on(http.MethodGet, loginGlobalHost, "/v2/enterprises/personal/models", "", autoFail(400, `{"code":400}`))
-		up.on(http.MethodGet, loginGlobalHost, "/console/enterprises/personal/models", "", autoFail(400, `{"code":400}`))
 		rec := get(p, http.MethodGet, "/panel/api/models")
 		autoWantCode(t, rec, http.StatusBadGateway)
 		if txt := autoErrText(t, rec); !strings.Contains(txt, "global: 上游未返回可用模型") {
@@ -338,8 +334,6 @@ func TestPanelModels(t *testing.T) {
 		up.on(http.MethodGet, loginGlobalHost, "/v3/config", "", autoOK(
 			`{"code":0,"data":{"models":[{"id":"gpt-5.5","maxInputTokens":1050000,"maxOutputTokens":128000,`+
 				`"reasoning":{"supportedEfforts":["low","high"],"defaultEffort":"high"}}]}}`))
-		up.on(http.MethodGet, loginGlobalHost, "/v2/enterprises/personal/models", "", autoFail(400, `{"code":400}`))
-		up.on(http.MethodGet, loginGlobalHost, "/console/enterprises/personal/models", "", autoFail(400, `{"code":400}`))
 
 		rec := get(p, http.MethodGet, "/panel/api/models")
 		autoWantCode(t, rec, http.StatusOK)

@@ -89,8 +89,8 @@ func TestFull7DesktopChatWithExpertDebug(t *testing.T) {
 func TestFull7FetchGlobalModelsDedup(t *testing.T) {
 	f := newUpFake(t)
 	f.on(http.MethodGet, "/v3/config", 500, `{"code":500,"msg":"boom"}`)
-	f.on(http.MethodGet, "/v2/enterprises/personal/models", 200, `{"code":0,"data":["a","a"]}`)
-	names := upGlobalClient(f).FetchGlobalModels(globalAuth())
+	f.on(http.MethodGet, gmEntPath, 200, entModelsJSON(`{"id":"a","tags":["chat"]},{"id":"a","tags":["chat"]}`))
+	names := upGlobalClient(f).FetchGlobalModels(globalEntAuth())
 	if len(names) != 1 || names[0] != "a" {
 		t.Fatalf("names = %v", names)
 	}
@@ -99,37 +99,14 @@ func TestFull7FetchGlobalModelsDedup(t *testing.T) {
 func TestFull7GlobalModelsNameFallbacks(t *testing.T) {
 	f := newUpFake(t)
 	f.on(http.MethodGet, "/v3/config", 200, `{"code":0,"data":{"models":[{"id":"nes-x"}]}}`)
-	f.on(http.MethodGet, "/v2/enterprises/personal/models", 200, `{"code":0,"data":["ent-1"]}`)
+	f.on(http.MethodGet, gmEntPath, 200, entModelsJSON(`{"id":"ent-1","tags":["chat"]}`))
 	c := upGlobalClient(f)
-	names := c.FetchGlobalModels(globalAuth())
+	names := c.FetchGlobalModels(globalEntAuth())
 	if len(names) != 1 || names[0] != "ent-1" {
 		t.Fatalf("names = %v", names)
 	}
-	if infos := c.FetchGlobalModelInfos(globalAuth()); len(infos) != 0 {
-		t.Fatalf("窄表不应产出 infos: %+v", infos)
-	}
-}
-
-func TestFull7ParseGlobalModelNamesNoArray(t *testing.T) {
-	if _, _, _, _, err := parseGlobalModelNames([]byte(`{"code":0,"data":{"foo":"bar"}}`)); err == nil {
-		t.Fatal("找不到模型数组应返回错误")
-	}
-}
-
-func TestFull7ParseGlobalModelLooseEfforts(t *testing.T) {
-	raw := `{"code":0,"data":["m0",{"id":"m2","reasoning":{"supportedEfforts":["high"],"defaultEffort":"high"}}]}`
-	names, infos, efforts, defaults, err := parseGlobalModelNames([]byte(raw))
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if len(names) != 2 || names[0] != "m0" || names[1] != "m2" || len(infos) != 2 {
-		t.Fatalf("names=%v infos=%+v", names, infos)
-	}
-	if len(efforts["m2"]) != 1 || efforts["m2"][0] != "high" {
-		t.Fatalf("efforts = %+v", efforts)
-	}
-	if defaults["m2"] != "high" {
-		t.Fatalf("defaults = %+v", defaults)
+	if infos := c.FetchGlobalModelInfos(globalEntAuth()); len(infos) != 1 || infos[0].ID != "ent-1" {
+		t.Fatalf("企业目录应产出对象条目: %+v", infos)
 	}
 }
 
@@ -335,7 +312,7 @@ func TestFull7CompensationErrors(t *testing.T) {
 func TestFull7FetchAccountCatalogProbeError(t *testing.T) {
 	f := newUpFake(t)
 	f.on(http.MethodGet, "/v3/config", 500, `{"code":500,"msg":"boom"}`)
-	f.on(http.MethodGet, "/console/enterprises/personal/models", 500, `{"code":500,"msg":"boom"}`)
+	f.on(http.MethodGet, "/console/enterprises/ent-1/config/models", 500, `{"code":500,"msg":"boom"}`)
 	ea := &auth.Auth{UID: "ue", AccessToken: "at", EnterpriseID: "ent-1", ExpiresAt: 9999999999}
 	if _, err := upClient(f).FetchAccountCatalog(ea); err == nil {
 		t.Fatal("两路探测失败应返回错误")

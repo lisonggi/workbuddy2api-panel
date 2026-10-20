@@ -1219,32 +1219,12 @@ func nonChatModel(id string, maxOutputTokens int64, tags []string) bool {
 	return false
 }
 
-// codeBuddyIDEUA /v3/config 要求能解析出 CodeBuddy 版本号的 UA。
-// CLI 三段式 WorkBuddy UA 会拿到精简目录（flash 输出 128K、无 supportedEfforts）；
-// 官方 IDE 头 `CodeBuddyIDE/4.12.0 CodeBuddy/4.12.0` 才返回完整能力
-// （flash：393216 + low/high/max）。
-// 版本号需随上游 IDE 发版跟进：UAn 版本过旧时该端点可能同样返回精简目录。
-const codeBuddyIDEUA = "CodeBuddyIDE/4.12.0 CodeBuddy/4.12.0"
-
-// codeBuddyCLIUA CLI 三段式 UA。**实测（2026-09-22）该端点对不同 UA 下发的模型集合不同**：
-//   - IDE UA  → 14 条（10 个 chat：含 o4-mini / enhance-1.0 / auto-chat，**无 deepseek 系列**）
-//   - CLI UA  → 22 条（22 个 chat：**含 deepseek-v4.1-flash / deepseek-v4.1-flash-sg /
-//     gpt-6-astra / kimi-k2.8-preview**，但无 o4-mini / enhance-1.0 / auto-chat）
-//
-// 注意两点，都与旧注释相反，勿再按旧注释推断：
-//  1. 旧注释称「CLI UA 拿到精简目录、IDE UA 才返回完整能力」——实测模型数量恰好相反，
-//     但 **IDE 响应体积更大**（26003B vs 21111B），故「完整能力」应理解为**单条字段更全**，
-//     而非模型更多。两路各有独有模型，缺一不可。
-//  2. 该常量仅用于 global 侧第二路探测；CN 侧仍走 codeBuddyIDEUA 单路。
-const codeBuddyCLIUA = "CLI/2.63.2 CodeBuddy/2.63.2"
-
 // FetchModels 调上游动态模型接口（CN 侧；global 账号见 global_models.go 家族）。
 //
-// v3-config-merge：动态目录 = /v3/config（主，IDE UA 完整能力版）+ 企业端点
-// （/console，cli 面过滤，补缺）的并集，两路**并发**探测。合并去重 key = 模型 id，
-// v3 条目优先（credits 等字段以 v3 为准），企业端点只补 v3 缺失的模型。
-// /v3 失败（400/网络错/解析失败）不拖累企业端点结果——降级为仅企业端点，warn 日志；
-// 反之亦然（两路独立容错）。
+// 目录 = /v3/config（桌面端内置 CLI 的 UA，与官方桌面端拉到的同一份）；企业号再并上企业模型
+// 目录（官方内置 CLI 的 ModelsProductProvider，只要 tags 含 chat 的对话模型，补缺），
+// 两路**并发**探测。合并去重 key = 模型 id，v3 条目优先
+// （credits 等字段以 v3 为准），企业端点只补 v3 缺失的模型。企业号任一路失败不拖累另一路。
 func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	out, err := c.probeCatalog(a)
 	if err != nil {
@@ -1278,9 +1258,20 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	return out, nil
 }
 
-// probeCatalog 并发探测 /v3/config 与企业端点并合并成一份目录，不写任何缓存
+// probeCatalog 探测 /v3/config（企业号并发再探企业模型目录）并合并成一份目录，不写任何缓存
 // （FetchModels 写域缓存，FetchAccountCatalog 只写企业号自己的目录）。
+//
+// 个人号只拉 /v3/config：官方桌面端个人号只调这一个目录接口。以前还会换 IDE UA、
+// 再探个人号的企业端点，同一个号用几种客户端身份拉目录是官方用户不会有的特征；10-19 生产
+// 实测个人号企业端点给的模型全在桌面端目录里。
 func (c *Client) probeCatalog(a *auth.Auth) ([]ModelInfo, error) {
+	if !a.IsEnterprise() {
+		out, err := c.fetchV3Models(a)
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
 	type probeResult struct {
 		infos []ModelInfo
 		err   error
@@ -1341,19 +1332,31 @@ func mergeModelInfos(primary, secondary []ModelInfo) []ModelInfo {
 	return out
 }
 
-// fetchEnterpriseModels 单路探测企业模型端点（/console/enterprises/personal/models）。
-// 解析口径：agents[cli].models 过滤 + nonChatModel 剔除 + disabled 剔除。
+// enterpriseModelsPath 企业模型目录端点路径模板。
+// 依据：官方桌面端内置 CLI 2.161.0（两个域相同）的 ModelsProductProvider——只有账号有
+// enterpriseId 才调，GET <endpoint>/console/enterprises/{enterpriseId}/config/models，
+// 走请求框架并带内置 CLI 的 UA，超时 5 秒。响应 {"code":0,"data":[模型对象, ...]}，
+// data 直接是数组（10-20 生产用个人号请求 /console/enterprises/personal/config/models
+// 返回 {"code":0,"data":[]}，结构一致）。
+const enterpriseModelsPath = "/console/enterprises/%s/config/models"
+
+// enterpriseModelsTimeout 企业模型目录请求的超时（官方 ModelsProductProvider 5 秒）。
+// 变量而非常量：测试里临时改短，避免为验证超时真等 5 秒。
+var enterpriseModelsTimeout = 5 * time.Second
+
+// fetchEnterpriseModels 单路探测企业模型目录（官方内置 CLI 的 ModelsProductProvider 接口）。
+// 解析口径：data 数组里 tags 含 "chat" 的才并入，再剔 nonChatModel 与 disabled，顺序按响应原序。
 func (c *Client) fetchEnterpriseModels(a *auth.Auth) ([]ModelInfo, error) {
 	// 局部变量名避开 url（本包已 import net/url，同名会造成阅读混淆）。
-	endpoint := c.chatBase(a) + "/console/enterprises/personal/models"
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	endpoint := c.chatBase(a) + fmt.Sprintf(enterpriseModelsPath, url.PathEscape(a.EnterpriseID))
+	ctx, cancel := context.WithTimeout(context.Background(), enterpriseModelsTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	c.CommonHeaders(req, a) // 复用共享请求头（Origin/Referer/UA/Accept/Content-Type）
-	// AccessToken 加锁快照（见 auth.AccessTokenValue：keepalive 刷新在 a.mu 内改写）。
-	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	injectCatalogIdentity(req, a)
+	// 请求框架的头带上企业身份（X-User-Id / X-Enterprise-Id / X-Tenant-Id），否则上游给的是个人号的名单。
+	c.frameworkHeaders(req, a, c.userAgent(a))
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -1368,14 +1371,8 @@ func (c *Client) fetchEnterpriseModels(a *auth.Auth) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("models api status %d: %s", resp.StatusCode, truncate(string(raw), 120))
 	}
 	var env struct {
-		Code int `json:"code"`
-		Data struct {
-			Models []dynModelEntry `json:"models"`
-			Agents []struct {
-				Name   string   `json:"name"`
-				Models []string `json:"models"`
-			} `json:"agents"`
-		} `json:"data"`
+		Code int             `json:"code"`
+		Data []dynModelEntry `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("models parse: %w", err)
@@ -1383,31 +1380,15 @@ func (c *Client) fetchEnterpriseModels(a *auth.Auth) ([]ModelInfo, error) {
 	if env.Code != 0 {
 		return nil, fmt.Errorf("models api code=%d", env.Code)
 	}
-	var cliIDs []string
-	for _, ag := range env.Data.Agents {
-		if ag.Name == "cli" {
-			cliIDs = ag.Models
-			break
-		}
-	}
-	if len(cliIDs) == 0 {
-		return nil, fmt.Errorf("no cli agent models found")
-	}
-	// dynMap 收集模型字段；nonChatModel 过滤在写入 dynMap 前执行，
-	// 确保非对话条目（nes-/completion-/codewise- 前缀、maxOutputTokens≤256、
-	// tags 含 text-to-image）根本不进返回列表（来源：harness buddy.ts:547-555）。
-	dynMap := make(map[string]dynModelEntry, len(env.Data.Models))
-	for _, m := range env.Data.Models {
-		if nonChatModel(m.ID, m.MaxOutputTokens, m.Tags) {
+	// 只有 tags 含 "chat" 的才并进 agent 的模型名单（官方 processModelAgentRelations），
+	// 再按既有规则剔除非对话条目（nes-/completion-/codewise- 前缀、maxOutputTokens≤256、
+	// 生成类 tags；来源：harness buddy.ts:547-555）与 disabled 的。
+	out := make([]ModelInfo, 0, len(env.Data))
+	for _, m := range env.Data {
+		if !hasChatTag(m.Tags) || m.Disabled || nonChatModel(m.ID, m.MaxOutputTokens, m.Tags) {
 			continue
 		}
-		dynMap[m.ID] = m
-	}
-	out := make([]ModelInfo, 0, len(cliIDs))
-	for _, id := range cliIDs {
-		if m, ok := dynMap[id]; ok && !m.Disabled {
-			out = append(out, m.modelInfo())
-		}
+		out = append(out, m.modelInfo())
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("models api returned empty list")
@@ -1415,12 +1396,22 @@ func (c *Client) fetchEnterpriseModels(a *auth.Auth) ([]ModelInfo, error) {
 	return out, nil
 }
 
-// fetchV3Models 单路探测 /v3/config（IDE UA 完整能力版，见 codeBuddyIDEUA）。
+// hasChatTag 报告 tags 里是否有 "chat"（企业模型目录只收对话模型）。
+func hasChatTag(tags []string) bool {
+	for _, t := range tags {
+		if t == "chat" {
+			return true
+		}
+	}
+	return false
+}
+
+// fetchV3Models 单路探测 /v3/config（桌面端内置 CLI 的请求形状，见 fetchV3ConfigModelMap）。
 // v3 面取全量 models（不按 agents[cli] 过滤，与 global 探测口径一致），按同一
 // nonChatModel 规则剔除非对话条目（selected 会选模型报 code=11102）。
 // 失败返回错误（调用方降级为仅企业端点）。
 func (c *Client) fetchV3Models(a *auth.Auth) ([]ModelInfo, error) {
-	byID, err := c.fetchV3ConfigModelMap(a, codeBuddyIDEUA)
+	byID, err := c.fetchV3ConfigModelMap(a)
 	if err != nil {
 		return nil, err
 	}
@@ -1707,46 +1698,17 @@ func (c *Client) GlobalEffortSnapshot() (efforts map[string][]string, defaults m
 	return c.effortsSnapshot("global"), c.defaultEffortsSnapshot("global")
 }
 
-// v3ConfigDomain /v3/config 的 X-Domain：优先账号落盘 domain，否则 chatBase host。
-func v3ConfigDomain(a *auth.Auth, chatBase string) string {
-	if a != nil {
-		// Domain 加锁快照（见 auth.DomainValue：keepalive 刷新在 a.mu 内改写）。
-		if d := strings.TrimSpace(a.DomainValue()); d != "" {
-			d = strings.TrimPrefix(d, "https://")
-			d = strings.TrimPrefix(d, "http://")
-			return strings.TrimSuffix(d, "/")
-		}
-	}
-	if u, err := url.Parse(chatBase); err == nil && u.Host != "" {
-		return u.Host
-	}
-	return "copilot.tencent.com"
-}
-
-// fetchV3ConfigModelMap 拉官方 IDE 配置目录，按模型 id 建能力表。
-// 该端点对 UA 敏感：必须带 CodeBuddy/CodeBuddyIDE 版本，否则 400 code=12403。
-// ua 为该次请求的 User-Agent；空串等价 codeBuddyIDEUA。该端点对 UA 敏感且**不同 UA 下发
-// 不同模型集合**（见 codeBuddyCLIUA 注释），global 探测据此并发两路取并集。
-func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]ModelInfo, error) {
+// fetchV3ConfigModelMap 拉 /v3/config 配置目录，按模型 id 建能力表。请求形状同桌面端内置 CLI：
+// GET、请求框架的头、`Connection: close`。该端点按 UA 下发不同的模型集合（IDE、CLI、桌面端
+// 三种 UA 各不相同），这里只用桌面端的，拿到的就是官方桌面端用户看到的那一份。
+func (c *Client) fetchV3ConfigModelMap(a *auth.Auth) (map[string]ModelInfo, error) {
 	req, err := http.NewRequest(http.MethodGet, c.chatBase(a)+"/v3/config", nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	// AccessToken 加锁快照（同 fetchEnterpriseModels）。
-	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	if a != nil && a.UID != "" {
-		req.Header.Set("X-User-Id", a.UID)
-	}
-	req.Header.Set("X-Domain", v3ConfigDomain(a, c.chatBase(a)))
-	req.Header.Set("X-Product", "SaaS")
-	injectCatalogIdentity(req, a)
-	if ua == "" {
-		ua = codeBuddyIDEUA
-	}
-	req.Header.Set("User-Agent", ua)
-	c.injectCodeBuddyRequest(req)
+	// 同桌面端内置 CLI：拉配置的请求带 Connection: close。
+	req.Close = true
+	c.frameworkHeaders(req, a, c.userAgent(a))
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err

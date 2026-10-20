@@ -637,7 +637,8 @@ func TestFetchV3ConfigTrialBanner(t *testing.T) {
 			"badge":{"label":"限时免费"},"discount":{"discountedCredits":"0x","factor":0}}]
 	}}`)
 	c := upGlobalClient(f)
-	out, err := c.fetchV3ConfigModelMap(globalAuth(), "test-ua")
+	c.UserAgent = "test-ua"
+	out, err := c.fetchV3ConfigModelMap(globalAuth())
 	if err != nil {
 		t.Fatalf("fetchV3ConfigModelMap: %v", err)
 	}
@@ -677,7 +678,7 @@ func TestFetchV3ConfigTrialBanner(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newUpFake(t)
 			f.on(http.MethodGet, gmV3Path, tc.status, tc.body)
-			if _, err := upGlobalClient(f).fetchV3ConfigModelMap(globalAuth(), ""); err == nil {
+			if _, err := upGlobalClient(f).fetchV3ConfigModelMap(globalAuth()); err == nil {
 				t.Fatal("应返回错误")
 			}
 		})
@@ -691,14 +692,14 @@ func TestFetchV3ConfigTrialBanner(t *testing.T) {
 			GlobalEnabled:  true,
 			ChatBaseGlobal: upBase,
 		}
-		if _, err := c.fetchV3ConfigModelMap(globalAuth(), ""); err == nil || !strings.Contains(err.Error(), "read body") {
+		if _, err := c.fetchV3ConfigModelMap(globalAuth()); err == nil || !strings.Contains(err.Error(), "read body") {
 			t.Fatalf("err = %v", err)
 		}
 	})
 
 	t.Run("URL 非法", func(t *testing.T) {
 		c := &Client{HTTP: newUpFake(t).client(), GlobalEnabled: true, ChatBaseGlobal: "://bad"}
-		if _, err := c.fetchV3ConfigModelMap(globalAuth(), ""); err == nil {
+		if _, err := c.fetchV3ConfigModelMap(globalAuth()); err == nil {
 			t.Fatal("非法 base 应返回错误")
 		}
 	})

@@ -17,7 +17,6 @@ package upstream
 
 import (
 	"fmt"
-	"net/http"
 	"sort"
 	"time"
 
@@ -30,18 +29,6 @@ type accountCatalog struct {
 	infos   []ModelInfo
 	set     map[string]bool
 	fetched time.Time
-}
-
-// injectCatalogIdentity 国内版企业号拉目录时带上完整的企业身份：X-User-Id + X-Enterprise-Id
-// （两个必须同时带，见文件头），X-Tenant-Id 与企业 ID 同值（对齐计费接口与其他实现的写法）。
-// 个人号、国际版账号不动。
-func injectCatalogIdentity(req *http.Request, a *auth.Auth) {
-	if a == nil || a.IsGlobal() || a.UID == "" || !a.IsEnterprise() {
-		return
-	}
-	req.Header.Set("X-User-Id", a.UID)
-	req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
-	req.Header.Set("X-Tenant-Id", a.EnterpriseID)
 }
 
 // FetchAccountCatalog 拉一个国内版企业号自己的目录，只存进它自己的目录，不动域目录、倍率和档位缓存。

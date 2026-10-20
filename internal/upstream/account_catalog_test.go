@@ -29,21 +29,53 @@ func catalogJSON(ids ...string) string {
 	return `{"code":0,"data":{"models":[` + strings.Join(models, ",") + `],"agents":[{"name":"cli","models":[` + strings.Join(cli, ",") + `]}]}}`
 }
 
+// entCatalogJSON 企业模型目录响应（官方内置 CLI 的 ModelsProductProvider）：data 直接是数组。
+func entCatalogJSON(ids ...string) string {
+	models := make([]string, 0, len(ids))
+	for _, id := range ids {
+		models = append(models, `{"id":"`+id+`","tags":["chat"]}`)
+	}
+	return `{"code":0,"data":[` + strings.Join(models, ",") + `]}`
+}
+
 func (u *identitySplitUpstream) client() *Client {
 	u.headers = map[string]http.Header{}
 	return testClient(func(r *http.Request) (*http.Response, error) {
 		u.mu.Lock()
-		for _, p := range []string{"/v3/config", "/console/enterprises/personal/models"} {
+		for _, p := range []string{"/v3/config", "/console/enterprises/ent-1/config/models"} {
 			if strings.HasSuffix(r.URL.Path, p) {
 				u.headers[p] = r.Header.Clone()
 			}
 		}
 		u.mu.Unlock()
-		if r.Header.Get("X-User-Id") != "" && r.Header.Get("X-Enterprise-Id") != "" {
+		enterprise := r.Header.Get("X-User-Id") != "" && r.Header.Get("X-Enterprise-Id") != ""
+		if !strings.HasSuffix(r.URL.Path, "/v3/config") {
+			// 企业模型目录：data 直接是模型数组。
+			if enterprise {
+				return jsonResp(200, entCatalogJSON("shared", "claude-x")), nil
+			}
+			return jsonResp(200, entCatalogJSON("shared")), nil
+		}
+		if enterprise {
 			return jsonResp(200, catalogJSON("shared", "claude-x")), nil
 		}
 		return jsonResp(200, catalogJSON("shared", "personal-only")), nil
 	})
+}
+
+// reset 清掉已记下的请求头。
+func (u *identitySplitUpstream) reset() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.headers = map[string]http.Header{}
+}
+
+// seen 该路径是否收到过请求（reset 之后）。
+func (u *identitySplitUpstream) seen(path string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	_, ok := u.headers[path]
+	return ok
 }
 
 func (u *identitySplitUpstream) header(path, key string) string {
@@ -52,7 +84,8 @@ func (u *identitySplitUpstream) header(path, key string) string {
 	return u.headers[path].Get(key)
 }
 
-// TestCatalogIdentityHeaders 国内版企业号拉目录时两个目录端点都带上完整企业身份；个人号不带。
+// TestCatalogIdentityHeaders 国内版企业号拉目录时两个目录端点都带上完整企业身份；
+// 个人号只拉 /v3/config，且不带企业头。
 func TestCatalogIdentityHeaders(t *testing.T) {
 	u := &identitySplitUpstream{}
 	c := u.client()
@@ -64,7 +97,7 @@ func TestCatalogIdentityHeaders(t *testing.T) {
 	if ids := modelIDs(infos); !reflect.DeepEqual(ids, []string{"claude-x", "shared"}) {
 		t.Errorf("企业号应拿到企业名单，got %v", ids)
 	}
-	for _, p := range []string{"/v3/config", "/console/enterprises/personal/models"} {
+	for _, p := range []string{"/v3/config", "/console/enterprises/ent-1/config/models"} {
 		if u.header(p, "X-User-Id") != "e1" || u.header(p, "X-Enterprise-Id") != "ent-1" || u.header(p, "X-Tenant-Id") != "ent-1" {
 			t.Errorf("%s 企业身份头不全: uid=%q ent=%q tenant=%q", p,
 				u.header(p, "X-User-Id"), u.header(p, "X-Enterprise-Id"), u.header(p, "X-Tenant-Id"))
@@ -72,26 +105,31 @@ func TestCatalogIdentityHeaders(t *testing.T) {
 	}
 
 	per := &auth.Auth{UID: "p1", AccessToken: "at-p", ExpiresAt: 9999999999, Domain: "www.codebuddy.cn"}
+	u.reset()
 	if _, err := c.FetchModels(per); err != nil {
 		t.Fatalf("个人号目录: %v", err)
 	}
-	for _, p := range []string{"/v3/config", "/console/enterprises/personal/models"} {
-		if u.header(p, "X-Enterprise-Id") != "" || u.header(p, "X-Tenant-Id") != "" {
-			t.Errorf("%s 个人号不应带企业头", p)
-		}
+	if u.header("/v3/config", "X-User-Id") != "p1" {
+		t.Error("个人号应拉 /v3/config")
+	}
+	if u.header("/v3/config", "X-Enterprise-Id") != "" || u.header("/v3/config", "X-Tenant-Id") != "" {
+		t.Error("/v3/config 个人号不应带企业头")
+	}
+	if u.seen("/console/enterprises/ent-1/config/models") {
+		t.Error("个人号不应再探企业端点")
 	}
 	if _, err := c.FetchAccountCatalog(per); err == nil {
 		t.Error("个人号不该单独拉目录")
 	}
 
-	// 国际版企业号没有实测数据：拉目录不加企业头。
+	// 国际版企业号同样带企业头：官方请求框架的拦截器两域一样加（国际版企业号未实测）。
 	auth.SetGlobalEnabled(true)
 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
 	gl := &auth.Auth{UID: "g1", EnterpriseID: "ent-g", AccessToken: "at-g", ExpiresAt: 9999999999, Domain: "www.workbuddy.ai"}
 	req := httptest.NewRequest("GET", "https://global.example/v3/config", nil)
-	injectCatalogIdentity(req, gl)
-	if req.Header.Get("X-Enterprise-Id") != "" {
-		t.Error("国际版企业号拉目录不应加企业头")
+	c.frameworkHeaders(req, gl, c.userAgent(gl))
+	if req.Header.Get("X-Enterprise-Id") != "ent-g" || req.Header.Get("X-Tenant-Id") != "ent-g" {
+		t.Errorf("国际版企业号拉目录也应带企业头: %v", req.Header)
 	}
 }
 

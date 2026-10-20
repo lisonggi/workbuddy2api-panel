@@ -458,7 +458,7 @@ func TestFetchDynamicModelsBranches(t *testing.T) {
 func TestModelListGlobalAndCrossRealm(t *testing.T) {
 	resetModelsCache(t)
 	up := newFakeUpstream(t, func(string) (int, string, bool) {
-		return 200, `{"code":0,"data":{"models":[{"id":"g-model","maxInputTokens":1000,"maxOutputTokens":100,
+		return 200, `{"code":0,"data":{"models":[{"id":"g-model","maxInputTokens":1000,"maxOutputTokens":8192,
 			"supportsImages":true,"reasoning":{"supportedEfforts":["low","high"],"defaultEffort":"high"}}]}}`, false
 	})
 	up.ChatBaseGlobal = up.ChatBaseCN // global 探测也落到假上游
