@@ -177,6 +177,31 @@ func (p *Pool) CooldownSoftForModel(uid string, base time.Duration, resetAt time
 	}
 }
 
+// CooldownModel 只冷却 (账号, 模型)：写 modelCooldowns[model]，不动账号级冷却，这个号的
+// 别的模型照常可选。用于几秒到几十秒就会过去的限流（14003「模型繁忙」、每秒/每分钟限额）。
+// 截止封顶 soft_rate_max；该模型已有更晚的冷却（比如 6004 对齐到上游重置时间）时不缩短它。
+func (p *Pool) CooldownModel(uid, model string, d time.Duration, reason string) {
+	if uid == "" || model == "" || d <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	now := time.Now()
+	until := p.cappedSoftUntilLocked(now, now.Add(d))
+	if old, exists := e.modelCooldowns[model]; exists && !old.AuditOnly && old.Until.After(until) {
+		return
+	}
+	if e.modelCooldowns == nil {
+		e.modelCooldowns = map[string]modelCooldown{}
+	}
+	e.modelCooldowns[model] = modelCooldown{Until: until, Reason: reason}
+	p.dirty.Store(true)
+}
+
 // RecordModelRateLimitAudit 记录无法参与模型路由的 6004 展示项。
 // 典型场景是 6004 没有可解析重置时间：账号仍按原有有界退避冷却，
 // 本方法只把模型名挂到 e.until 上供账号页展示，不影响 healthyForModel。

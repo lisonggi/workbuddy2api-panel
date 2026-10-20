@@ -130,7 +130,7 @@ type ModelCostStatus struct {
 // RateLimitedModel 单个被限流模型的台账行（issue #36）。
 type RateLimitedModel struct {
 	Model string `json:"model"`
-	// Kind 区分限流与模型不可用：6004 是 rate_limit，11102 是 model_unavailable。
+	// Kind 区分限流与模型不可用：6000–6008 按模型限额与 14003 模型繁忙是 rate_limit，11102 是 model_unavailable。
 	Kind string `json:"kind"`
 	// Until 冷却到期时刻 = 该模型的独立冷却截止（modelCooldowns[m].Until，截断后），
 	// 多模型限流时不再等于 Status.Until（账号级）。

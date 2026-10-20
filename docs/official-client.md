@@ -233,6 +233,23 @@ HTTPDNS 用腾讯云的服务，照官方的做法：
 - `DisableActivityBanner: true`；
 - `DefaultModelOptimizationOff: true`。
 
+## 错误码
+
+上游错误体里的业务码按内置 CLI 的错误码枚举归类（`internal/upstream/bizcode.go`），先于 HTTP 状态码和文案判：
+
+| 业务码 | 官方名字 | 官方怎么处理 | 网关怎么处置 |
+|---|---|---|---|
+| `14003` | `RateLimitError` | 临时限流，原请求退避重发（0.5 秒起、封顶 32 秒） | 只冷却这个号的这个模型约 30 秒，当场换号 |
+| `6001` `6002` `6005` `6006` | `CraftRateTPS/TPM/RPS/RPMLimit` | 同上 | 有重置时间就冷却到那时，没有就同 14003 |
+| `6000` `6003` `6004` `6007` `6008` | `CraftRateLimit`、`CraftRateTPH/TPD/RPH/RPDLimit` | 不自动重发 | 按模型冷却到上游给的重置时间，换别的模型照样用 |
+| `14001` `14012` `14013` `14014` `14018` `14019` | `UsageLimitExceeded*`、`UsageLimitUserExhausted`、`UsageLimitNoTokenBudget` | 额度用完（`isQuotaExhaustedError`），不重试 | 余额不足，冷却到次日 04:00 |
+| `14015` | `UsageLimitLicenseExpired` | 归授权过期 | 账号软冷却 |
+| `14016` `14017` | `UsageLimitEnterpriseNotActivated`、`UsageLimitUserNotActivated` | 归未激活 | 账号软冷却 |
+| `10105` | `ConversationLimitExceeded` | 归同时进行的会话太多 | 账号冷却约 60 秒，当场换号 |
+| `11115` | `ContextTooLong` | 归输入超长 | 不罚账号、不换号，原文返回；文案照 `isInputLengthError` 的词表与正则认 |
+
+`14002`（`ConversationChatTooMany`）官方只在统计里归成额度用完，既不算额度用完也不算临时限流，含义没确认，网关仍按状态码处理；`15001`（联网搜索限流）网关用不到；`11140` 照旧按文案分开授权封禁和限流两种情况。
+
 ## 生产实测
 
 2026-10-19 至 10-20，用国内版、国际版各几个个人免费号在生产实测：
@@ -274,6 +291,7 @@ HTTPDNS 用腾讯云的服务，照官方的做法：
   - `skill_info` 的 `fileCount` 按 5.8.3 安装包内置的 48 个技能加上这个技能算（49），`skillId`、`skillVersion` 取自抓包。
 
   小程序口径的事件和官网资料库的 `library_doc_intro_click` 不在桌面端安装包里，没有核对。
+- 错误码：生产日志（10-19 至 10-20）只见过 `6004`、`14003`、`11101`、`11128`，其余业务码照官方枚举归类，没有真遇到过；`14002` 的含义没确认，见[错误码](#错误码)。
 - 小程序的埋点事件（开学季活动）照的是一次 Windows 版 PC 微信的抓包，系统写 `windows`、`machineId` 是抓包里的固定值；小程序 web-view 的 UA 却是 iPhone 微信，开学季接口和埋点请求从 1.1.2 起也用这个 UA（以前没设，发的是 Go 默认的 `Go-http-client/1.1`）。没有小程序的包、也没有 PC 微信的 UA 抓包可对照，系统和 UA 两边都没改成一致，见[官网网页的请求](#官网网页的请求)。
 
 ## 官方升级后怎么核对
@@ -290,7 +308,8 @@ HTTPDNS 用腾讯云的服务，照官方的做法：
    - 上报事件的公共字段在 `internal/upstream/desktop.go` 的 `eventFingerprint`：后台服务里搜 `OSEventProcessor`、`ProductInfoEventProcessor`、`UserinfoEventProcessor`，网页上报的公共参数在官网前端里搜 `UserCenter`；
    - 任务中心各事件的业务字段在 `internal/upstream/desktop.go` 和 `internal/panel/autotask.go`：界面的事件码在 `renderer/assets/adapter-telemetry-service-*.js`（形如 ``e.TaskCreated=`agent_task_created` ``），按枚举名搜调用处；对话链在内置 CLI 里搜 `reportChatRequestSendTelemetry`、`reportMessageSendTelemetry`；换主题的事件搜 `buildSkinApplyPayload`，主题列表接口是 `operation-platform/appearance/resources`，版本档搜 `getEditionDisplayType`；界面事件补的字段搜 `AdapterTelemetryService`、`injectBuddyTelemetryContext`；灵感案例站点搜 `getDiscoverBaseUrl`（`internal/upstream/playbook.go`），首页模板搜 `scenes-v2.json`、`reportTemplateUsed`（`internal/upstream/scenes.go`）；
    - 各类请求的 `Accept-Encoding` 在 `internal/upstream/encoding.go`：内置 CLI 里搜 `advertiseZstdAcceptEncoding`，Node fetch 的默认头在 `node_modules/undici/lib/web/fetch/index.js`；
-   - 登录的 `platform`、路径在 `internal/upstream/login.go`，积分包代码在 `internal/upstream/resources.go`。
+   - 登录的 `platform`、路径在 `internal/upstream/login.go`，积分包代码在 `internal/upstream/resources.go`；
+   - 业务码表在 `internal/upstream/bizcode.go`：内置 CLI 里搜 `CraftRateTPSLimit`（错误码枚举）、`isTransientRateLimitBusinessCode`、`isQuotaExhaustedError`、`classifyErrorDetail`、`computeRequestRetryDelayMs`；上下文超限的词表在 `internal/upstream/client.go` 的 `promptTooLongMarkers`，搜 `isInputLengthError`。
 5. 官网网页的接口变化要另看 `www.workbuddy.cn` 成长中心页的前端代码，对应 `internal/upstream/web.go` 和用它的几个文件。
 
 不想等新版本发布时，可以用 `upstream.client_version`、`upstream.cli_version` 先改版本号，见[配置](configuration.md)。

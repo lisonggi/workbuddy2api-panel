@@ -606,3 +606,62 @@ func TestModelCooldownsPersistCompatOldState(t *testing.T) {
 		t.Error("旧文件 until 应照常加载（账号级冷却兼容）")
 	}
 }
+
+// TestCooldownModel 短时限流（14003 等）只冷却 (账号, 模型)：账号级不动、别的模型照常可选；
+// 截止封顶 soft_rate_max；不缩短已有的更晚冷却；参数不全时什么都不做。
+func TestCooldownModel(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.CooldownModel("u1", "deepseek-v4.1-flash", 30*time.Second, "14003 model busy")
+	p.mu.RLock()
+	e := p.byUID["u1"]
+	mc := e.modelCooldowns["deepseek-v4.1-flash"]
+	until := e.until
+	p.mu.RUnlock()
+	now := time.Now()
+	if !until.IsZero() || !e.healthy(now) {
+		t.Fatalf("账号级不该冷却：until=%v", until)
+	}
+	if rem := time.Until(mc.Until); rem <= 25*time.Second || rem > 30*time.Second {
+		t.Errorf("模型冷却剩余 %v，want ≈30s", rem)
+	}
+	if mc.Reason != "14003 model busy" || !mc.ResetAt.IsZero() {
+		t.Errorf("台账 %+v", mc)
+	}
+	if e.healthyForModel(now, "deepseek-v4.1-flash") || !e.healthyForModel(now, "glm-5.2") {
+		t.Error("只该挡住 deepseek-v4.1-flash")
+	}
+
+	// 已有更晚的冷却（6004 对齐重置时间）不被缩短
+	reset := time.Now().Add(20 * time.Minute)
+	p.CooldownSoftForModel("u1", 600*time.Second, reset, "glm-5.3", "6004 model rate limit")
+	p.CooldownModel("u1", "glm-5.3", 30*time.Second, "14003 model busy")
+	p.mu.RLock()
+	got := p.byUID["u1"].modelCooldowns["glm-5.3"]
+	p.mu.RUnlock()
+	if got.Reason != "6004 model rate limit" || got.Until.Sub(reset).Abs() > time.Second {
+		t.Errorf("6004 冷却被覆盖：%+v", got)
+	}
+
+	// 封顶 soft_rate_max
+	p.SetSoftRateMax(time.Minute)
+	p.CooldownModel("u1", "kimi-k2", time.Hour, "14003 model busy")
+	p.mu.RLock()
+	capped := p.byUID["u1"].modelCooldowns["kimi-k2"]
+	p.mu.RUnlock()
+	if rem := time.Until(capped.Until); rem > time.Minute+time.Second {
+		t.Errorf("应封顶 1 分钟，剩余 %v", rem)
+	}
+
+	// 参数不全、账号不存在：不动
+	p.CooldownModel("", "m", time.Second, "x")
+	p.CooldownModel("u1", "", time.Second, "x")
+	p.CooldownModel("u1", "m", 0, "x")
+	p.CooldownModel("nope", "m", time.Second, "x")
+	p.mu.RLock()
+	_, has := p.byUID["u1"].modelCooldowns["m"]
+	p.mu.RUnlock()
+	if has {
+		t.Error("参数不全时不该写冷却")
+	}
+}

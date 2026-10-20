@@ -15,16 +15,6 @@ import (
 
 // 第七轮补齐：client.go、headers.go、payload.go 的剩余分支。
 
-func TestFull7HasBusinessCodeInArray(t *testing.T) {
-	body := `{"errors":[{"code":"14018"}]}`
-	if !hasBusinessCode(body, "14018") {
-		t.Fatal("数组内层 code 应命中")
-	}
-	if hasBusinessCode(body, "99999") {
-		t.Fatal("不存在的 code 不应命中")
-	}
-}
-
 func TestFull7ClientBaseSelectors(t *testing.T) {
 	if got := (&Client{}).globalChatBase(); got != defaultGlobalBase {
 		t.Fatalf("globalChatBase 缺省 = %q，期望 %q", got, defaultGlobalBase)

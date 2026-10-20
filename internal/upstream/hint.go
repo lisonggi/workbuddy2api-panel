@@ -52,6 +52,14 @@ func GatewayHint(kind ErrKind, msg string, ctx HintContext) string {
 		// （等待窗口过去再试，换号/立刻重试无意义）。
 		return "upstream WAF blocked the gateway; retry after the block window"
 	case ErrSoftRate:
+		switch code := BizCode(msg); {
+		case isTransientRateCode(code):
+			return "upstream model is busy; retry in a few seconds or switch model"
+		case isCraftRateCode(code):
+			return "usage limit of this model reached at upstream; switch model or retry after reset"
+		case code == codeConversationLimitExceed:
+			return "too many active sessions on the upstream account; retry shortly"
+		}
 		return "rate limited by upstream; retry after reset"
 	case ErrAccountFault:
 		return "account-level fault at upstream (auth/quota state); the gateway will rotate or disable this account"
@@ -99,12 +107,12 @@ func FrameHintFunc(ctxFn func() HintContext) func(string) string {
 	}
 }
 
-// FrameKind 从 SSE error 帧 payload 判定 ErrKind：6004 模型级限流的流式形态
-// （IsModelRateLimit 对帧 JSON 直接命中）优先；其余取帧内 error.message 走
+// FrameKind 从 SSE error 帧 payload 判定 ErrKind：帧 JSON 里带码表内的业务码（6004 模型级
+// 限流、14003 模型繁忙、额度用完等，见 bizcode.go）优先；其余取帧内 error.message 走
 // Classify（请求级 400 口径）。判不出 → ErrNone（无 hint）。
 func FrameKind(payload string) ErrKind {
-	if IsModelRateLimit(payload) {
-		return ErrSoftRate
+	if k := codeKind(BizCode(payload)); k != ErrNone {
+		return k
 	}
 	var f struct {
 		Error struct {

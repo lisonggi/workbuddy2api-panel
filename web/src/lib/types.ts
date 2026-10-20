@@ -23,7 +23,7 @@ export interface ModelCost {
 
 /**
  * 模型级限额台账（issue #36）：该账号的某个模型暂时不能用。
- * kind：rate_limit（6004 限流）/ model_unavailable（11102 模型不可用）。
+ * kind：rate_limit（6000–6008 按模型限额、14003 模型繁忙）/ model_unavailable（11102 模型不可用）。
  * until 是网关最早重试时刻，reset_at 是上游「将在 … 重置」的原始时刻（可能没有）。
  */
 export interface RateLimitedModel {

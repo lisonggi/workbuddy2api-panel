@@ -175,19 +175,59 @@ var invalidImageMarkers = []string{
 
 // 定位：上下文超限是**请求的问题不是账号的问题**——同一个 body 换任何账号发都会
 // 超限，与 WAF fail-fast 同哲学（确定与账号无关的错误不罚号不轮转，白白浪费健康号
-// 的请求配额）。marker 双通道：
-//   - `"code":11115`：业务信封 code 字段（JSON 空格容差；`"code":"11115"` 字符串
-//     形态也命中）；
-//   - "prompt is too long"：msg 文案（大小写不敏感）。
+// 的请求配额）。判定双通道：
+//   - 业务码 11115（官方 ContextTooLong；JSON 空格容差，字符串形态也命中）；
+//   - 文案：照官方客户端 isInputLengthError 的词表与正则（小写比较），覆盖各家模型
+//     供应商的超限说法。
 //
 // 只在 400/404/413 请求级状态码上判（429+11115 概率极低且属限流语义优先，
 // 5xx 属服务端故障优先）。误判代价（好 body 被归 prompt_too_long）：不罚号 +
 // 不轮转 + 透传原文，客户端看到上游原文可自行排查，代价可控。
 var promptTooLongMarkers = []string{
-	`"code":11115`,
-	`"code": 11115`,
-	`"code":"11115"`,
+	"input length too long",
+	"input is too long for requested model",
+	"exceeds the maximum length",
+	"input tokens exceed",
 	"prompt is too long",
+	"input is too long",
+	"exceeds the maximum number of tokens allowed",
+	"too many total text bytes",
+	"requested token count exceeds the model's maximum context length",
+	"'max_tokens' or 'max_completion_tokens' is too large",
+	"user prompt is too large",
+	"range of input length should be",
+	"request too large",
+	"please reduce the length of the input prompt",
+	"context window exceeds limit",
+	"exceeds model limit",
+	"request body too large",
+	"your request exceeded model token limit",
+	"please reduce the length of the messages",
+	"model_context_window_exceeded",
+	"this endpoint's maximum context length",
+	"token limit exceeded",
+	"the request input size exceeds the model's maximum input token limit",
+	"request entity too large",
+	"prompt exceeds max length",
+	"the request exceeds the model limits",
+	"exceeds 30.000mb limit",
+	"maximum context length",
+}
+
+// rePromptTooLong 官方词表之外的那条正则（"input length 12345 exceeds ..." 一类）。
+var rePromptTooLong = regexp.MustCompile(`input\s*(?:length|tokens?)[^0-9]*\d+[^0-9]+exceeds`)
+
+// isPromptTooLong 小写 body 是否是上下文超限（见 promptTooLongMarkers 注释）。
+func isPromptTooLong(lower string) bool {
+	if codeMarker(lower, "11115") {
+		return true
+	}
+	for _, m := range promptTooLongMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return rePromptTooLong.MatchString(lower)
 }
 
 // isPromptTooLongStatus 11115 只在请求级 4xx 上判（见 promptTooLongMarkers 注释）。
@@ -209,11 +249,6 @@ var softRateResetLoc = time.FixedZone("UTC+8", 8*60*60)
 // SoftRateResetLoc 暴露重置时间的固定时区（供测试构造/断言同一时区口径）。
 func SoftRateResetLoc() *time.Location { return softRateResetLoc }
 
-// modelRateLimitCode 明确指向「模型级 429 限流」的业务 code。
-// 上游用它表达"该模型的使用量超限"（code 6004，msg 带「将在 … 重置」），
-// 而不是账号整体被限流——账号健康，只是这个模型此刻被限（issue #31）。
-const modelRateLimitCode = "6004"
-
 // softRateResetPatternCN/EN 匹配重置文案（CN「将在 … 重置」/ global 域英文
 // "reset at <固定格式时间>"），捕获中间的时间串。
 const softRateResetPatternCN = `将在 (.+?) 重置`
@@ -223,20 +258,12 @@ const softRateResetPatternEN = `(?i)reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2
 // 分类、每个限流 body 上调用，函数体内 MustCompile 是纯浪费；错误风暴（429
 // 轰炸）时尤甚。模式串均为纯常量。regexp 并发安全（匹配只读），无需额外锁。
 var (
-	reModelRateLimit  = regexp.MustCompile(`"code"\s*:\s*"?` + modelRateLimitCode + `"?`)
 	reSoftRateResetCN = regexp.MustCompile(softRateResetPatternCN)
 	reSoftRateResetEN = regexp.MustCompile(softRateResetPatternEN)
 )
 
 // softRateTimeLayout 上游重置时间的格式（无时区后缀；时区固定 UTC+8）。
 const softRateTimeLayout = "2006-01-02 15:04:05"
-
-// IsModelRateLimit 报告 429 body 是否明确指向模型级限流（业务 code 6004）。
-// 用于区分"账号级软限流"（按账号冷却）与"模型级用量限流"（切模型即可用）。
-func IsModelRateLimit(body string) bool {
-	// `"code":6004` / `"code": 6004` / `"code":"6004"` 均可命中（JSON 空格容差）。
-	return reModelRateLimit.MatchString(body)
-}
 
 // modelBlockCode 明确指向「该后端无此模型」的业务 code。
 const modelBlockCode = "11102"
@@ -291,38 +318,6 @@ func IsModelBlocked(status int, body string) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(msg), modelBlockMsgMarker)
-}
-
-// hasBusinessCode reports whether a JSON error envelope contains an exact
-// business code in a field named "code". Upstream envelopes vary between
-// top-level and nested error/data objects, so walk the decoded structure.
-func hasBusinessCode(body, want string) bool {
-	var root any
-	if err := json.Unmarshal([]byte(body), &root); err != nil {
-		return false
-	}
-	var walk func(any) bool
-	walk = func(value any) bool {
-		switch node := value.(type) {
-		case map[string]any:
-			if code, ok := node["code"]; ok && strings.TrimSpace(fmt.Sprint(code)) == want {
-				return true
-			}
-			for _, child := range node {
-				if walk(child) {
-					return true
-				}
-			}
-		case []any:
-			for _, child := range node {
-				if walk(child) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	return walk(root)
 }
 
 // hasBusinessEnvelope 报告错误 body 是否携带上游业务信封形态（JSON 且含
@@ -471,18 +466,21 @@ func ParseRateReset(body string) (time.Time, bool) {
 //     限流可指数退避等自愈，账号级故障等不来）。11140 的 model 级限流变体
 //     （rate-limiting 文案）因 marker 不含该文案而天然落到 softRateMarkers 层，
 //     不受影响。
-//  4. 429 + code 14018 —— 明确的账号积分耗尽，归 ErrHardCredit（issue #175）。
-//     只认结构化业务码，不靠可能跨计费/限流两界的文案猜测。
+//  4. 业务码（bizcode.go，照官方客户端）—— 额度用完（14001/14012/14013/14014/14018/
+//     14019）归 ErrHardCredit（issue #175 起），授权过期/未激活（14015/14016/14017）归
+//     ErrAccountFault，按模型限额（6000–6008）、模型繁忙（14003）、会话太多（10105）归
+//     ErrSoftRate。只认结构化业务码，不靠可能跨计费/限流两界的文案猜测。
 //  5. status==429 —— 限流状态码兜底（先于 hardMarkers）：429 body 高频携带
 //     "quota exceeded"/"额度不足" 等跨计费/限流两界的措辞，hardMarkers 先判会把
 //     限流误归 ErrHardCredit 硬冷却到次日 04:00，白扔号约 12h。状态码是比关键词
-//     更权威的信号；真正的余额耗尽由 402（第 1 层）或 14018（第 4 层）捕获，
-//     非 429 状态码的 quota 措辞仍走下方 hardMarkers（第 6 层）。
-//  6. hardMarkers —— 非 429 响应携带计费关键词（200 业务信封 / 403 信封等）。
-//  7. softRateMarkers —— 非 429 状态码携带限流文案（issue #28 修复点）。
+//     更权威的信号；真正的余额耗尽由 402（第 1 层）或额度用完业务码（第 4 层）捕获，
+//     非 429 状态码的 quota 措辞仍走下方 hardMarkers（第 7 层）。
+//  6. 11115 与上下文超限文案（400/404/413）—— 请求级语义：判在关键词层、404/5xx 与通用
+//     4xx 兜底之前（"too many total text bytes" 会被限流词 "too many" 抢走；404 上打
+//     11115 若落 ErrNotFound 会误冷却账号——上下文超限与账号无关）。
+//  7. hardMarkers —— 非 429 响应携带计费关键词（200 业务信封 / 403 信封等）。
+//  8. softRateMarkers —— 非 429 状态码携带限流文案（issue #28 修复点）。
 //     位于此处可覆盖 200/400/403/5xx 各状态码。
-//  8. 11115 —— 「prompt is too long」请求级语义：判在 404/5xx 与通用 4xx 兜底
-//     之前（404 上打 11115 若落 ErrNotFound 会误冷却账号——上下文超限与账号无关）。
 //  9. 404 / 5xx —— 与限流无关的常规分类。
 //  10. IsWafBlocked —— 403 且无业务信封（HTML 拦截页/空体/纯文本）：APISIX WAF
 //     拦截形态。判在通用 4xx 兜底**之前**：此前该形态落 ErrClient → 只换号不罚 →
@@ -520,20 +518,30 @@ func Classify(status int, body string) ErrKind {
 			return ErrAccountFault
 		}
 	}
-	// 14018 是明确的账号积分耗尽业务码。它必须先于通用 429 兜底，否则会被误判为
-	// 可自愈的软限流并在全池冷却时反复兜底选中（issue #175）。仅按结构化 code
-	// 判定；无该 code 的 "credits exhausted" 文案仍保持普通 429 的软限流语义。
-	if status == http.StatusTooManyRequests && hasBusinessCode(body, "14018") {
-		return ErrHardCredit
+	// 业务码先于状态码和关键词判（码表与口径见 bizcode.go，照官方客户端）：
+	//   - 额度用完（14001/14012/14013/14014/14018/14019，官方不重试）→ 余额不足。以前只认
+	//     429+14018（issue #175），其余落进通用 429 当软限流，冷却完又被选中。
+	//   - 授权过期、未激活（14015/14016/14017）→ 账号故障。
+	//   - 按模型限额（6000–6008）、模型繁忙（14003）、会话太多（10105）→ 限流，不论状态码；
+	//     冷却只落在这个模型还是整个号，由 handler.applyErrorPolicy 按业务码细分。
+	if k := codeKind(BizCode(body)); k != ErrNone {
+		return k
 	}
 	// status==429 先于 hardMarkers：限流响应 body 高频携带 "quota exceeded"/
 	// "额度不足" 等跨计费/限流两界的措辞，hardMarkers 先判会把限流误归
 	// ErrHardCredit 硬冷却到次日 04:00，白扔号约 12h。状态码是比关键词更权威的
 	// 信号：上游既然给了 429，就按限流语义处理（宁可短冷却自愈，不可长冷却弃号）；
-	// 真正的余额耗尽由 402（上层）或 14018（上层）捕获，非 429 状态码的 quota
+	// 真正的余额耗尽由 402（上层）或额度用完业务码（上层）捕获，非 429 状态码的 quota
 	// 措辞仍走下方 hardMarkers（历史语义不变）。
 	if status == http.StatusTooManyRequests {
 		return ErrSoftRate
+	}
+	// 11115 与上下文超限文案：判在余额/限流关键词、404/5xx/WAF/内容策略/参数错误/通用
+	// 4xx 之前——请求级语义最具体，官方词表里的 "too many total text bytes" 之类会被
+	// 限流词 "too many" 抢走；404 兜底会误归 ErrNotFound 只冷却不透传；ErrClient 只换号，
+	// 浪费健康号配额。
+	if isPromptTooLongStatus(status) && isPromptTooLong(lower) {
+		return ErrPromptTooLong
 	}
 	for _, m := range hardMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) || strings.Contains(body, m) {
@@ -543,16 +551,6 @@ func Classify(status int, body string) ErrKind {
 	for _, m := range softRateMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) || strings.Contains(body, m) {
 			return ErrSoftRate
-		}
-	}
-	// 11115「prompt is too long」：判在 404/5xx/WAF/内容策略/参数错误/通用 4xx
-	// 之前——请求级语义最具体（上下文超限），须先于宽泛的状态码兜底（404 兜底会
-	// 误归 ErrNotFound 只冷却不透传；ErrClient 只换号，浪费健康号配额）。
-	if isPromptTooLongStatus(status) {
-		for _, m := range promptTooLongMarkers {
-			if strings.Contains(body, m) || (m != strings.ToLower(m) && strings.Contains(lower, strings.ToLower(m))) {
-				return ErrPromptTooLong
-			}
 		}
 	}
 	if status == http.StatusNotFound {

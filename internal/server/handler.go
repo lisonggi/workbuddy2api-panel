@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"sync"
@@ -105,6 +106,19 @@ func (h *Handler) softCooldown() time.Duration {
 // 若共用 soft_rate（600s 起 + 指数升级），一次偶发 404 会把好账号罚 10 分钟并逐次加倍。
 // 故固定 60s 防雪崩即可，不随 soft_rate 配置、也不参与软退避指数。
 const notFoundCooldown = 60 * time.Second
+
+// transientRateCooldown 14003「模型繁忙」与每秒/每分钟限额只冷却 (账号, 模型) 这么久（再抖动）。
+// 官方客户端遇到它们原样重发，退避从 0.5 秒起、封顶 32 秒；网关当场换号，这个号的这个模型
+// 歇半分钟再用。以前落进通用 429，整个号冷却约 10 分钟，号少的域（国际版）会整域停摆。
+const transientRateCooldown = 30 * time.Second
+
+// modelBusyRetryWindow 所有号都被同一模型的冷却挡住、但最早解封就在这个时间内时，回 429 +
+// Retry-After 让客户端稍等重试，不回 400「换个模型」（见 chat 末端的模型级阻塞分支）。
+const modelBusyRetryWindow = 2 * time.Minute
+
+// activeSessionCooldown 10105（这个号同时进行的会话太多）的账号级冷却（再抖动），等它手上的
+// 会话结束。
+const activeSessionCooldown = 60 * time.Second
 
 // ServiceName 网关身份标识。经 /healthz 响应体 service 字段与 X-Service 头同时透出：
 // 宿主（如 workbuddy-switch 托管网关子进程）探测同端口的旧服务/其他服务时，对方即使
@@ -1290,13 +1304,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	//
 	// 用 400 而非 503：这是"你选的这个模型当前不可用"，不是"服务端暂时过载"。
 	// 换号重试必然同样失败，客户端不该按可重试错误处理。
+	// 例外：最早解封就在 modelBusyRetryWindow 内（14003「模型繁忙」这类半分钟的短冷却），
+	// 回 429 + Retry-After 让客户端稍等重试，不叫它换模型。
 	if modelBlock.Blocked {
-		code = "model_unavailable"
-		// 有上游原文时保留它（含 requestId，用户要拿去向上游反馈），只把"有几个号
-		// 被挡、最早何时解封"这类本地调度信息放进 gateway_hint。
-		if !upstreamMsgPassed {
-			msg = "model is unavailable on every account (per-model cooldown), try another model"
-		}
 		hint = fmt.Sprintf("model_blocked: %d account(s) cooling down this model", modelBlock.Count)
 		if !modelBlock.Until.IsZero() {
 			hint += "; earliest unblock at " + modelBlock.Until.Format(time.RFC3339)
@@ -1304,7 +1314,22 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if s := strings.TrimSpace(modelBlock.Reason); s != "" {
 			hint += "; upstream: " + s
 		}
-		status = http.StatusBadRequest
+		if wait := time.Until(modelBlock.Until); !modelBlock.Until.IsZero() && wait <= modelBusyRetryWindow {
+			code = "rate_limit_exceeded"
+			if !upstreamMsgPassed {
+				msg = "model is busy on every account (short per-model cooldown), retry in a few seconds"
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(int(max(wait, 0).Seconds())+1))
+			status = http.StatusTooManyRequests
+		} else {
+			code = "model_unavailable"
+			// 有上游原文时保留它（含 requestId，用户要拿去向上游反馈），只把"有几个号
+			// 被挡、最早何时解封"这类本地调度信息放进 gateway_hint。
+			if !upstreamMsgPassed {
+				msg = "model is unavailable on every account (per-model cooldown), try another model"
+			}
+			status = http.StatusBadRequest
+		}
 	}
 	writeOpenAIErrorHint(w, status, code, msg, hint)
 	st.status = status
@@ -1456,15 +1481,41 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 	case upstream.ErrSoftRate:
 		// 统一对齐上游重置时间：只要 body 带「将在 … 重置」，无论业务 code 是
 		// 6004 还是 11140 rate-limiting 等形态，都精确冷却到该墙钟、绝不指数堆加。
-		//   - 模型级（6004）→ CooldownSoftForModel：写 modelCooldowns[model]，切模型豁免。
-		//   - 账号级（非 6004）→ CooldownSoftRate：写账号级 until，不产生模型豁免。
+		//   - 模型级（6000–6008 按模型限额、14003 模型繁忙）→ CooldownSoftForModel：
+		//     写 modelCooldowns[model]，切模型豁免。
+		//   - 账号级（其余）→ CooldownSoftRate：写账号级 until，不产生模型豁免。
 		modelRateLimited := upstream.IsModelRateLimit(body)
+		transient := upstream.IsTransientRateLimit(body)
+		reason := upstream.RateLimitReason(body)
 		if resetAt, ok := upstream.ParseRateReset(body); ok {
-			if modelRateLimited {
-				h.cfg.Pool.CooldownSoftForModel(uid, h.softCooldown(), resetAt, model, "6004 model rate limit")
+			if modelRateLimited || transient {
+				h.cfg.Pool.CooldownSoftForModel(uid, h.softCooldown(), resetAt, model, reason)
 				return
 			}
 			h.cfg.Pool.CooldownSoftRate(uid, h.softCooldown(), resetAt, "429 rate limit")
+			return
+		}
+		// 短时限流（14003、每秒/每分钟限额）没有重置时间：只冷却这个号的这个模型半分钟
+		// （上游给了 Retry-After 就用它）。不知道模型名时退回同样时长的账号级冷却。
+		if transient {
+			d := jitterDur(transientRateCooldown)
+			if uerr != nil && uerr.RetryAfter > 0 {
+				d = uerr.RetryAfter
+			}
+			if model == "" {
+				h.cfg.Pool.Cooldown(uid, pool.CoolSoft, d, reason)
+				return
+			}
+			h.cfg.Pool.CooldownModel(uid, model, d, reason)
+			return
+		}
+		// 10105 会话太多：账号级短冷却，不走指数退避。
+		if upstream.IsActiveSessionLimit(body) {
+			d := jitterDur(activeSessionCooldown)
+			if uerr != nil && uerr.RetryAfter > 0 {
+				d = uerr.RetryAfter
+			}
+			h.cfg.Pool.Cooldown(uid, pool.CoolSoft, d, reason)
 			return
 		}
 		// body 无重置文案但带 Retry-After 头 → 冷却到该时刻（不做指数堆加）。
@@ -1472,7 +1523,7 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		if uerr != nil && uerr.RetryAfter > 0 {
 			h.cfg.Pool.CooldownSoftRate(uid, h.softCooldown(), time.Now().Add(uerr.RetryAfter), "429 rate limit (retry-after)")
 			if modelRateLimited {
-				h.cfg.Pool.RecordModelRateLimitAudit(uid, model, "6004 model rate limit (reset unknown)")
+				h.cfg.Pool.RecordModelRateLimitAudit(uid, model, reason+" (reset unknown)")
 			}
 			return
 		}
@@ -1481,7 +1532,7 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// （热改优先），管理面板改 soft_rate 后立即生效。
 		h.cfg.Pool.CooldownSoftRate(uid, h.softCooldown(), time.Time{}, "429 rate limit")
 		if modelRateLimited {
-			h.cfg.Pool.RecordModelRateLimitAudit(uid, model, "6004 model rate limit (reset unknown)")
+			h.cfg.Pool.RecordModelRateLimitAudit(uid, model, reason+" (reset unknown)")
 		}
 	case upstream.ErrWafBlock:
 		// WAF 403（无业务信封拦截形态）。软冷却复用 CooldownSoftRate 家族：基数
@@ -1503,13 +1554,14 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// 账号级授权/配额故障按 msg 分野（口径与 Classify 的 accountFaultMarkers 一致）：
 		//   - "request illegal"（code 11140）→ 账号级**授权封禁**：硬禁用（Disable）。
 		//   - 14017（trial not activated）→ register 未完成，补完 register 后可能自愈，
-		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。
+		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。14015 授权过期、
+		//     14016 企业未激活同样软冷却，原因文案带上业务码。
 		// 大小写不敏感（与 Classify 的 marker 匹配同口径）。
 		if strings.Contains(strings.ToLower(body), "request illegal") {
 			h.cfg.Pool.Disable(uid, "account banned by upstream (11140 request illegal), re-login required")
 			return
 		}
-		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.softCooldown(), "account fault (14017)")
+		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.softCooldown(), upstream.AccountFaultReason(body))
 	case upstream.ErrServer:
 		// 5xx 上游故障：Classify 已把 ≥500 判为 ErrServer，在此喂熔断计数（不再手写 status>=500）。
 		h.cfg.Pool.NoteError(uid)

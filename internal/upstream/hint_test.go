@@ -147,7 +147,7 @@ func TestFrameHintFunc(t *testing.T) {
 		t.Errorf("空帧不应求值上下文，实际调用 %d 次", calls)
 	}
 
-	if got := hint(`{"code":6004,"msg":"rate limited"}`); got != "rate limited by upstream; retry after reset" {
+	if got := hint(`{"code":6004,"msg":"rate limited"}`); got != "usage limit of this model reached at upstream; switch model or retry after reset" {
 		t.Errorf("6004 帧 hint = %q", got)
 	}
 	if calls != 1 {
