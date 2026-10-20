@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
@@ -272,18 +273,64 @@ func TestDesktopChatSequencePassthrough(t *testing.T) {
 			t.Errorf("events[%d].traceId = %v，应为 req-9", i, events[i]["traceId"])
 		}
 	}
-	if events[1]["messageId"] != "msg-9-assistant" {
-		t.Errorf("chat_message_send.messageId = %v", events[1]["messageId"])
+	// 三个 chat_message_* 带同一个模型消息 id（官方每次调模型新生成），不是用户消息的 id。
+	modelMsg, _ := events[1]["messageId"].(string)
+	if !upstreamtest.UUIDv7Hex.MatchString(modelMsg) || events[4]["messageId"] != modelMsg || created["messageId"] != "msg-9" {
+		t.Errorf("messageId：chat_message_send %v、chat_message_status %v、建任务 %v", events[1]["messageId"], events[4]["messageId"], created["messageId"])
 	}
 	if events[2]["codebuddy.session_id"] != "conv-9" || events[2]["codebuddy.conversation_request_id"] != "req-9" {
 		t.Errorf("chat_request_send codebuddy 字段 = %v", events[2])
 	}
-	if events[3]["responseModelId"] != "fast-model" || events[3]["messageId"] != "msg-9-assistant" {
+	if events[3]["responseModelId"] != "fast-model" || events[3]["messageId"] != modelMsg {
 		t.Errorf("chat_message_response 字段 = %v", events[3])
+	}
+
+	// 5.8.3 各事件补的业务字段：请求/会话/模型 id；运行时时间与步数取典型值。
+	if created["requestId"] != "req-9" || created["is_worktree_task"] != false || created["is_from_code"] != false ||
+		created["task_target"] != "local" {
+		t.Errorf("agent_task_created 5.8.3 字段 = %v", created)
+	}
+	for _, k := range []string{"buddyId", "buddyName"} {
+		if _, ok := created[k]; ok {
+			t.Errorf("agent_task_created 不应再有空 %s: %v", k, created)
+		}
+	}
+	for i, ev := range events[1:] {
+		if ev["conversationId"] != "conv-9" || ev["requestId"] != "req-9" {
+			t.Errorf("events[%d] 缺会话/请求 id: %v", i+1, ev)
+		}
+	}
+	if events[1]["requestModelId"] != "fast-model" || events[1]["totalStepCount"] != 1 || events[1]["presentAt"] == nil {
+		t.Errorf("chat_message_send 5.8.3 字段 = %v", events[1])
+	}
+	if events[2]["mode"] != "craft" || events[2]["requestModelName"] != "Fast Model" || events[2]["fileUri"] != "" || events[2]["presentAt"] == nil {
+		t.Errorf("chat_request_send 5.8.3 字段 = %v", events[2])
+	}
+	if events[3]["requestModelId"] != "fast-model" || events[3]["totalStepCount"] != 1 || events[3]["presentAt"] == nil {
+		t.Errorf("chat_message_response 5.8.3 字段 = %v", events[3])
+	}
+	if events[4]["requestModelName"] != "Fast Model" {
+		t.Errorf("chat_message_status 5.8.3 字段 = %v", events[4])
+	}
+	if events[5]["traceId"] != "req-9" || events[5]["agentName"] != "cli" || events[5]["agentType"] != "main" || events[5]["presentAt"] == nil {
+		t.Errorf("chat_request_response 5.8.3 字段 = %v", events[5])
 	}
 }
 
-// TestDesktopBuddyAppSequence 进入 Buddy 应用五连事件。
+// TestRendererEvent 渲染层事件：mode 盖成 LOCAL；buddyId、buddyName 都没有才补空串，有一个就不动。
+func TestRendererEvent(t *testing.T) {
+	ev := rendererEvent(DesktopEvent{"eventCode": "x", "mode": "craft"})
+	if ev["mode"] != "LOCAL" || ev["buddyId"] != "" || ev["buddyName"] != "" {
+		t.Errorf("补字段 = %v", ev)
+	}
+	ev = rendererEvent(DesktopEvent{"eventCode": "x", "buddyName": "应用"})
+	if _, ok := ev["buddyId"]; ok || ev["buddyName"] != "应用" {
+		t.Errorf("已有 buddyName 时不该补 buddyId: %v", ev)
+	}
+}
+
+// TestDesktopBuddyAppSequence 进入 Buddy 应用五连事件：都经渲染层上报服务（mode LOCAL）；发现、
+// 曝光、进入的 buddyId/buddyName 是适配器补的空串，授权确认、跳过绑定才带这个应用。
 func TestDesktopBuddyAppSequence(t *testing.T) {
 	events := DesktopBuddyAppSequence("cb_1", "企鹅教师助手")
 	wantCodes := []string{
@@ -297,15 +344,27 @@ func TestDesktopBuddyAppSequence(t *testing.T) {
 		if events[i]["eventCode"] != want {
 			t.Errorf("events[%d].eventCode = %v，应为 %v", i, events[i]["eventCode"], want)
 		}
-		if events[i]["mode"] != "LOCAL" || events[i]["buddyId"] != "cb_1" || events[i]["buddyName"] != "企鹅教师助手" {
+		wantBuddy, wantName := "", ""
+		if i >= 3 {
+			wantBuddy, wantName = "cb_1", "企鹅教师助手"
+		}
+		if events[i]["mode"] != "LOCAL" || events[i]["buddyId"] != wantBuddy || events[i]["buddyName"] != wantName {
 			t.Errorf("events[%d] 公共字段 = %v", i, events[i])
+		}
+	}
+	if _, ok := events[0]["elementId"]; ok {
+		t.Errorf("buddyapp_discover_click 官方不带字段: %v", events[0])
+	}
+	for i := 1; i < len(events); i++ {
+		if events[i]["elementId"] != "cb_1" || events[i]["elementName"] != "企鹅教师助手" {
+			t.Errorf("events[%d] 应用标识 = %v", i, events[i])
 		}
 	}
 	if events[1]["elementId"] != "cb_1" || events[1]["position"] != 2 {
 		t.Errorf("buddyapp_show = %v", events[1])
 	}
-	if events[2]["isFirstPage"] != "1" {
-		t.Errorf("buddyapp_enter_click.isFirstPage = %v", events[2]["isFirstPage"])
+	if events[2]["isFirstPage"] != true {
+		t.Errorf("buddyapp_enter_click.isFirstPage = %v，应为布尔 true", events[2]["isFirstPage"])
 	}
 }
 
@@ -315,8 +374,12 @@ func TestDesktopAutomationCreateEvent(t *testing.T) {
 	if ev["eventCode"] != "automated_task_create_suc" || ev["name"] != "每日备份" {
 		t.Errorf("事件 = %v", ev)
 	}
-	if ev["source"] != "manually" || ev["modelId"] != "fast-model" || ev["scheduleType"] != "once" || ev["mode"] != "LOCAL" {
+	if ev["source"] != "manually" || ev["modelId"] != "fast-model" || ev["scheduleType"] != "once" ||
+		ev["mode"] != "LOCAL" || ev["buddyId"] != "" || ev["buddyName"] != "" {
 		t.Errorf("事件字段 = %v", ev)
+	}
+	if ev["pushToWeChat"] != false || ev["pushToWecomBot"] != false {
+		t.Errorf("推送开关应为布尔 false: %v", ev)
 	}
 }
 
@@ -428,7 +491,8 @@ func TestDesktopDesignCanvasSequence(t *testing.T) {
 	}
 	create := events[6]
 	if create["eventCode"] != "wbx_design_canvas_task_create" || create["conversationId"] != "conv-c" ||
-		create["requestId"] != req || create["source"] != "summon_keyword" || create["isSuccessful"] != true {
+		create["requestId"] != req || create["source"] != "summon_keyword" || create["isSuccessful"] != true ||
+		create["isCustomModel"] != false || create["name"] != "" || create["inputLength"] != 0 {
 		t.Errorf("create = %v", create)
 	}
 	open := events[7]
@@ -697,40 +761,61 @@ func TestDesktopExpertSequences(t *testing.T) {
 			t.Errorf("summon[%d] = %v", i, summon[i]["eventCode"])
 		}
 	}
-	if summon[0]["source"] != "ex_1" || summon[0]["type"] != "expert-writing" || summon[0]["version"] != "2.0.0" {
+	if summon[0]["source"] != "ex_1" || summon[0]["type"] != "expert-writing" ||
+		summon[0]["version"] != "2.0.0" || summon[0]["pageURL"] != "#/experts" {
 		t.Errorf("web_element_click = %v", summon[0])
 	}
 	if summon[1]["id"] != "ex_1" || summon[1]["name"] != "写作专家" || summon[1]["expertTitle"] != "写作" ||
-		summon[1]["expertType"] != "agent" || summon[1]["version"] != "2.0.0" || summon[1]["mode"] != "LOCAL" {
+		summon[1]["expertType"] != "agent" || summon[1]["version"] != "2.0.0" || summon[1]["mode"] != "LOCAL" ||
+		summon[1]["buddyId"] != "" || summon[1]["buddyName"] != "" {
 		t.Errorf("expert_summon_click = %v", summon[1])
 	}
-	if summon[2]["id"] != "ex_1" || summon[2]["name"] != "写作专家" {
+	if summon[2]["id"] != "ex_1" || summon[2]["name"] != "写作专家" || summon[2]["mode"] != "LOCAL" || summon[2]["buddyId"] != "" {
 		t.Errorf("expert_summoned = %v", summon[2])
 	}
+	if summon[0]["mode"] != nil || summon[0]["buddyId"] != nil {
+		t.Errorf("召唤按钮点击是界面自动埋点，不经渲染层上报服务: %v", summon[0])
+	}
 
-	// 分类/版本缺失时兜底：type=expert-all、version=1.0.0。
+	// 分类/版本缺失时兜底：元素点击 type=expert、召唤事件 type=all、version=1.0.0。
 	bare := MarketExpert{ExpertID: "ex_2", DisplayNameZH: "裸专家", ProfessionZH: "综合"}
 	bareSummon := DesktopExpertSummonSequence(bare)
-	if bareSummon[0]["type"] != "expert-all" || bareSummon[0]["version"] != "1.0.0" {
+	if bareSummon[0]["type"] != "expert" || bareSummon[0]["version"] != "1.0.0" {
 		t.Errorf("兜底 = %v/%v", bareSummon[0]["type"], bareSummon[0]["version"])
+	}
+	if bareSummon[1]["type"] != "all" || bareSummon[2]["type"] != "all" || bareSummon[2]["version"] != "1.0.0" {
+		t.Errorf("召唤/使用兜底 = %v/%v", bareSummon[1]["type"], bareSummon[2]["type"])
 	}
 	// Categories[0] 不是字符串时也兜底。
 	odd := MarketExpert{ExpertID: "ex_3", Categories: []any{42}}
-	if got := DesktopExpertSummonSequence(odd)[0]["type"]; got != "expert-all" {
+	if got := DesktopExpertSummonSequence(odd)[0]["type"]; got != "expert" {
 		t.Errorf("非字符串分类应兜底，got %v", got)
+	}
+	// 专家团的元素点击 type 固定 team。
+	team := DesktopExpertSummonSequence(MarketExpert{ExpertID: "ex_4", ExpertType: "team", Categories: []any{"expert-team"}})
+	if team[0]["type"] != "team" {
+		t.Errorf("专家团元素点击 type = %v，应为 team", team[0]["type"])
 	}
 
 	requestID := "abcdef0123456789abcdef0123456789"
-	craft := DesktopExpertActualUseEvent(full, "conv-1", requestID)
-	if craft["mode"] != "craft" || craft["eventCode"] != "expert_actual_use" || craft["id"] != "ex_1" ||
+	craft := DesktopExpertActualUseEvent(full, "conv-1", requestID, "msg-1", time.Now().Add(-3*time.Second))
+	if craft["mode"] != "LOCAL" || craft["eventCode"] != "expert_actual_use" || craft["id"] != "ex_1" ||
 		craft["type"] != "expert-writing" || craft["version"] != "2.0.0" {
-		t.Errorf("craft 使用事件 = %v", craft)
+		t.Errorf("使用事件 = %v", craft)
 	}
-	if craft["messageId"] != "msg-"+requestID[len(requestID)-8:] || craft["conversationId"] != "conv-1" || craft["requestId"] != requestID {
+	// cost 是召唤到使用的毫秒数，characterCount 是提示词「1+1等于几？直接回答。」的 JS 长度。
+	if cost, _ := craft["cost"].(int64); cost < 3000 || cost > 60000 || craft["characterCount"] != 12 {
+		t.Errorf("使用事件 cost / characterCount = %v / %v", craft["cost"], craft["characterCount"])
+	}
+	if craft["messageId"] != "msg-1" || craft["conversationId"] != "conv-1" || craft["requestId"] != requestID {
 		t.Errorf("使用事件 JOIN 字段 = %v", craft)
 	}
-	local := DesktopExpertActualUseLocal(bare, "conv-2", requestID)
-	if local["mode"] != "LOCAL" || local["type"] != "expert-all" || local["version"] != "1.0.0" {
+	local := DesktopExpertActualUseLocal(bare, "conv-2", requestID, "msg-2", time.Now().Add(time.Second))
+	if local["cost"] != int64(0) {
+		t.Errorf("召唤时刻在后时 cost 应为 0，got %v", local["cost"])
+	}
+	// 没有分类的专家：type 与召唤时一样是 "all"（官方 industryId 来自召唤的 type）。
+	if local["mode"] != "LOCAL" || local["type"] != "all" || local["version"] != "1.0.0" {
 		t.Errorf("LOCAL 使用事件 = %v", local)
 	}
 }
@@ -749,5 +834,39 @@ func TestDesktopFingerprintFollowsClientVersion(t *testing.T) {
 	fp = (&Client{ClientVersion: "6.0.0"}).desktopFingerprint(a)
 	if fp["ideVersion"] != "6.0.0" || fp["extVersion"] != "6.0.0" {
 		t.Errorf("配了 client_version 后版本 = %v / %v，应为 6.0.0", fp["ideVersion"], fp["extVersion"])
+	}
+}
+
+// TestDesktopExpertChatSequence 和专家对话的对话链：建任务事件带专家四项，内置 CLI 的四个对话事件带
+// expertId（chat_message_status 不带），inputLength 是真实提示词的长度。
+func TestDesktopExpertChatSequence(t *testing.T) {
+	e := MarketExpert{ExpertID: "ex_1", DisplayNameZH: "写作专家", Categories: []any{"expert-writing"}}
+	requestID := "abcdef0123456789abcdef0123456789"
+	events := DesktopExpertChatSequence(e, "conv-1", requestID, "msg-1")
+	seen := map[string]DesktopEvent{}
+	for _, ev := range events {
+		seen[ev["eventCode"].(string)] = ev
+	}
+	task := seen["agent_task_created"]
+	if task["has_expert"] != true || task["expert_id"] != "ex_1" || task["expert_name"] != "写作专家" ||
+		task["expert_industry_id"] != "expert-writing" || task["messageId"] != "msg-1" {
+		t.Errorf("建任务事件 = %v", task)
+	}
+	for _, code := range []string{"chat_message_send", "chat_request_send", "chat_message_response", "chat_request_response"} {
+		if seen[code]["expertId"] != "ex_1" {
+			t.Errorf("%s expertId = %v", code, seen[code]["expertId"])
+		}
+	}
+	if _, ok := seen["chat_message_status"]["expertId"]; ok {
+		t.Error("chat_message_status 不应带 expertId")
+	}
+	if seen["chat_request_send"]["inputLength"] != 12 {
+		t.Errorf("inputLength = %v", seen["chat_request_send"]["inputLength"])
+	}
+	// 普通对话链不带 expertId。
+	for _, ev := range DesktopChatSequence("conv-2", requestID, "msg-1", "m", "m") {
+		if _, ok := ev["expertId"]; ok {
+			t.Errorf("普通对话链 %v 不应带 expertId", ev["eventCode"])
+		}
 	}
 }

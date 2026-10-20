@@ -38,14 +38,16 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/session"
 )
 
 const (
-	desktopReportPath    = "/v2/report"
-	desktopAppearanceSet = "/v2/user-asset/appearance/set"
+	desktopReportPath          = "/v2/report"
+	desktopAppearanceSet       = "/v2/user-asset/appearance/set"
+	desktopAppearanceResources = "/v2/operation-platform/appearance/resources"
 )
 
 // desktopUA 任务中心这几条桌面端请求的 UA。请求形状照 5.5.6 桌面端实抓（当时 UA 为
@@ -114,6 +116,21 @@ func webVisitorID(a *auth.Auth) string {
 
 // DesktopEvent 桌面端事件：业务字段任意（map），公共指纹由 ReportDesktopEvent 注入。
 type DesktopEvent map[string]any
+
+// rendererEvent 渲染层 reportEvent 发的事件（5.8.3 useAgentTelemetry → AdapterTelemetryService →
+// WorkbuddyAdapter）要补的两样：上报服务把 mode 统一盖成本地桌面端的 LOCAL（建任务、推荐类等几个
+// 事件另有改写，调用方自己设），适配器在 buddyId、buddyName 都没有时补两个空串
+// （injectBuddyTelemetryContext）。走 wb.metrics（首轮回复后的建任务、做同款发送、专家使用、
+// 设计画布）、界面自动埋点（data-track-id）和内置 CLI 的事件都不经过这两层，不用它。
+func rendererEvent(ev DesktopEvent) DesktopEvent {
+	ev["mode"] = "LOCAL"
+	_, hasID := ev["buddyId"]
+	_, hasName := ev["buddyName"]
+	if !hasID && !hasName {
+		ev["buddyId"], ev["buddyName"] = "", ""
+	}
+	return ev
+}
 
 // eventFingerprint 官方上报服务给每个事件补的公共字段（5.8.3 后台服务与内置 CLI 的事件处理器，
 // 两边相同）：
@@ -203,9 +220,14 @@ func (c *Client) ReportDesktopEvent(a *auth.Auth, events ...DesktopEvent) error 
 // DesktopChatSequence 构造一次「桌面端成功对话」的完整事件链
 // （agent_task_created → chat_message_send → chat_request_send →
 // chat_message_response(isSuccessful) → chat_message_status → chat_request_response）。
-// 实测该链点亮 RichMeow_Chat。conversationID/requestID/messageID 由调用方生成。
+// 实测该链点亮 RichMeow_Chat。conversationID/requestID/messageID 由调用方生成，messageID 是用户
+// 消息的 id（建任务事件用）；三个 chat_message_* 事件带的是模型消息 id，同官方每次调模型新生成
+// （withModelMessageCorrelation：uuidv7() 去掉连字符）。
 func DesktopChatSequence(conversationID, requestID, messageID, modelID, modelName string) []DesktopEvent {
 	uuid := func() string { return requestID }
+	modelMessageID := session.NewUUIDv7Hex()
+	// 官方 presentAt/firstTokenAt 取运行时时刻；网关一次构造批量发，统一取构造时刻。
+	now := time.Now().UnixMilli()
 	mk := func(code string, extra map[string]any) DesktopEvent {
 		ev := DesktopEvent{"eventCode": code}
 		for k, v := range extra {
@@ -217,59 +239,75 @@ func DesktopChatSequence(conversationID, requestID, messageID, modelID, modelNam
 		mk("agent_task_created", map[string]any{
 			"source": "LOCAL", "name": "working", "task_target": "local", "mode": "craft",
 			"requestModelId": modelID, "requestModelName": modelName,
+			"is_worktree_task": false, "is_from_code": false,
 			"has_repo": false, "repo_type": "none", "workspace_type": "empty",
 			"has_connector": false, "connector_types": []any{},
 			"has_mention": false, "mention_types": []any{},
 			"has_template": false, "action": "", "template_name": "",
 			"has_expert": false, "expert_id": "", "expert_name": "", "expert_industry_id": "",
 			"has_skill": false, "skill_names": []any{},
-			"conversationId": conversationID, "messageId": messageID,
-			"buddyId": "", "buddyName": "",
+			"conversationId": conversationID, "requestId": requestID, "messageId": messageID,
 		}),
 		mk("chat_message_send", map[string]any{
-			"messageId": messageID + "-assistant", "historyCount": 0,
-			"isContextTruncated": false, "currentStepCount": 1,
-			"traceId": uuid(), "rootRequestId": requestID,
+			"conversationId": conversationID, "requestId": requestID,
+			"messageId": modelMessageID, "historyCount": 0,
+			"isContextTruncated": false, "currentStepCount": 1, "totalStepCount": 1, // 步数取典型值
+			"requestModelId": modelID, "requestModelName": modelName,
+			"presentAt": now, // 网关取的典型值（事件发生时刻）
+			"traceId":   uuid(), "rootRequestId": requestID,
 			"parentConversationId": conversationID,
 			"agentName":            "cli", "agentType": "main",
 		}),
 		mk("chat_request_send", map[string]any{
+			"mode": "craft", "conversationId": conversationID, "requestId": requestID,
+			"requestModelId": modelID, "requestModelName": modelName,
 			"inputLength": 24, "isPlan": false, "isAutoExecuteTerminal": false,
 			"isAutoModify": false, "codebaseEnable": false, "maxToken": 0,
 			"maxSteps": 500, "temperature": 0, "maxRetries": 0,
 			"mentionContexts": []any{}, "knowledgeId": []any{}, "knowledgeName": []any{},
 			"codebaseId": "", "mentionContextCount": 0, "command": "",
 			"recommendId": "", "skillId": "", "skillCount": 0, "totalCount": 0,
+			"fileUri": "", "presentAt": now, // 空工作区；时间取构造时刻
 			"traceId": uuid(), "rootRequestId": requestID,
 			"parentConversationId": conversationID,
 			"agentName":            "cli", "agentType": "main",
+			// codebuddy.* 是 CLI baggage 处理器补的公共字段，保留。
 			"codebuddy.session_id":              conversationID,
 			"codebuddy.conversation_request_id": requestID,
 		}),
 		mk("chat_message_response", map[string]any{
-			"messageId": messageID + "-assistant", "responseModelId": modelID,
-			"inputToken": 120, "outputToken": 80, "totalToken": 200,
+			"conversationId": conversationID, "requestId": requestID,
+			"messageId": modelMessageID, "totalStepCount": 1, // 步数取典型值
+			"requestModelId": modelID, "requestModelName": modelName,
+			"responseModelId": modelID,
+			"inputToken":      120, "outputToken": 80, "totalToken": 200,
 			"cachedTokens": 0, "cachedWriteTokens": 0, "cachedMissTokens": 0,
 			"isSuccessful": true, "messageErrorCode": "", "finishReason": "stop",
-			"firstTokenAt": time.Now().UnixMilli(), "traceId": uuid(),
-			"conversationId": conversationID,
-			"rootRequestId":  requestID, "parentConversationId": conversationID,
+			"firstTokenAt": now, "presentAt": now, "traceId": uuid(),
+			"rootRequestId": requestID, "parentConversationId": conversationID,
 			"agentName": "cli", "agentType": "main",
+			// codebuddy.* 是 CLI baggage 处理器补的公共字段，保留。
 			"codebuddy.session_id":              conversationID,
 			"codebuddy.conversation_request_id": requestID,
 		}),
 		mk("chat_message_status", map[string]any{
-			"messageId": messageID + "-assistant", "messageErrorCode": "0",
+			"conversationId": conversationID, "requestId": requestID,
+			"messageId": modelMessageID, "messageErrorCode": "0",
+			"requestModelId": modelID, "requestModelName": modelName,
 			"traceId": uuid(), "rootRequestId": requestID,
 			"parentConversationId": conversationID,
 			"agentName":            "cli", "agentType": "main",
 		}),
 		mk("chat_request_response", map[string]any{
-			"mode": "craft", "toolCallCount": 0,
-			"inputToken": 120, "outputToken": 80, "totalToken": 200,
+			"mode": "craft", "conversationId": conversationID, "requestId": requestID,
+			"requestModelId": modelID, "requestModelName": modelName,
+			"toolCallCount": 0,
+			"inputToken":    120, "outputToken": 80, "totalToken": 200,
 			"cachedTokens": 0, "cachedWriteTokens": 0, "cachedMissTokens": 0,
 			"isSuccessful": true, "messageErrorCode": "", "finishReason": "stop",
+			"presentAt": now, "traceId": requestID,
 			"rootRequestId": requestID, "parentConversationId": conversationID,
+			"agentName": "cli", "agentType": "main",
 		}),
 	}
 }
@@ -293,39 +331,106 @@ func (c *Client) SetAppearanceTheme(a *auth.Auth, resourceKey string) error {
 	return err
 }
 
+// AppearanceTheme 主题列表里的一个主题（只取皮肤事件用到的字段）。
+type AppearanceTheme struct {
+	ID       string
+	VipLevel string // 已按官方 mapThemeDTO 换成客户端的等级名
+	Series   string
+}
+
+// appearanceVipLevels 官方 mapThemeDTO 把接口的 vip_level 换成客户端等级名的对照表（5.8.3 后台服务 ld）。
+var appearanceVipLevels = map[string]string{
+	"free": "free", "standard": "pro", "pro": "pro", "advanced": "advanced",
+	"ultimate": "ultimate", "flagship": "ultimate", "exclusive": "ultimate",
+}
+
+// AppearanceThemes 拉主题列表，照官方 DesktopAppearanceRepo.listCatalog（打开外观设置页时调）：
+// POST <chatBase>/v2/operation-platform/appearance/resources
+// {platform:"client",kind:"theme",version:<桌面端版本>,lang:"zh"|"en"}，取 data.resources 里
+// kind 为 theme 的。10-20 生产实测 theme-tkmw7j 是 vip_level=free、series=craft。
+func (c *Client) AppearanceThemes(a *auth.Auth) ([]AppearanceTheme, error) {
+	raw, err := json.Marshal(map[string]string{
+		"platform": "client", "kind": "theme", "version": c.clientVersion(a),
+		// 官方取界面语言（zh 开头为 zh，否则 en），网关按账号域取，同积分包查询。
+		"lang": billingAcceptLanguage(a),
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.desktopBase(a)+desktopAppearanceResources, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	c.frameworkHeaders(req, a, c.desktopUA(a))
+	data, err := c.doJSON(req)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Resources []struct {
+			ID       string `json:"id"`
+			Kind     string `json:"kind"`
+			VipLevel string `json:"vip_level"`
+			Series   string `json:"series"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("appearance resources parse: %w", err)
+	}
+	var out []AppearanceTheme
+	for _, r := range resp.Resources {
+		if r.Kind == "theme" {
+			out = append(out, AppearanceTheme{ID: r.ID, VipLevel: appearanceVipLevels[r.VipLevel], Series: r.Series})
+		}
+	}
+	return out, nil
+}
+
 // DesktopBuddyAppSequence 构造「进入 Buddy 应用」五连事件（实测两账号纯 API 点亮
 // Buddy_App 与 Buddy_App_QQ）：discover → show → enter_click → auth_confirm →
 // bindaccount_skip。buddyID 固定用企鹅教师助手 cb_y5Dy46tPQGGWtueMxXbe
 // （Buddy_App_QQ 的判据应用），同时满足 Buddy_App「进入任一应用」。
+//
+// 字段照 5.8.3 的 reportBuddyApp*：打开发现面板不带字段，曝光、进入带应用的 elementId、
+// elementName（buddyId、buddyName 由适配器补空串），授权确认、跳过绑定这类授权动作才把
+// buddyId、buddyName 设成这个应用（reportBuddyAppConsentAction）。
 func DesktopBuddyAppSequence(buddyID, buddyName string) []DesktopEvent {
 	mk := func(code string, extra map[string]any) DesktopEvent {
-		ev := DesktopEvent{
-			"eventCode": code, "mode": "LOCAL",
-			"buddyId": buddyID, "buddyName": buddyName,
-		}
+		ev := DesktopEvent{"eventCode": code}
 		for k, v := range extra {
 			ev[k] = v
 		}
-		return ev
+		return rendererEvent(ev)
 	}
+	consent := map[string]any{"elementId": buddyID, "elementName": buddyName, "buddyId": buddyID, "buddyName": buddyName}
 	return []DesktopEvent{
 		mk("buddyapp_discover_click", nil),
 		mk("buddyapp_show", map[string]any{"elementId": buddyID, "elementName": buddyName, "position": 2}),
-		mk("buddyapp_enter_click", map[string]any{"elementId": buddyID, "elementName": buddyName, "position": 2, "isFirstPage": "1"}),
-		mk("buddyapp_auth_confirm_click", map[string]any{"elementId": buddyID, "elementName": buddyName}),
-		mk("buddyapp_bindaccount_skip_click", map[string]any{"elementId": buddyID, "elementName": buddyName}),
+		mk("buddyapp_enter_click", map[string]any{"elementId": buddyID, "elementName": buddyName, "position": 2, "isFirstPage": true}),
+		mk("buddyapp_auth_confirm_click", consent),
+		mk("buddyapp_bindaccount_skip_click", consent),
 	}
 }
 
 // DesktopAutomationCreateEvent 构造「定时任务创建成功」事件（实测两账号纯 API
 // 点亮 automation_1）。name 为任务名，可与真实创建语义对齐。
 func DesktopAutomationCreateEvent(name string) DesktopEvent {
-	return DesktopEvent{
+	return rendererEvent(DesktopEvent{
 		"eventCode": "automated_task_create_suc", "name": name,
 		"source": "manually", "modelId": "fast-model", "modelIsThinking": true,
 		"connectorCount": 0, "skills": "", "skillCount": 0,
-		"scheduleType": "once", "mode": "LOCAL",
-	}
+		"scheduleType": "once",
+		"pushToWeChat": false, "pushToWecomBot": false, // 未开推送时官方表单字段为 false
+	})
+}
+
+// DesktopAppearanceApplyEvent 外观设置页离开时的「皮肤生效」事件（5.8.3 buildSkinApplyPayload）：
+// vipLevel、series 取主题列表里这个主题的值，type 是账号的版本档（AccountEdition）。
+func DesktopAppearanceApplyEvent(theme AppearanceTheme, edition string) DesktopEvent {
+	return rendererEvent(DesktopEvent{
+		"eventCode": "appearance_skin_apply", "action": "apply", "source": "settings_close",
+		"id": theme.ID, "vipLevel": theme.VipLevel, "series": theme.Series, "type": edition,
+	})
 }
 
 // ReportWebEvent 以 Web 端指纹向 www.workbuddy.cn/v2/report 上报单事件。
@@ -420,11 +525,13 @@ func DesktopPlaybookPromptSequence(conversationID, requestID, caseID, caseName s
 // wbx_design_canvas_task_create + wbx_design_canvas_open（Ardot create_design 工具
 // 完成时客户端经 metrics 通道上报，同一 /v2/report 端点）。三账号实测 1/1 点亮。
 func DesktopDesignCanvasSequence(conversationID, requestID string) []DesktopEvent {
-	events := DesktopChatSequence(conversationID, requestID, "msg-canvas", "fast-model", "fast-model")
+	events := DesktopChatSequence(conversationID, requestID, NewRequestID(), "fast-model", "fast-model")
 	return append(events,
 		DesktopEvent{
 			"eventCode": "wbx_design_canvas_task_create", "conversationId": conversationID,
 			"requestId": requestID, "source": "summon_keyword", "cost": 12000, "isSuccessful": true,
+			// 官方 tool result 缺失时这些字段的默认值。
+			"isCustomModel": false, "name": "", "inputLength": 0,
 		},
 		DesktopEvent{
 			"eventCode": "wbx_design_canvas_open", "conversationId": conversationID,
@@ -479,6 +586,13 @@ func NewConversationID() string { return session.NewUUIDv7() }
 // NewRequestID 任务中心和各类上报用的轮次 id、消息 id，同官方（去掉连字符的 UUID v7）。
 func NewRequestID() string { return session.NewUUIDv7Hex() }
 
+// expertChatPrompt 专家对话发的用户消息。专家使用事件的 characterCount、对话链的 inputLength
+// 都按它算。
+const expertChatPrompt = "1+1等于几？直接回答。"
+
+// jsLength JS 字符串的 length（UTF-16 码元数），官方事件里的文本长度都是它。
+func jsLength(s string) int { return len(utf16.Encode([]rune(s))) }
+
 // DesktopChatWithExpert 走桌面端内置 CLI 的普通对话请求（可带 X-Expert-Id），从 SSE 流
 // 解析**服务端返回的 requestId**（data.id，如 cmb-xxxx / 32hex）并返回。
 // expert_actual_use 等 JOIN 事件的 requestId 必须是该服务端 id——自造 UUID 不计数
@@ -493,7 +607,7 @@ func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string, team bool)
 		"model": "fast-model",
 		"messages": []any{
 			map[string]any{"role": "system", "content": "You are a helpful assistant. 当前处于中文环境，使用简体中文回答。"},
-			map[string]any{"role": "user", "content": "1+1等于几？直接回答。"},
+			map[string]any{"role": "user", "content": expertChatPrompt},
 		},
 		"agent":          "cli",
 		"temperature":    1,
@@ -569,11 +683,13 @@ var idRegex = regexp.MustCompile(`^(cmb-)?[0-9a-f]{32}$`)
 // 载荷对齐真实抓包样本（Sunny row 2644）。需配合 DesktopChatWithExpert +
 // DesktopExpertActualUseEvent 完成一次完整「召唤+使用」。
 func DesktopExpertSummonSequence(e MarketExpert) []DesktopEvent {
-	cat := "expert-all"
-	if len(e.Categories) > 0 {
-		if s, ok := e.Categories[0].(string); ok {
-			cat = s
-		}
+	cat, hasCat := expertCategory(e)
+	// 元素点击的 data-track props：专家团为 "team"，否则分类缺省 "expert"。
+	webType := "expert"
+	if e.ExpertType == "team" {
+		webType = "team"
+	} else if hasCat {
+		webType = cat
 	}
 	ver := e.Version
 	if ver == "" {
@@ -581,46 +697,80 @@ func DesktopExpertSummonSequence(e MarketExpert) []DesktopEvent {
 	}
 	return []DesktopEvent{
 		{
-			"eventCode": "web_element_click", "source": e.ExpertID, "type": cat, "version": ver,
+			"eventCode": "web_element_click", "source": e.ExpertID, "type": webType, "version": ver,
 			"elementId": "expert_summon_click", "elementName": "立即召唤",
-			"pageURL": "/C:/Program%20Files/WorkBuddy/resources/app.asar/renderer/index.html",
+			// 官方 derivePageURL：有 hash 取 hash（界面是 HashRouter），召唤按钮在专家中心 /experts。
+			"pageURL": "#/experts",
 		},
-		{
+		rendererEvent(DesktopEvent{
 			"eventCode": "expert_summon_click", "id": e.ExpertID, "name": e.DisplayNameZH,
-			"expertTitle": e.ProfessionZH, "type": "expert-all", "position": 0,
-			"expertType": e.ExpertType, "version": ver, "mode": "LOCAL",
-		},
-		{
+			"expertTitle": e.ProfessionZH, "type": cat, "position": 0,
+			"expertType": e.ExpertType, "version": ver,
+		}),
+		rendererEvent(DesktopEvent{
 			"eventCode": "expert_summoned", "id": e.ExpertID, "name": e.DisplayNameZH,
-			"expertTitle": e.ProfessionZH, "type": "expert-all",
-		},
+			"expertTitle": e.ProfessionZH, "type": cat, "version": ver,
+		}),
 	}
 }
 
+// DesktopExpertChatSequence 和专家对话的对话链（DesktopChatSequence 加上专家）：官方会话里有
+// 专家时，建任务事件带 has_expert 等四项（expert_industry_id 是召唤时的 type，见
+// expertCategory），内置 CLI 的 chat_message_send、chat_request_send、chat_message_response、
+// chat_request_response 带会话专家 expertId（getSessionExpertId），chat_message_status 不带。
+// inputLength 是专家对话真实发的用户消息的长度。
+func DesktopExpertChatSequence(e MarketExpert, conversationID, requestID, messageID string) []DesktopEvent {
+	cat, _ := expertCategory(e)
+	events := DesktopChatSequence(conversationID, requestID, messageID, "fast-model", "fast-model")
+	for _, ev := range events {
+		switch ev["eventCode"] {
+		case "agent_task_created":
+			ev["has_expert"], ev["expert_id"], ev["expert_name"], ev["expert_industry_id"] = true, e.ExpertID, e.DisplayNameZH, cat
+		case "chat_request_send":
+			ev["inputLength"] = jsLength(expertChatPrompt)
+			ev["expertId"] = e.ExpertID
+		case "chat_message_send", "chat_message_response", "chat_request_response":
+			ev["expertId"] = e.ExpertID
+		}
+	}
+	return events
+}
+
 // DesktopExpertActualUseEvent 构造「专家真实使用」事件（expert_5/Expert_team_use_3 计数）。
-// requestID 必须是 DesktopChatWithExpert 返回的服务端 requestId。
-func DesktopExpertActualUseEvent(e MarketExpert, conversationID, requestID string) DesktopEvent {
-	ev := desktopExpertActualUse(e, conversationID, requestID)
-	ev["mode"] = "craft"
+// requestID 必须是 DesktopChatWithExpert 返回的服务端 requestId，messageID 是对话链里用户消息的 id，
+// summonedAt 是上报召唤链的时刻。mode 官方取会话 transport：本地对话为 LOCAL（5.8.3 resolveMode）。
+func DesktopExpertActualUseEvent(e MarketExpert, conversationID, requestID, messageID string, summonedAt time.Time) DesktopEvent {
+	ev := desktopExpertActualUse(e, conversationID, requestID, messageID, summonedAt)
+	ev["mode"] = "LOCAL"
 	return ev
 }
 
 // DesktopExpertActualUseLocal mode:"LOCAL" 变体（Expert_lighthouse 判据要求 LOCAL，
 // 对齐真实样本 Sunny row 868：轻量云专家使用时 mode=LOCAL、type 为空、cost=0）。
-func DesktopExpertActualUseLocal(e MarketExpert, conversationID, requestID string) DesktopEvent {
-	ev := desktopExpertActualUse(e, conversationID, requestID)
+func DesktopExpertActualUseLocal(e MarketExpert, conversationID, requestID, messageID string, summonedAt time.Time) DesktopEvent {
+	ev := desktopExpertActualUse(e, conversationID, requestID, messageID, summonedAt)
 	ev["mode"] = "LOCAL"
 	return ev
 }
 
-// desktopExpertActualUse expert_actual_use 公共载荷。
-func desktopExpertActualUse(e MarketExpert, conversationID, requestID string) DesktopEvent {
-	cat := "expert-all"
+// expertCategory 专家中心召唤时的 type：专家的第一个分类（官方 categoryId），没有时 "all"
+// （5.8.3 的 categoryId ?? "all"）。召唤时它也记成会话专家的 industryId，expert_actual_use 的
+// type 就是它。hasCat 为假表示用的是缺省值。
+func expertCategory(e MarketExpert) (cat string, hasCat bool) {
 	if len(e.Categories) > 0 {
-		if s, ok := e.Categories[0].(string); ok {
-			cat = s
+		if s, ok := e.Categories[0].(string); ok && s != "" {
+			return s, true
 		}
 	}
+	return "all", false
+}
+
+// desktopExpertActualUse expert_actual_use 公共载荷。
+// type 官方取会话专家的 industryId，从专家中心召唤时就是召唤的 type（见 expertCategory）。
+// cost 官方取召唤到使用的毫秒数（不小于 0），characterCount 是发出的提示词文本长度（大于 0
+// 才带），网关按召唤时刻和 expertChatPrompt 算。
+func desktopExpertActualUse(e MarketExpert, conversationID, requestID, messageID string, summonedAt time.Time) DesktopEvent {
+	cat, _ := expertCategory(e)
 	ver := e.Version
 	if ver == "" {
 		ver = "1.0.0"
@@ -629,8 +779,8 @@ func desktopExpertActualUse(e MarketExpert, conversationID, requestID string) De
 		"eventCode": "expert_actual_use",
 		"id":        e.ExpertID, "name": e.DisplayNameZH, "expertTitle": e.ProfessionZH,
 		"type": cat, "expertType": e.ExpertType, "source": "builtin", "version": ver,
-		"cost": 9000, "characterCount": 14,
-		"conversationId": conversationID, "requestId": requestID, "messageId": "msg-" + requestID[len(requestID)-8:],
+		"cost": max(int64(0), time.Since(summonedAt).Milliseconds()), "characterCount": jsLength(expertChatPrompt),
+		"conversationId": conversationID, "requestId": requestID, "messageId": messageID,
 		"requestModelId": "fast-model", "requestModelName": "fast-model",
 	}
 }

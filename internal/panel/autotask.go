@@ -974,20 +974,19 @@ func runExpertLighthouse(p *Panel, a *auth.Auth) (string, error) {
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopExpertSummonSequence(lh)...); err != nil {
 		return "", fmt.Errorf("召唤链: %w", err)
 	}
+	summonedAt := time.Now()
 	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, lhID, lh.ExpertType == "team")
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
-	events := upstream.DesktopChatSequence(conv, req, "msg-"+req[len(req)-8:], "fast-model", "fast-model")
+	msgID := upstream.NewRequestID()
+	events := upstream.DesktopExpertChatSequence(lh, conv, req, msgID)
 	for _, ev := range events {
 		if ev["eventCode"] == "agent_task_created" {
-			ev["has_expert"] = true
-			ev["expert_id"] = lh.ExpertID
-			ev["expert_name"] = lh.DisplayNameZH
-			ev["expert_industry_id"] = ""
+			ev["expert_industry_id"] = "" // 同下面 actual_use 的 type
 		}
 	}
-	events = append(events, upstream.DesktopExpertActualUseLocal(lh, conv, req))
+	events = append(events, upstream.DesktopExpertActualUseLocal(lh, conv, req, msgID, summonedAt))
 	// 对齐真实样本细节：轻量云专家 actual_use 的 type 为空、cost=0。
 	events[len(events)-1]["type"] = ""
 	events[len(events)-1]["cost"] = 0
@@ -1002,19 +1001,39 @@ func runExpertLighthouse(p *Panel, a *auth.Auth) (string, error) {
 // 事件 {action:"apply",source:"settings_close",id:<resourceKey>,...}（客户端在
 // 主题生效状态下离开设置页时上报）——早期"纯 API set 不计分"的结论不准确，
 // 真相是当时只调了 appearance/set 没发事件。组合：set API 留痕 + 事件上报。
+//
+// 1.1.2 起照官方 5.8.3 的外观设置页走：打开时拉主题列表，选中后 set，离开时上报。事件字段
+// 照 buildSkinApplyPayload：vipLevel、series 取主题列表里这个主题的值，type 是账号的版本档
+// （editionType）。官方版本档查不到时不上报（canUse 为假），网关同样报错不上报。
 // appearanceGap 设置主题与上报皮肤生效事件之间的间隔。
 var appearanceGap = 2 * time.Second
 
 func runAppearance(p *Panel, a *auth.Auth) (string, error) {
 	const themeKey = "theme-tkmw7j" // 和平精英激战金秋（Hp_Appearance 判据主题）
+	themes, err := p.cfg.Upstream.AppearanceThemes(a)
+	if err != nil {
+		return "", fmt.Errorf("主题列表: %w", err)
+	}
+	var theme *upstream.AppearanceTheme
+	for i := range themes {
+		if themes[i].ID == themeKey {
+			theme = &themes[i]
+			break
+		}
+	}
+	if theme == nil {
+		// 10-20 生产查到它限时到 2026-11-02，下架后客户端里选不到。
+		return "", fmt.Errorf("主题列表里没有 %s（可能已下架）", themeKey)
+	}
+	edition, err := p.cfg.Upstream.AccountEdition(a)
+	if err != nil {
+		return "", fmt.Errorf("账号版本: %w", err)
+	}
 	if err := p.cfg.Upstream.SetAppearanceTheme(a, themeKey); err != nil {
 		return "", fmt.Errorf("设置主题: %w", err)
 	}
 	time.Sleep(appearanceGap)
-	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopEvent{
-		"eventCode": "appearance_skin_apply", "action": "apply", "source": "settings_close",
-		"id": themeKey, "vipLevel": 0, "series": "", "type": "unknown",
-	}); err != nil {
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopAppearanceApplyEvent(*theme, edition)); err != nil {
 		return "", err
 	}
 	return "已设置主题并上报皮肤生效事件", nil
@@ -1103,15 +1122,17 @@ func runExpertBatch(p *Panel, a *auth.Auth, expertType string, count int) (strin
 			fail++
 			continue
 		}
+		summonedAt := time.Now()
 		// 真实 chat（带 X-Expert-Id）→ 服务端 requestId。
 		conv, req, cerr := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID, e.ExpertType == "team")
 		if cerr != nil {
 			fail++
 			continue
 		}
-		// 使用事件（JOIN 服务端 requestId）+ chat 链。
-		events := append(upstream.DesktopChatSequence(conv, req, "msg-"+req[len(req)-8:], "fast-model", "fast-model"),
-			upstream.DesktopExpertActualUseEvent(e, conv, req))
+		// 使用事件（JOIN 服务端 requestId）+ 带专家的 chat 链。
+		msgID := upstream.NewRequestID()
+		events := append(upstream.DesktopExpertChatSequence(e, conv, req, msgID),
+			upstream.DesktopExpertActualUseEvent(e, conv, req, msgID, summonedAt))
 		if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 			fail++
 			continue

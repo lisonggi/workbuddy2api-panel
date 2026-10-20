@@ -1542,37 +1542,101 @@ func TestRunTemplateUse(t *testing.T) {
 	})
 }
 
-// Hp_Appearance：先 set 主题再上报皮肤生效事件。
+// Hp_Appearance：照官方外观设置页，先拉主题列表、取账号版本档，再 set 主题、上报皮肤生效事件。
 func TestRunAppearance(t *testing.T) {
 	autoFastWaits(t)
 	setPath := "/v2/user-asset/appearance/set"
+	listPath := "/v2/operation-platform/appearance/resources"
+	themes := autoEnvelope(`{"resources":[` +
+		`{"id":"theme-tkbera","kind":"theme","vip_level":"free","series":"craft"},` +
+		`{"id":"theme-tkmw7j","kind":"theme","vip_level":"standard","series":"collection"}]}`)
+	// 免费包里有一个专业版试用包：版本档应为 pro_trial。
+	trial := upstreamtest.List(upstreamtest.Package(100, 50, `"PackageCode":"TCACA_code_039_KRcQj7wUat"`))
+	ready := func(up *autoUpstream) {
+		up.on(http.MethodPost, autoChatHost, listPath, "", autoOK(themes))
+		up.on(http.MethodPost, autoBillingHost, upstreamtest.FreePath, "", autoOK(trial))
+		up.on(http.MethodPost, autoChatHost, setPath, "", autoOK(autoEnvelope("{}")))
+	}
+	chatSeq := func(up *autoUpstream) []string {
+		var out []string
+		for _, r := range up.requests() {
+			if r.Host == autoChatHost {
+				out = append(out, r.Method+" "+r.Path)
+			}
+		}
+		return out
+	}
+	noSet := func(t *testing.T, up *autoUpstream) {
+		t.Helper()
+		if got := len(up.requestsTo(http.MethodPost, autoChatHost, setPath, "")); got != 0 {
+			t.Fatalf("不应设置主题，实际 %d 次", got)
+		}
+	}
 
 	t.Run("设置主题后上报生效事件", func(t *testing.T) {
 		p, up := newAutoPanel(t)
-		up.on(http.MethodPost, autoChatHost, setPath, "", autoOK(autoEnvelope("{}")))
+		ready(up)
 		up.onDesktopReport(autoOK(autoEnvelope("{}")))
 		msg, err := runAppearance(p, autoAuth(t, p))
 		if err != nil || !strings.Contains(msg, "已设置主题") {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
-		autoWantSequence(t, up.requests(),
-			"POST "+autoChatHost+setPath,
-			"POST "+autoChatHost+autoReportPath,
-		)
-		set := up.requestsTo(http.MethodPost, autoChatHost, setPath, "")
-		body := autoBodyMap(t, set[0].Body)
-		key, _ := body["resource_key"].(string)
-		if body["kind"] != "theme" || key == "" {
+		want := []string{"POST " + listPath, "POST " + setPath, "POST " + autoReportPath}
+		if got := chatSeq(up); strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("请求顺序不对\n got: %v\nwant: %v", got, want)
+		}
+		list := autoBodyMap(t, up.requestsTo(http.MethodPost, autoChatHost, listPath, "")[0].Body)
+		if list["platform"] != "client" || list["kind"] != "theme" || list["lang"] != "zh" || list["version"] == "" {
+			t.Fatalf("主题列表请求体不对: %v", list)
+		}
+		body := autoBodyMap(t, up.requestsTo(http.MethodPost, autoChatHost, setPath, "")[0].Body)
+		if body["kind"] != "theme" || body["resource_key"] != "theme-tkmw7j" {
 			t.Fatalf("set 请求体不对: %v", body)
 		}
-		ev := autoEventByCode(t, autoEvents(t, up.requests()[1].Body), "appearance_skin_apply")
-		if ev["id"] != key {
-			t.Fatalf("皮肤生效事件 id 应与 set 的 resource_key 一致: %v", ev)
+		reports := up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")
+		ev := autoEventByCode(t, autoEvents(t, reports[0].Body), "appearance_skin_apply")
+		if ev["id"] != "theme-tkmw7j" || ev["action"] != "apply" || ev["source"] != "settings_close" {
+			t.Fatalf("皮肤生效事件不对: %v", ev)
 		}
+		// vip_level standard 照官方对照表换成 pro；series 与 type 取列表和版本档的值。
+		if ev["vipLevel"] != "pro" || ev["series"] != "collection" || ev["type"] != "pro_trial" {
+			t.Fatalf("皮肤生效事件类型字段不对: %v", ev)
+		}
+	})
+
+	t.Run("主题列表失败", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.on(http.MethodPost, autoChatHost, listPath, "", autoFail(400, `{"code":400}`))
+		if _, err := runAppearance(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "主题列表") {
+			t.Fatalf("应返回主题列表错误: %v", err)
+		}
+		noSet(t, up)
+	})
+
+	t.Run("主题已下架", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.on(http.MethodPost, autoChatHost, listPath, "", autoOK(autoEnvelope(
+			`{"resources":[{"id":"theme-tkbera","kind":"theme","vip_level":"free","series":"craft"},`+
+				`{"id":"theme-tkmw7j","kind":"color","vip_level":"free"}]}`)))
+		if _, err := runAppearance(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "可能已下架") {
+			t.Fatalf("应返回主题已下架: %v", err)
+		}
+		noSet(t, up)
+	})
+
+	t.Run("账号版本查不到", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.on(http.MethodPost, autoChatHost, listPath, "", autoOK(themes))
+		up.on(http.MethodPost, autoBillingHost, upstreamtest.FreePath, "", autoFail(400, `{"code":400}`))
+		if _, err := runAppearance(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "账号版本") {
+			t.Fatalf("应返回账号版本错误: %v", err)
+		}
+		noSet(t, up)
 	})
 
 	t.Run("设置主题失败", func(t *testing.T) {
 		p, up := newAutoPanel(t)
+		ready(up)
 		up.on(http.MethodPost, autoChatHost, setPath, "", autoFail(400, `{"code":400}`))
 		if _, err := runAppearance(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "设置主题") {
 			t.Fatalf("应返回设置主题错误: %v", err)
@@ -1584,7 +1648,7 @@ func TestRunAppearance(t *testing.T) {
 
 	t.Run("上报事件失败", func(t *testing.T) {
 		p, up := newAutoPanel(t)
-		up.on(http.MethodPost, autoChatHost, setPath, "", autoOK(autoEnvelope("{}")))
+		ready(up)
 		up.onDesktopReport(autoFail(400, `{"code":400}`))
 		if _, err := runAppearance(p, autoAuth(t, p)); err == nil {
 			t.Fatal("事件上报失败应返回 error")
@@ -1634,6 +1698,12 @@ func TestRunExpertBatch(t *testing.T) {
 		use := autoEventByCode(t, autoEvents(t, reports[1].Body), "expert_actual_use")
 		if use["requestId"] != autoChatSvcToken {
 			t.Fatalf("使用事件应 JOIN 服务端 requestId: %v", use)
+		}
+		// 同一批里的对话链带这位专家（官方会话有专家时的形状）。
+		task := autoEventByCode(t, autoEvents(t, reports[1].Body), "agent_task_created")
+		send := autoEventByCode(t, autoEvents(t, reports[1].Body), "chat_request_send")
+		if task["has_expert"] != true || task["expert_id"] != use["id"] || send["expertId"] != use["id"] {
+			t.Fatalf("对话链应带专家: task=%v send=%v", task, send)
 		}
 		market := up.requestsTo(http.MethodPost, autoChatHost, autoMarketPath, "")
 		if got := autoBodyMap(t, market[0].Body)["expert_type"]; got != "agent" {

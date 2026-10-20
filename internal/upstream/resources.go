@@ -231,3 +231,46 @@ func (c *Client) resourcePages(a *auth.Auth, path string, codes []string, extra 
 	}
 	return all, nil
 }
+
+// editionPackages 官方 getPersonalUsage 判版本档用的订阅包，按判定顺序排（旗舰、高级、青春、
+// 专业、专业试用）。
+var editionPackages = []struct {
+	edition string
+	codes   []string
+}{
+	{"flagship", []string{"TCACA_code_027_0FCGVA6vSa"}},
+	{"advanced", []string{"TCACA_code_026_BaESVICNoi"}},
+	{"youth", []string{"TCACA_code_023_4xbGhMrE6q"}},
+	{"pro", []string{"TCACA_code_002_AkiJS3ZHF5", "TCACA_code_005_maRGyrHhw1", "TCACA_code_003_FAnt7lcmRT"}},
+	{"pro_trial", []string{"TCACA_code_039_KRcQj7wUat", "TCACA_code_040_mi9rCYg46x"}},
+}
+
+// AccountEdition 账号的版本档，照官方 5.8.3 外观设置的 editionType（皮肤事件的 type）：
+// 账号类型是 ultimate / exclusive 时就是它；企业号取 ultimate（resolveIntrinsicEdition 的
+// 默认值）；个人号按 getPersonalUsage / getEditionDisplayType，逐包列表里有哪档订阅包就是
+// 哪档，都没有为 free。官方这一步查不到时不上报皮肤事件，所以出错时调用方也不要上报。
+func (c *Client) AccountEdition(a *auth.Auth) (string, error) {
+	switch t := a.AccountTypeValue(); t {
+	case "ultimate", "exclusive":
+		return t, nil
+	}
+	if a.IsEnterprise() {
+		return "ultimate", nil
+	}
+	packs, _, err := c.userResources(a)
+	if err != nil {
+		return "", err
+	}
+	have := make(map[string]bool, len(packs))
+	for _, p := range packs {
+		have[p.PackageCode] = true
+	}
+	for _, e := range editionPackages {
+		for _, code := range e.codes {
+			if have[code] {
+				return e.edition, nil
+			}
+		}
+	}
+	return "free", nil
+}
