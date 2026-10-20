@@ -8,6 +8,20 @@
 
 条目按「新增 / 变更 / 弃用 / 移除 / 修复 / 安全」分组。面板的更新提醒读的就是这份文件，发版规则见[发版与版本号](releasing.md)。
 
+## [1.2.0] - 2026-10-20
+
+Claude Code 和 Codex 可以直接接网关了，配上模型路由后客户端不用配模型。两个入口目前只用离线测试验证过翻译与转发，还没有拿真实的 Claude Code、Codex 跑过长对话。
+
+### 新增
+
+- Claude Code 入口 `POST /v1/messages`（Anthropic Messages 格式）与 `POST /v1/messages/count_tokens`，Codex 入口 `POST /v1/responses`（OpenAI Responses 格式）。请求翻译成 OpenAI 对话格式后走和 `/v1/chat/completions` 完全相同的流程：选号、换号重试、会话粘性、出站对齐、用量与请求日志都一样，回复再翻译回客户端的格式，流式逐帧转换。协议翻译用 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的翻译层。错误按客户端协议返回；模型名不在上游目录里时直接回 404 并说明该设哪个变量，不拿每个号去试。`count_tokens` 只按字数估算。Claude Code 用 `ANTHROPIC_API_KEY` 时发的 `x-api-key` 头也认。接法见 README 的[接入客户端](../README.md#接入客户端)，细节见 [API 参考](api.md#claude-code-与-codex-入口)。
+- 模型路由：面板「模型与档位」顶部新增规则表，客户端发来上游目录里没有的模型名时，从上往下找第一条匹配的规则改用目标模型，三个对话端点都生效。只认 `*` 通配、不区分大小写；目录里有的名字和带 `cn:` / `global:` 前缀的名字不改。可以一键把 Claude Code 三档（opus、sonnet、haiku）加到最前面；被前面更宽的规则挡住、永远轮不到的规则会标红；「试一下」输入模型名看会被怎么处理。规则存在 `config.json` 的 [`model_routes`](configuration.md#模型路由)，保存即生效，默认没有规则。
+
+### 变更
+
+- 一键更新的进度窗改成「下载安装包 → 校验并试运行 → 重启网关」三步，配一条贯穿全程的总进度条：下载按字节走，每做完一步填满一段；下载那一步做完后仍显示下了多少，重启时显示已等几秒；进度每 0.8 秒刷新一次（原来 1.5 秒，服务器上安装包一两秒就下完，常常看不到进度）。进度窗是正在运行的版本的页面，所以要从 1.2.0 再往后更新时才看得到。
+- 从源码编译需要 Go 1.26（原来 1.22）；Docker 镜像的编译环境同步升级。翻译层让程序变大：Linux x64 的发布包约 4.4 MB → 7.6 MB，解压后的可执行文件约 11.5 MB → 21.3 MB。
+
 ## [1.1.2] - 2026-10-20
 
 出站请求按官方 WorkBuddy 桌面端安装包对齐（国内版 5.8.3、国际版 5.8.4，两者都内置 CLI 2.161.0），依据和未对齐的项目见[官方客户端对照](official-client.md)。实测只用了国内版、国际版各几个个人免费号和少数几个模型（deepseek、glm、kimi），企业号、付费号以及 GPT、Gemini、Grok 都没有测到。
