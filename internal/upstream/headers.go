@@ -203,6 +203,7 @@ func (c *Client) injectCodeBuddyRequest(req *http.Request) {
 // Accept-Language、签到的 X-Device-Token、刷新的 X-Refresh-Token）由调用方另加。ua 为空不设 UA。
 func (c *Client) frameworkHeaders(req *http.Request, a *auth.Auth, ua string) {
 	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Encoding", acceptEncodingAxios)
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -267,6 +268,7 @@ type ChatMeta struct {
 func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, meta ChatMeta) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Accept-Encoding", acceptEncodingAxios)
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("User-Agent", c.userAgent(a))
 	// AccessToken 加锁快照：keepalive 定时刷新会在 a.mu 内改写它，锁外直读构成数据竞争
