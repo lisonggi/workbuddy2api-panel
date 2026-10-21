@@ -3,10 +3,10 @@
 ## 来源
 
 1. **[Sliverkiss](https://github.com/Sliverkiss)/workbuddy2api**：原始项目，奠定了网关、账号池调度、错误分类与提示词体系（仓库已删除，链接指向作者主页）。
-2. **[linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)**：本仓库的直接上游，加入了 Web 管理面板、积分任务体系、请求指标等大量能力，至今仍在活跃开发。
+2. **[linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)**：本仓库的直接上游，加入了 Web 管理面板、积分任务体系、请求指标等大量能力，已于 2026-10-21 停止维护，停更前的最后一次提交是 `73a7560`。
 3. **[yreidev/workbuddy2api-panel](https://github.com/yreidev/workbuddy2api-panel)**：本仓库，面板用 React + HeroUI 重写，独立维护。
 
-本仓库定期合并 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 的后端改动，并把上游对旧版面板的改动移植到新面板。原始项目的设计（账号池调度、错误分类、提示词体系）原样保留。
+上游停更前，本仓库定期合并 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 的后端改动，并把上游对旧版面板的改动移植到新面板。目前同步到 `6b31db6`（见下方[同步记录](#同步记录)），`6b31db6` 之后到停更的 `73a7560` 之间的最后一批改动还没有合并。原始项目的设计（账号池调度、错误分类、提示词体系）原样保留。
 
 版本号从 1.0.0 起独立编号（此前随上游，最后一个是 `1.13.0-panel`）。合并时上游的版本号冲突一律保留本仓库的值，下面同步记录里括号中的版本号是上游当时的版本；规则见[发版与版本号](releasing.md)。
 
