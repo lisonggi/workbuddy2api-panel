@@ -7,6 +7,7 @@ import { Shell } from './components/Shell'
 import { isLogChannel, type LogChannel } from './lib/logs'
 import { AccountsPage } from './pages/accounts/AccountsPage'
 import { ConfigPage } from './pages/config/ConfigPage'
+import { KeysPage } from './pages/keys/KeysPage'
 import { LogsPage } from './pages/logs/LogsPage'
 import { ModelsPage } from './pages/models/ModelsPage'
 import { TaskCenterPage } from './pages/taskcenter/TaskCenterPage'
@@ -29,6 +30,7 @@ const packagesRoute = createRoute({
 })
 const taskCenterRoute = createRoute({ getParentRoute: () => rootRoute, path: '/taskscenter', component: TaskCenterPage, staticData: { title: '任务中心' } })
 const modelsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/models', component: ModelsPage, staticData: { title: '模型与档位' } })
+const keysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/keys', component: KeysPage, staticData: { title: '密钥' } })
 const configRoute = createRoute({ getParentRoute: () => rootRoute, path: '/config', component: ConfigPage, staticData: { title: '配置' } })
 const logsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -39,7 +41,7 @@ const logsRoute = createRoute({
 })
 
 const routeTree = rootRoute.addChildren([
-  indexRoute, accountsRoute, usageRoute, packagesRoute, taskCenterRoute, modelsRoute, configRoute, logsRoute,
+  indexRoute, accountsRoute, usageRoute, packagesRoute, taskCenterRoute, modelsRoute, keysRoute, configRoute, logsRoute,
 ])
 
 // 旧版面板的地址是 #accounts、#usage…（没有斜杠），书签打开时换成新格式

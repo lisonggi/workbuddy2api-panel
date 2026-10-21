@@ -93,6 +93,8 @@ type Event struct {
 	CacheMissTokens int64  `json:"cache_miss_tokens,omitempty"`
 	ClientIP        string `json:"client_ip,omitempty"`
 	UserAgent       string `json:"user_agent,omitempty"`
+	// APIKey 请求带的密钥：客户端密钥记名字，管理员密钥记「管理员」，没开鉴权为空。不记原文。
+	APIKey string `json:"api_key,omitempty"`
 }
 
 // Filter 用于从归档中筛选最近记录。字符串字段一律「包含」匹配（大小写不敏感），
@@ -104,6 +106,7 @@ type Filter struct {
 	Model     string
 	ClientIP  string
 	UserAgent string
+	APIKey    string
 	From      time.Time
 	To        time.Time
 }
@@ -592,6 +595,9 @@ func (f Filter) match(e Event) bool {
 		return false
 	}
 	if !containsFold(e.UserAgent, f.UserAgent) {
+		return false
+	}
+	if !containsFold(e.APIKey, f.APIKey) {
 		return false
 	}
 	if !f.From.IsZero() && e.Time.Before(f.From) {

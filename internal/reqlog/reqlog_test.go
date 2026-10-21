@@ -261,3 +261,11 @@ func TestArchivePruneHonorsSize(t *testing.T) {
 		t.Fatalf("remaining = %+v, want newest file only", entries)
 	}
 }
+
+// TestFilterAPIKey 按密钥名筛（包含匹配，不区分大小写）。
+func TestFilterAPIKey(t *testing.T) {
+	e := Event{APIKey: "Zhang 三"}
+	if !(Filter{APIKey: "zhang"}).match(e) || (Filter{APIKey: "李四"}).match(e) || !(Filter{}).match(e) {
+		t.Fatal("密钥名筛选不对")
+	}
+}

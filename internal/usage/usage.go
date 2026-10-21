@@ -3,7 +3,7 @@
 // 与 internal/pool 的 TokenUsage 的区别：
 //   - pool 的 TokenUsage 是**每账号一个累计计数器**，只保留总量与「最近一次」，
 //     没有时间维度，也无法按模型/时间下钻；
-//   - 本包按 (时间片, realm, uid, model, rate) 分桶累计，因此可以出「今天各模型各用了多少」
+//   - 本包按 (时间片, realm, uid, model, rate, 密钥) 分桶累计，因此可以出「今天各模型各用了多少」
 //     「这一小时 prompt 涨得多快」这类问题，且能长期保留。
 //
 // 保留策略（分片粒度自动降级，总量因此有界）：
@@ -43,11 +43,11 @@ const (
 )
 
 // fileVersion 是 usage.json 的当前格式版本。版本 2 增加积分观测字段，版本 3
-// 增加模型生效倍率分区，版本 4 增加前缀缓存命中/未命中累计；
+// 增加模型生效倍率分区，版本 4 增加前缀缓存命中/未命中累计，版本 5 增加密钥维度；
 // 旧版本缺失字段按零值加载，旧数据不会丢弃。
-const fileVersion = 4
+const fileVersion = 5
 
-// bucket 一个 (时间片, realm, uid, model, rate) 的累计量。
+// bucket 一个 (时间片, realm, uid, model, rate, 密钥) 的累计量。
 // JSON 字段名刻意取短，因为桶数量会随时间增长。
 type bucket struct {
 	Scope string  `json:"s"`            // "h:2006-01-02T15" 或 "d:2006-01-02"
@@ -55,6 +55,7 @@ type bucket struct {
 	UID   string  `json:"u"`            // 账号 uid
 	Model string  `json:"m"`            // 上游裸模型名
 	Rate  string  `json:"x,omitempty"`  // 请求时生效积分倍率（规范化数值；旧桶为空）
+	Key   string  `json:"k,omitempty"`  // 请求带的密钥：客户端密钥的 id、管理员密钥 admin；没开鉴权和旧桶为空
 	Req   int64   `json:"q"`            // 请求数（含失败）
 	Err   int64   `json:"e"`            // 失败数
 	PT    int64   `json:"p"`            // prompt tokens
@@ -157,6 +158,17 @@ type Delta struct {
 	HasLatency      bool
 	TokensPerSecond float64
 	HasTPS          bool
+	// Key 请求带的密钥（见 bucket.Key），空 = 没开鉴权。
+	Key string
+}
+
+// bucketKey 桶在内存里的键。没有密钥的桶（没开鉴权、旧数据）键和加密钥维度之前一样。
+func bucketKey(scope, realm, uid, model, rate, key string) string {
+	k := scope + "|" + realm + "|" + uid + "|" + model + "|" + rate
+	if key != "" {
+		k += "|" + key
+	}
+	return k
 }
 
 // Add 记录一次请求尝试。
@@ -174,14 +186,14 @@ func (r *Recorder) Add(now time.Time, realm, uid, model string, d Delta, ok bool
 		model = "(unknown)"
 	}
 	scope := "h:" + now.Format(hourLayout)
-	key := scope + "|" + realm + "|" + uid + "|" + model + "|" + d.ModelRate
+	key := bucketKey(scope, realm, uid, model, d.ModelRate, d.Key)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	b := r.buckets[key]
 	if b == nil {
-		b = &bucket{Scope: scope, Realm: realm, UID: uid, Model: model, Rate: d.ModelRate}
+		b = &bucket{Scope: scope, Realm: realm, UID: uid, Model: model, Rate: d.ModelRate, Key: d.Key}
 		r.buckets[key] = b
 	}
 	b.Req++
@@ -248,7 +260,7 @@ func (r *Recorder) Rollup(now time.Time) {
 			continue
 		}
 		day := "d:" + ts.Format(dayLayout)
-		moves = append(moves, move{from: k, to: day + "|" + b.Realm + "|" + b.UID + "|" + b.Model + "|" + b.Rate})
+		moves = append(moves, move{from: k, to: bucketKey(day, b.Realm, b.UID, b.Model, b.Rate, b.Key)})
 	}
 	for _, m := range moves {
 		src := r.buckets[m.from]
@@ -301,7 +313,7 @@ func (r *Recorder) load() error {
 	}
 	for i := range f.Buckets {
 		b := f.Buckets[i]
-		r.buckets[b.Scope+"|"+b.Realm+"|"+b.UID+"|"+b.Model+"|"+b.Rate] = &b
+		r.buckets[bucketKey(b.Scope, b.Realm, b.UID, b.Model, b.Rate, b.Key)] = &b
 	}
 	log.Printf("[usage] 已恢复 %d 个用量桶（%s）", len(r.buckets), r.path)
 	return nil
@@ -471,6 +483,7 @@ type Snapshot struct {
 	ByRealm         []KeyedAgg  `json:"by_realm"`
 	ByAccount       []KeyedAgg  `json:"by_account"`
 	ByModel         []KeyedAgg  `json:"by_model"`
+	ByKey           []KeyedAgg  `json:"by_key"` // 按密钥：Key 是 bucket.Key（空串 = 没开鉴权或旧数据），名字由面板补进 Extra
 	Series          []Point     `json:"series"`
 	CreditByAccount []CreditAgg `json:"credit_by_account"`
 	CreditByModel   []CreditAgg `json:"credit_by_model"`
@@ -497,6 +510,9 @@ type Window struct {
 	Hours int
 	From  time.Time
 	To    time.Time
+	// Key 只统计这个密钥（bucket.Key 的值，空串 = 没开鉴权和旧数据）；KeySet=false 时不按密钥筛。
+	Key    string
+	KeySet bool
 }
 
 // bounds 解析出实际生效的 [from, to]；零值表示该侧不设界。
@@ -571,6 +587,7 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 	acctAgg := map[string]*aggAcc{}
 	acctRealm := map[string]string{}
 	modelAgg := map[string]*aggAcc{}
+	keyAgg := map[string]*aggAcc{}
 	hourSeries := map[string]*aggAcc{}
 	daySeries := map[string]*aggAcc{}
 	creditAcctAgg := map[string]*creditAcc{}
@@ -599,6 +616,9 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 				continue
 			}
 		}
+		if w.KeySet && b.Key != w.Key {
+			continue
+		}
 		matched++
 		total.add(b)
 
@@ -621,6 +641,11 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 			modelAgg[b.Model] = &aggAcc{}
 		}
 		modelAgg[b.Model].add(b)
+
+		if keyAgg[b.Key] == nil {
+			keyAgg[b.Key] = &aggAcc{}
+		}
+		keyAgg[b.Key].add(b)
 
 		if strings.HasPrefix(b.Scope, "h:") {
 			scope := strings.TrimPrefix(b.Scope, "h:")
@@ -677,6 +702,7 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 			return k, nicks[k]
 		}),
 		ByModel:         keyed(modelAgg, func(k string) (string, string) { return k, "" }),
+		ByKey:           keyed(keyAgg, func(k string) (string, string) { return k, "" }),
 		CreditByAccount: creditKeyed(creditAcctAgg),
 		CreditByModel:   creditKeyed(creditModelAgg),
 		Buckets:         matched,

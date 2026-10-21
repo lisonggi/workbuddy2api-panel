@@ -36,18 +36,26 @@ func VerifyBearer(r *http.Request, key string) bool {
 	return subtle.ConstantTimeCompare(digest(tok), digest(key)) == 1
 }
 
-// VerifyAPIKey 同 VerifyBearer，另认 Anthropic SDK 默认的 x-api-key 头
-// （Claude Code 设 ANTHROPIC_API_KEY 时只发这个头）。带了 Authorization 头时只看它。
-func VerifyAPIKey(r *http.Request, key string) bool {
-	if r.Header.Get("Authorization") == "" {
-		if tok := r.Header.Get("X-Api-Key"); tok != "" {
-			if key == "" {
-				return true
-			}
-			return subtle.ConstantTimeCompare(digest(tok), digest(key)) == 1
+// Token 取出请求带的密钥：Authorization: Bearer <密钥>；xAPIKey 为 true 时，没带 Authorization 头
+// 再认 x-api-key（Anthropic SDK 的默认头，Claude Code 设 ANTHROPIC_API_KEY 时只发它）。带了
+// Authorization 却不是 Bearer 时当作没带密钥，不再看 x-api-key。
+func Token(r *http.Request, xAPIKey bool) string {
+	authz := r.Header.Get("Authorization")
+	if authz == "" {
+		if xAPIKey {
+			return r.Header.Get("X-Api-Key")
 		}
+		return ""
 	}
-	return VerifyBearer(r, key)
+	if !strings.HasPrefix(authz, bearerPrefix) {
+		return ""
+	}
+	return authz[len(bearerPrefix):]
+}
+
+// Equal 常量时间比较两个密钥，口径同 VerifyBearer（先摘要再比较）。
+func Equal(a, b string) bool {
+	return subtle.ConstantTimeCompare(digest(a), digest(b)) == 1
 }
 
 // digest 返回 s 的 SHA-256（定长 32 字节，供常量时间比较）。

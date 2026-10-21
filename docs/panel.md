@@ -2,7 +2,7 @@
 
 面板打包在网关二进制里，启动后访问 `http://<主机>:7863/panel/`。
 
-- `api_key` 非空时，首次打开需要输入一次密钥（浏览器会记住）；为空则直接进入。
+- `api_key` 非空时，首次打开需要输入一次密钥（浏览器会记住）；为空则直接进入。面板只认 `api_key`，客户端密钥登不了面板。
 - 支持明暗主题（首次跟随系统）和手机端（导航收进抽屉，表格换成卡片）。
 
 <p align="center"><img src="images/hero-light.webp" alt="账号池" width="860"></p>
@@ -22,12 +22,13 @@
 | **账号池** | 统计卡：总数 / 可用 / 冷却 / 禁用 / 暂停，点一下即按状态筛选；另有积分合计与粘性会话数。<br>积分到期提醒：打开就列出每个账号最早一批要过期的积分，以及到期前日均至少要用掉多少（本地快照，不查上游）；点「检查」逐账号向上游查询，看到全部到期批次。<br>账号表：状态与冷却倒计时、被限额的模型及解封时间、积分量条与最早到期、成功 / 失败 / 在途、用量与速率。<br>单号操作：签到、余额、任务、解冻、暂停选号、禁用、移除。<br>批量操作：全部签到、旅行巡检、活跃上报、全部保活。<br>导出凭证：勾选账号（表头勾选框 = 当前筛选结果全选，手机端在搜索框旁「全选」）后点「导出凭证」，下载一个 JSON 文件；单个账号在详情里导出。<br>模型锁池：哪些模型被上游按模型限额、还剩几个号可用、多久后解锁。 |
 | **账号详情**（点账号行） | 模型限额台账、每个模型的实测单价、最早到期批次、连败与熔断计数、最近一次请求的模型与耗时；可单独导出这个号的凭证 |
 | **添加账号** | 浏览器内完成国内版 / 国际版 OAuth 登录，凭证落盘并热加载进池，不用重启；国际版会自动完成注册地区、激活与试用额度领取。也可导入 JSON：账号池导出的凭证（单个或批量），或 cockpit tools 导出的账号 |
-| **用量** | 请求数、token 构成、失败率、平均延迟与吐字速率；按小时的 token 时序图；按账号 / 模型 / 域的用量明细；积分扣除历史（每百万 token 积分、前缀缓存命中率） |
+| **用量** | 请求数、token 构成、失败率、平均延迟与吐字速率；按小时的 token 时序图；按账号 / 模型 / 域 / 密钥的用量明细；积分扣除历史（每百万 token 积分、前缀缓存命中率）。建过客户端密钥后可以按密钥筛，整页只算这个密钥的请求 |
 | **积分构成** | 积分到期分布（按剩余天数、按账号着色）、账号对比、单账号逐包明细 |
 | **任务中心** | 扫描全部账号的成长任务待办，排队一键执行，实时显示进度；积分补偿查询与领取；券码查询 |
 | **模型与档位** | 上方是[模型路由](api.md#模型路由)规则表：每条「匹配 → 目标模型」，可排序、一键把 Claude Code 三档加到最前面；被前面更宽的规则挡住、永远轮不到的规则会标红，「试一下」输入一个模型名看会被怎么处理（按编辑中的规则算，不用先保存）；保存即生效。<br>下方列每个模型的积分倍率（含限时优惠）、默认思考档、支持的档位、上下文长度与最大输出；只有企业号能用的模型标「企业专属」；可叠加[实测输出上限](deployment.md#探测模型真实输出上限)。支持关键词、域、能力、档位、价格筛选和多种排序，数据一次拉全后在浏览器里筛 |
+| **密钥** | 新建、编辑、停用、重新生成、删除[客户端密钥](api.md#客户端密钥)：到期时间、每天和总量的请求次数 / token / 积分上限、模型白名单；列出每个密钥今天和累计的用量、最近使用时间；「接入方法」给出密钥原文和各客户端的填法。管理员密钥（`api_key`）没设时页面顶部会提醒 |
 | **配置** | 在线编辑配置，分服务 / 定时任务 / 账号池与流量治理 / 上游与高级四组；底部保存条显示改了几项，需要重启的字段有标记，时长与时点当场校验 |
-| **运行日志** | 请求记录：成功率、平均耗时、每条请求的模型 / 账号 / 来源 IP / User-Agent / token 与缓存命中 / 积分 / 请求 ID，可按条件和时间范围从归档里查。<br>服务日志：最近 500 行，按任务 / 对话 / 系统频道、级别和关键字筛选 |
+| **运行日志** | 请求记录：成功率、平均耗时、每条请求的模型 / 账号 / 密钥 / 来源 IP / User-Agent / token 与缓存命中 / 积分 / 请求 ID，可按条件和时间范围从归档里查。<br>服务日志：最近 500 行，按任务 / 对话 / 系统频道、级别和关键字筛选 |
 
 | 用量 | 模型与档位 |
 |:---:|:---:|
@@ -97,11 +98,12 @@ IP 属于个人信息，所以由 `logging.request_client_info` 控制，默认�
 
 | 分组 | 端点 |
 |---|---|
-| 只读 | `GET overview` · `version`（`since` = 上次看过的版本，返回之后到当前版本的更新日志，`none` 表示没看过、只返回当前这一版；更新检查开着时另有远端最新版本和比本机新的各版本条目；`self_update` 是一键更新的状态与进度）· `usage`（`hours` 或 `from`/`to`）· `packages` · `models` · `model_probes` · `logs` · `request_metrics` · `request_logs`（`limit` / `outcome` / `account` / `model` / `client_ip` / `user_agent` / `from` / `to`）· `config` · `tasks/queue` · `school/vouchers` |
+| 只读 | `GET overview` · `version`（`since` = 上次看过的版本，返回之后到当前版本的更新日志，`none` 表示没看过、只返回当前这一版；更新检查开着时另有远端最新版本和比本机新的各版本条目；`self_update` 是一键更新的状态与进度）· `usage`（`hours` 或 `from`/`to`；`key` = 只看一个密钥：客户端密钥的 id、`admin` 是管理员密钥、`-` 是没开鉴权或 1.3.0 之前的数据）· `packages` · `models` · `model_probes` · `logs` · `request_metrics` · `request_logs`（`limit` / `outcome` / `account` / `model` / `client_ip` / `user_agent` / `api_key`（密钥名）/ `from` / `to`）· `config` · `tasks/queue` · `school/vouchers` |
 | 账号运维 | `POST accounts/{uid}/checkin` · `balance` · `revive` · `pause` · `resume` · `disable` · `remove`<br>`POST checkin_all` · `travel_all` · `activity_all` · `keepalive_all` · `balance_all`<br>`POST accounts/export`（`{"uids":[…]}`，返回 `{"accounts":[…]}`，每项与 `auths/workbuddy-<uid>.json` 同形；有 uid 不在池里时整单 404） |
 | 任务 | `GET accounts/{uid}/tasks`<br>`POST accounts/{uid}/tasks/accept` · `accept_all` · `claim` · `auto` · `auto_all`<br>`POST tasks/scan_all` · `tasks/run_queue` |
 | 积分补偿 | `GET compensation`（逐账号查询官方状态，含已禁用账号，带 `disabled` 标记）<br>`POST accounts/{uid}/compensation/claim` · `POST compensation/claim_all`（先查状态再领取，已禁用账号只查不领；批量结果逐账号返回） |
 | 添加账号 | `POST login/start` · `GET login/poll` · `GET login/regions` · `POST import`（multipart 字段 `file`；网关凭证与 cockpit tools 格式逐项自动识别，单个对象或数组都行；旧路径 `import/cockpit` 仍可用） |
+| 客户端密钥 | `GET keys`（`keys` 带原文和今天、累计用量；`admin_key_set`：设没设 `api_key`；`required`：`/v1/*` 是否必须带密钥）<br>`POST keys`（新建，字段 `name` / `note` / `enabled` / `expires_at`（RFC 3339 或 `null`）/ `daily_limit` / `total_limit`（`requests` / `tokens` / `credits`，不填 = 不限）/ `models`）· `POST keys/{id}`（修改，整份提交）· `POST keys/{id}/regenerate` · `POST keys/{id}/delete` |
 | 写入 | `POST config`（校验 → 落盘 → 热应用，返回需重启的字段）· `POST usage/save`（立即把内存里的用量落盘） |
 | 更新 | `POST version/check`（立即检查更新，返回同 `version`；30 秒内重复调用直接返回上次结果）<br>`POST update`（`{"version":"x.y.z"}`，必须是检查到的、比本机新的版本；在后台下载校验后重启，进度看 `version` 返回的 `self_update`）<br>`POST update/rollback`（删掉面板安装的版本；正在运行它时重启回程序自带的版本） |
 

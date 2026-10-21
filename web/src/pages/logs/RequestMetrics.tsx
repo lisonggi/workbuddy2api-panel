@@ -93,7 +93,7 @@ export function RequestMetrics() {
         <SearchField aria-label="搜索请求记录" value={q} onChange={setQ} className="w-full sm:w-72">
           <SearchField.Group>
             <SearchField.SearchIcon />
-            <SearchField.Input placeholder="搜索 IP / UA / 模型 / 账号 / 请求 ID" />
+            <SearchField.Input placeholder="搜索 IP / UA / 模型 / 账号 / 密钥 / 请求 ID" />
             <SearchField.ClearButton />
           </SearchField.Group>
         </SearchField>
@@ -128,12 +128,13 @@ export function RequestMetrics() {
         {() => shown.length === 0 ? <Empty title={all.length ? '没有符合当前筛选条件的请求记录' : '暂无请求记录'} /> : isDesktop ? (
           <Table variant="secondary">
             <Table.ScrollContainer className="max-h-[32rem] overflow-y-auto">
-              <Table.Content aria-label="请求记录" className="min-w-[1120px]">
+              <Table.Content aria-label="请求记录" className="min-w-[1200px]">
                 <Table.Header className="sticky top-0 z-10 bg-surface">
                   <Table.Column isRowHeader>时间</Table.Column>
                   <Table.Column>结果</Table.Column>
                   <Table.Column>模型</Table.Column>
                   <Table.Column>账号</Table.Column>
+                  <Table.Column>密钥</Table.Column>
                   <Table.Column>来源 IP</Table.Column>
                   <Table.Column>User-Agent</Table.Column>
                   <Table.Column className="text-right">耗时</Table.Column>
@@ -148,6 +149,7 @@ export function RequestMetrics() {
                       <Table.Cell><Outcome e={e} /></Table.Cell>
                       <Table.Cell className="whitespace-nowrap font-mono">{e.model || '—'}</Table.Cell>
                       <Table.Cell className="whitespace-nowrap">{e.account || '—'}</Table.Cell>
+                      <Table.Cell className="whitespace-nowrap">{e.api_key || dash}</Table.Cell>
                       <Table.Cell className="whitespace-nowrap font-mono text-xs">{e.client_ip || dash}</Table.Cell>
                       <Table.Cell>
                         {e.user_agent ? <span className="block max-w-56 truncate text-xs" title={e.user_agent}>{e.user_agent}</span> : dash}
@@ -173,6 +175,7 @@ export function RequestMetrics() {
                 <div className="flex flex-wrap gap-x-3 gap-y-0.5">
                   <span className="font-mono">{e.model || '—'}</span>
                   <span className="text-muted">{e.account || '—'}</span>
+                  {e.api_key && <span className="text-muted">密钥 {e.api_key}</span>}
                 </div>
                 <div className="flex flex-wrap gap-x-3 text-xs text-muted tabular-nums">
                   <span>{fmtMs(e.duration_ms)}</span>

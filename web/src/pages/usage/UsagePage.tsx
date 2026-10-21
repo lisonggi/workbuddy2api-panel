@@ -1,10 +1,12 @@
-// 用量：所选时间范围内的请求数与 token 用量（卡片、时序图、按账号 / 模型 / 域明细同一口径）。
+// 用量：所选时间范围内的请求数与 token 用量（卡片、时序图、按账号 / 模型 / 域 / 密钥明细同一口径）。
+// 选了密钥时整页（含积分扣除）只算这个密钥的请求。
 import { useMemo, useState, type ReactNode } from 'react'
-import { Chip, Table, ToggleButton, ToggleButtonGroup, type SortDescriptor } from '@heroui/react'
+import { Chip, Label, ListBox, Select, Table, ToggleButton, ToggleButtonGroup, type SortDescriptor } from '@heroui/react'
 import { Bar, BarChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { fmtMs, fmtRate, fmtTok } from '../../lib/format'
 import type { TipProps } from '../../lib/chart'
-import { useUsage } from '../../lib/queries'
+import { USAGE_KEY_ADMIN, USAGE_KEY_ALL, USAGE_KEY_NONE } from '../../lib/keys'
+import { useKeys, useUsage } from '../../lib/queries'
 import { initialRange, rangeLabel } from '../../lib/timerange'
 import type { KeyedUsage, UsagePoint, UsageResp } from '../../lib/types'
 import { chartPoints, chartStats, dayBoundaries, minGap, nearestTicks, share, tickLabel, type ChartPoint } from '../../lib/usage'
@@ -19,7 +21,8 @@ const echo = (iso: string) => iso.replace('T', ' ').slice(0, 16)
 
 export function UsagePage() {
   const [range, setRange] = useState(() => initialRange('72'))
-  const query = useUsage(range)
+  const [key, setKey] = useState(USAGE_KEY_ALL)
+  const query = useUsage(range, key)
   const d = query.data
   // 显式区间（今天 / 自定义）以服务端回显的实际区间为准；滚动窗口没有回显，用控件自己的标签
   const windowText = d?.window_from ? echo(d.window_from) + ' → ' + (d.window_to ? echo(d.window_to) : '现在') : rangeLabel(range)
@@ -36,6 +39,7 @@ export function UsagePage() {
         ].filter(Boolean).join(' · ')}
         actions={
           <>
+            <KeyFilter value={key} onChange={setKey} />
             <TimeRangePicker value={range} onChange={setRange} />
             <BusyButton size="sm" variant="secondary" busy={query.isFetching} onPress={() => void query.refetch()}>刷新</BusyButton>
           </>
@@ -59,6 +63,31 @@ export function UsagePage() {
         </>
       )}
     </>
+  )
+}
+
+/** 按密钥筛：全部 / 管理员 / 各客户端密钥 / 未区分（没开鉴权或加密钥维度之前的数据） */
+function KeyFilter({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const keys = useKeys()
+  const list = keys.data?.keys || []
+  // 没建过客户端密钥时不显示：只有管理员和未区分两种，按密钥明细里已经看得到
+  if (!list.length && value === USAGE_KEY_ALL) return null
+  const options = [
+    { id: USAGE_KEY_ALL, label: '全部密钥' },
+    { id: USAGE_KEY_ADMIN, label: '管理员' },
+    ...list.map((k) => ({ id: k.id, label: k.name })),
+    { id: USAGE_KEY_NONE, label: '未区分' },
+  ]
+  return (
+    <Select aria-label="按密钥筛选" value={value} onChange={(k) => onChange(String(k ?? USAGE_KEY_ALL))} className="w-36">
+      <Label className="sr-only">按密钥筛选</Label>
+      <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+      <Select.Popover>
+        <ListBox>
+          {options.map((o) => <ListBox.Item key={o.id} id={o.id} textValue={o.label}>{o.label}<ListBox.ItemIndicator /></ListBox.Item>)}
+        </ListBox>
+      </Select.Popover>
+    </Select>
   )
 }
 
@@ -141,16 +170,17 @@ function UsageChart({ series }: { series: UsagePoint[] }) {
   )
 }
 
-type UsageKind = 'account' | 'model' | 'realm'
+type UsageKind = 'account' | 'model' | 'realm' | 'key'
 type NumKey = 'requests' | 'errors' | 'prompt_tokens' | 'completion_tokens' | 'total_tokens' | 'avg_latency_ms' | 'avg_tokens_per_second'
 
-const KINDS: { id: UsageKind; label: string; key: 'by_account' | 'by_model' | 'by_realm' }[] = [
+const KINDS: { id: UsageKind; label: string; key: 'by_account' | 'by_model' | 'by_realm' | 'by_key' }[] = [
   { id: 'account', label: '按账号', key: 'by_account' },
   { id: 'model', label: '按模型', key: 'by_model' },
   { id: 'realm', label: '按域', key: 'by_realm' },
+  { id: 'key', label: '按密钥', key: 'by_key' },
 ]
 
-/** 按账号 / 模型 / 域三个维度共用一块，页内切换（零请求） */
+/** 按账号 / 模型 / 域 / 密钥四个维度共用一块，页内切换（零请求） */
 function UsageBreakdown({ data }: { data: UsageResp }) {
   const [kind, setKind] = useState<UsageKind>('account')
   const rows = data[KINDS.find((k) => k.id === kind)!.key] || []
@@ -176,6 +206,8 @@ function UsageBreakdown({ data }: { data: UsageResp }) {
   )
 }
 
+const KEY_COL: Record<UsageKind, string> = { account: '账号', model: '模型', realm: 'realm', key: '密钥' }
+
 const NUM_COLS: { id: NumKey; label: string; fmt: (r: KeyedUsage) => ReactNode; perf?: boolean }[] = [
   { id: 'requests', label: '请求', fmt: (r) => fmtTok(r.requests) },
   { id: 'errors', label: '失败', fmt: (r) => (r.errors ? <span className="text-warning">{fmtTok(r.errors)}</span> : '—') },
@@ -194,7 +226,10 @@ const NUM_COLS: { id: NumKey; label: string; fmt: (r: KeyedUsage) => ReactNode; 
   { id: 'avg_tokens_per_second', label: '均速率', fmt: (r) => fmtRate(r.avg_tokens_per_second), perf: true },
 ]
 
-/** 明细表；数字列点表头排序，默认按合计 token 从大到小。账号行显示昵称（后端放在 extra 里），UID 做副标题 */
+/**
+ * 明细表；数字列点表头排序，默认按合计 token 从大到小。账号行显示昵称、密钥行显示密钥名（后端都放在 extra 里），
+ * UID / 密钥 id 做副标题
+ */
 function UsageTable({ kind, rows }: { kind: UsageKind; rows: KeyedUsage[] }) {
   const [sort, setSort] = useState<SortDescriptor>({ column: 'total_tokens', direction: 'descending' })
   const cols = NUM_COLS.filter((c) => !c.perf || kind === 'account')
@@ -210,7 +245,7 @@ function UsageTable({ kind, rows }: { kind: UsageKind; rows: KeyedUsage[] }) {
       <Table.ScrollContainer>
         <Table.Content aria-label={label} className="min-w-[640px]" sortDescriptor={sort} onSortChange={setSort}>
           <Table.Header>
-            <Table.Column id="key" isRowHeader>{kind === 'account' ? '账号' : kind === 'model' ? '模型' : 'realm'}</Table.Column>
+            <Table.Column id="key" isRowHeader>{KEY_COL[kind]}</Table.Column>
             {kind === 'account' ? <Table.Column id="realm">域</Table.Column> : null}
             {cols.map((c) => (
               <Table.Column key={c.id} id={c.id} allowsSorting className="text-right">
@@ -220,12 +255,17 @@ function UsageTable({ kind, rows }: { kind: UsageKind; rows: KeyedUsage[] }) {
           </Table.Header>
           <Table.Body>
             {sorted.map((r) => (
-              <Table.Row key={r.key} id={r.key}>
+              <Table.Row key={r.key || '-'} id={r.key || '-'}>
                 <Table.Cell>
                   {kind === 'account' ? (
                     <div className="flex flex-col">
                       <span className="font-medium">{r.extra || r.key.slice(0, 8)}</span>
                       {r.extra && <span className="font-mono text-xs text-muted">{r.key.slice(0, 8)}</span>}
+                    </div>
+                  ) : kind === 'key' ? (
+                    <div className="flex flex-col">
+                      <span className="font-medium">{r.extra || r.key || '未区分'}</span>
+                      {/^k[0-9a-f]+$/.test(r.key) && <span className="font-mono text-xs text-muted">{r.key}</span>}
                     </div>
                   ) : <span className="break-all">{r.key}</span>}
                 </Table.Cell>

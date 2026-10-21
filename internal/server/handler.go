@@ -17,6 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+
+	"github.com/yreidev/workbuddy2api-panel/internal/apikeys"
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/httpauth"
 	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
@@ -33,8 +36,9 @@ import (
 type Config struct {
 	Pool      *pool.Pool
 	Upstream  *upstream.Client
-	APIKey    string // 空 = 不鉴权（静态值；与 Live 同时给出时 Live 优先）
-	MaxRotate int    // 单请求最多换号次数，默认 3
+	APIKey    string         // 管理员密钥，空 = 不鉴权（静态值；与 Live 同时给出时 Live 优先）
+	Keys      *apikeys.Store // 面板里建的客户端密钥（可选；nil = 只认管理员密钥），见 apikey.go
+	MaxRotate int            // 单请求最多换号次数，默认 3
 	// Session 会话粘性路由器（可选；nil = 关闭粘性，纯 Pick 轮换）。
 	Session *session.Router
 	// StickyCount 返回当前粘性会话绑定数（供 /status）；nil 时报告 0。
@@ -151,9 +155,9 @@ func NewHandler(cfg Config) *Handler {
 		cfg.PromptMode = "custom" // 缺省 custom：网关自有提示词
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), turns: session.NewTurnIDs()}
-	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
+	h.mux.HandleFunc("POST /v1/chat/completions", h.withKeyAuth(sdktranslator.FormatOpenAI, false, h.chatCompletions))
 	h.registerBridgeRoutes()
-	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
+	h.mux.HandleFunc("GET /v1/models", h.withKeyAuth(sdktranslator.FormatOpenAI, false, h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
 	h.mux.HandleFunc("GET /readyz", h.readyz)
@@ -315,9 +319,21 @@ const (
 // models 返回模型列表：纯动态（缓存 10min），失败/无号返回空列表（无静态兜底——
 // 拉不出目录即意味着上游不可用，假名单只会让客户端选到 11102 的模型）。
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
+	data := h.modelList()
+	// 客户端密钥只列白名单里的模型。id 带 cn: / global: 前缀，按裸名判。
+	if p := principalFrom(r.Context()); p.key != nil {
+		allowed := make([]map[string]any, 0, len(data))
+		for _, m := range data {
+			id, _ := m["id"].(string)
+			if _, bare := resolveModel(id); p.key.AllowsModel(bare) {
+				allowed = append(allowed, m)
+			}
+		}
+		data = allowed
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
-		"data":   h.modelList(),
+		"data":   data,
 	})
 }
 
@@ -659,6 +675,23 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer st.done()
 
+	// 客户端密钥：白名单按改写后实际发上游的模型判，过了再按上限放行并计一次请求。被拦下的也记一行
+	// 请求日志（带模型名），看得出是哪个模型、哪项上限不让用。
+	keyOwner := principalFrom(r.Context())
+	admitted := time.Now()
+	if status := h.admitKey(w, keyOwner, bareModel, admitted); status != 0 {
+		st.status, st.outcome = status, reqlog.OutcomeHTTPError
+		return
+	}
+	if keyOwner.key != nil {
+		// 失败的请求不算次数：最后没成功就退还放行时计的那一次。客户端中途断开时上游已经在回了，照算。
+		defer func() {
+			if st.outcome != reqlog.OutcomeSuccess && st.outcome != reqlog.OutcomeInterrupted {
+				h.cfg.Keys.Refund(keyOwner.key.ID, admitted)
+			}
+		}()
+	}
+
 	tried := map[string]bool{}
 	var lastErr error
 	// modelBlock 记录本次是否因「模型级冷却」而选不到号（下方 acct==nil 分支填充）。
@@ -792,7 +825,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				HasLatency:       delta.HasLatencyMs,
 				TokensPerSecond:  delta.TokensPerSecond,
 				HasTPS:           delta.HasTokensPerSecond,
+				Key:              keyOwner.usageKey(),
 			}, delta.HasTotalTokens || delta.HasCompletionTokens || delta.HasPromptTokens)
+		}
+		if keyOwner.key != nil {
+			tokens := delta.TotalTokens
+			if !delta.HasTotalTokens {
+				tokens = delta.PromptTokens + delta.CompletionTokens
+			}
+			h.cfg.Keys.Record(keyOwner.key.ID, time.Now(), tokens, credit, hasCredit)
 		}
 	}
 

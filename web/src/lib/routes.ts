@@ -1,4 +1,4 @@
-// 模型路由规则（config.json 的 model_routes）：匹配口径与网关 internal/server/model_route.go 一致。
+// 模型路由规则（config.json 的 model_routes）：匹配口径与网关 internal/server/model_route.go、internal/glob 一致。
 
 export interface ModelRoute {
   match: string

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	wb2api "github.com/yreidev/workbuddy2api-panel"
+	"github.com/yreidev/workbuddy2api-panel/internal/apikeys"
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
 	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
@@ -294,6 +295,18 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 	defer rec.Stop()
 	log.Printf("[usage] 逐请求用量记录已启用: %s (%s)", usagePath, rec.Describe())
 
+	// 客户端密钥（面板里建、发给别人调 /v1/* 的密钥）：与 state 文件同目录。读不了就不启动——
+	// 当成没有密钥会让「建过密钥就必须带」的规则悄悄失效，接口变成谁都能调。
+	keys, err := apikeys.Open(stateSibling(cfg.StateFile, "api_keys.json"))
+	if err != nil {
+		return false, err
+	}
+	keys.Start()
+	defer keys.Stop()
+	if n := len(keys.List(time.Now())); n > 0 {
+		log.Printf("[apikeys] 已载入 %d 个客户端密钥：/v1/* 必须带有效密钥", n)
+	}
+
 	// 请求指标始终启用；JSONL 归档只写脱敏元数据，写盘失败不影响聊天请求。
 	requestLog := reqlog.New(reqlog.Config{
 		Dir:           stateSibling(cfg.StateFile, "request-logs"),
@@ -313,6 +326,7 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 	pn := panel.New(panel.Config{
 		Pool:        p,
 		Usage:       rec,
+		Keys:        keys,
 		RequestLog:  requestLog,
 		Upstream:    up,
 		Scheduler:   sch,
@@ -345,6 +359,7 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 		Pool:         p,
 		Upstream:     up,
 		APIKey:       cfg.APIKey,
+		Keys:         keys,
 		Session:      sessRouter,
 		StickyCount:  sessCount,
 		RedisMode:    redisMode,

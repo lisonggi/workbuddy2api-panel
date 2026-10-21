@@ -5,7 +5,7 @@ import { ApiError, acct, api, errorMessage } from './api'
 import { rangeKey, rangeQuery, type TimeRange } from './timerange'
 import { SEEN_VERSION_KEY, readStored, updateBusy } from './update'
 import type {
-  CompensationResp, ConfigResp, LogEntry, Model, Overview, PackageAccount, ProbesResp, QueueState, RequestEvent, RequestMetrics, Task, UsageResp,
+  CompensationResp, ConfigResp, KeysResp, LogEntry, Model, Overview, PackageAccount, ProbesResp, QueueState, RequestEvent, RequestMetrics, Task, UsageResp,
   VersionResp, VoucherAccount,
 } from './types'
 
@@ -25,7 +25,8 @@ export const qk = {
   requests: (range: TimeRange, limit: number) => ['request_metrics', rangeKey(range), limit] as const,
   models: ['models'] as const,
   probes: ['model_probes'] as const,
-  usage: (range: TimeRange) => ['usage', rangeKey(range)] as const,
+  usage: (range: TimeRange, key: string) => ['usage', rangeKey(range), key] as const,
+  keys: ['keys'] as const,
   packages: ['packages'] as const,
   config: ['config'] as const,
   tasks: (uid: string) => ['tasks', uid] as const,
@@ -107,14 +108,25 @@ export function useProbes() {
  * 用量。积分扣除按模型的「积分倍率」来自网关缓存的模型目录：拉用量前先确保目录在 10 分钟内查过
  * （和旧版面板同口径；模型页刚查过就直接复用，不重复打上游）。目录查询失败不影响用量本身。
  */
-export function useUsage(range: TimeRange) {
+export function useUsage(range: TimeRange, key = '') {
   return useQuery({
-    queryKey: qk.usage(range),
+    queryKey: qk.usage(range, key),
     queryFn: async () => {
       await queryClient.fetchQuery({ queryKey: qk.models, queryFn: fetchModels, staleTime: 10 * 60_000 }).catch(() => undefined)
-      return api<UsageResp>('usage?' + rangeQuery(range, true).toString())
+      const q = rangeQuery(range, true)
+      if (key) q.set('key', key)
+      return api<UsageResp>('usage?' + q.toString())
     },
     placeholderData: keepPreviousData,
+  })
+}
+
+/** 客户端密钥：列表里的今天 / 累计用量随请求变，密钥页 10 秒一刷 */
+export function useKeys(intervalMs: number | false = false) {
+  return useQuery({
+    queryKey: qk.keys,
+    queryFn: () => api<KeysResp>('keys'),
+    refetchInterval: intervalMs,
   })
 }
 

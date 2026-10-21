@@ -13,9 +13,11 @@ describe('请求指标', () => {
     }
     const noSource: RequestEvent = { ...good, request_id: 'req-3', client_ip: '', user_agent: '' }
     const cached: RequestEvent = { ...good, request_id: 'req-2', cache_hit_tokens: 2257, cache_miss_tokens: 43 }
+    const keyed: RequestEvent = { ...good, request_id: 'req-4', api_key: '张三' }
     expect(requestLogText(good)).toBe('14:05:06 | 200 成功 | glm-5.3 | 账号(uid8) | 203.0.113.7 | python-requests/2.31.0 | 1.25s | 2.3k tok | 0.12 credit | req-1')
     expect(requestLogText(noSource)).toBe('14:05:06 | 200 成功 | glm-5.3 | 账号(uid8) | — | — | 1.25s | 2.3k tok | 0.12 credit | req-3')
     expect(requestLogText(cached)).toBe('14:05:06 | 200 成功 | glm-5.3 | 账号(uid8) | 203.0.113.7 | python-requests/2.31.0 | 1.25s | 2.3k tok | 0.12 credit | 命中 98.1% | req-2')
+    expect(requestLogText(keyed)).toBe('14:05:06 | 200 成功 | glm-5.3 | 账号(uid8) | 密钥 张三 | 203.0.113.7 | python-requests/2.31.0 | 1.25s | 2.3k tok | 0.12 credit | req-4')
     expect(outcomeLevel('success')).toBe('ok')
     expect(outcomeLevel('http_error')).toBe('error')
     expect(outcomeLevel('interrupted')).toBe('warn')
@@ -34,14 +36,15 @@ describe('请求指标', () => {
     expect([cacheLevel(95), cacheLevel(85), cacheLevel(50)]).toEqual(['ok', 'warn', 'error'])
   })
 
-  it('筛选：IP / UA / 模型 / 账号 / 请求 ID 包含匹配（空格分词 AND），结果精确匹配', () => {
-    const base = { outcome: 'success', client_ip: '203.0.113.7', user_agent: 'python-requests/2.31.0', model: 'cn:glm-5.3', account: '示例(uid8)', request_id: 'req-1' } as RequestEvent
+  it('筛选：IP / UA / 模型 / 账号 / 密钥 / 请求 ID 包含匹配（空格分词 AND），结果精确匹配', () => {
+    const base = { outcome: 'success', client_ip: '203.0.113.7', user_agent: 'python-requests/2.31.0', model: 'cn:glm-5.3', account: '示例(uid8)', api_key: '张三', request_id: 'req-1' } as RequestEvent
     const other = { outcome: 'http_error', client_ip: '198.51.100.4', user_agent: 'Mozilla/5.0 Chrome/120', model: 'global:hy3', account: '甲(uid9)', request_id: 'req-2' } as RequestEvent
     const pick = (f: RequestFilter) => [base, other].filter((e) => matchRequest(e, f)).map((e) => e.request_id)
     expect(pick({ q: '', outcome: '' })).toEqual(['req-1', 'req-2'])
     expect(pick({ q: '203.0.113', outcome: '' })).toEqual(['req-1'])
     expect(pick({ q: 'chrome/120', outcome: '' })).toEqual(['req-2'])
     expect(pick({ q: 'glm', outcome: '' })).toEqual(['req-1'])
+    expect(pick({ q: '张三', outcome: '' })).toEqual(['req-1'])
     // q 不匹配结果（结果有独立的下拉）
     expect(pick({ q: 'glm success', outcome: '' })).toEqual([])
     expect(pick({ q: 'glm chrome', outcome: '' })).toEqual([])

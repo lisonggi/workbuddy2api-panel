@@ -1,8 +1,9 @@
 # API 参考
 
-网关对外暴露 OpenAI 兼容接口、给 Claude Code 用的 Anthropic Messages 接口、给 Codex 用的 Responses 接口，以及几个运维端点。OpenAI 兼容客户端把 Base URL 设成 `http://<主机>:7863/v1`、API Key 填 `api_key` 即可；Claude Code、Codex 的接法见 README 的[接入客户端](../README.md#接入客户端)。
+网关对外暴露 OpenAI 兼容接口、给 Claude Code 用的 Anthropic Messages 接口、给 Codex 用的 Responses 接口，以及几个运维端点。OpenAI 兼容客户端把 Base URL 设成 `http://<主机>:7863/v1`、API Key 填 `api_key` 或面板里建的[客户端密钥](#客户端密钥)即可；Claude Code、Codex 的接法见 README 的[接入客户端](../README.md#接入客户端)。
 
 - [端点](#端点)
+- [客户端密钥](#客户端密钥)
 - [Claude Code 与 Codex 入口](#claude-code-与-codex-入口)
 - [模型名](#模型名)
 - [模型路由](#模型路由)
@@ -26,7 +27,28 @@
 
 Base URL 多写了 `/v1`、请求成了 `/v1/v1/...` 时，网关不校验密钥、不打上游，直接回 400 说明怎么改（Claude Code 的路径按 Anthropic 格式，其余按 OpenAI 格式）。不回 404 是因为 Claude Code 收到 404 一律提示模型不存在，看不到原因。
 
-鉴权规则：`api_key` 非空时校验 `Authorization: Bearer <api_key>`；两个 `/v1/messages` 端点在没有 `Authorization` 头时也认 `x-api-key: <api_key>`（Claude Code 用 `ANTHROPIC_API_KEY` 时发这个头）；`api_key` 为空时全部放行。`/healthz`、`/readyz` 始终不鉴权。每个响应都带 `X-Request-Id`。
+鉴权规则：
+
+- `/v1/*` 认管理员密钥（`api_key`）和[客户端密钥](#客户端密钥)，放在 `Authorization: Bearer <密钥>`；两个 `/v1/messages` 端点在没有 `Authorization` 头时也认 `x-api-key: <密钥>`（Claude Code 用 `ANTHROPIC_API_KEY` 时发这个头）。
+- `/status` 和面板只认管理员密钥。
+- `api_key` 为空、也没建过客户端密钥时全部放行；只要建过客户端密钥，`/v1/*` 就必须带有效密钥，`api_key` 为空也一样（`/status` 和面板仍然放行）。
+- `/healthz`、`/readyz` 始终不鉴权。每个响应都带 `X-Request-Id`。
+
+## 客户端密钥
+
+给别人用时在面板「密钥」页建客户端密钥，不用把 `api_key` 发出去。每个密钥可以设：
+
+- **启用开关和到期时间**：停用、过期、删掉的密钥回 401，`error.code` 分别是 `key_disabled`、`key_expired`、`key_deleted`，`message` 说明是哪个密钥、哪天到期；
+- **每天和总量的用量上限**：请求次数、token、积分三项，不填 = 不限。每天的上限按北京时间 00:00 重置；
+- **模型白名单**：只认 `*` 通配、不区分大小写，按经[模型路由](#模型路由)改写后实际发给上游的模型名匹配，不带 `cn:` / `global:` 前缀。比如 Claude Code 发 `claude-sonnet-4-5`、被路由改成 `glm-5.2`，白名单里要有 `glm-5.2`（或 `glm-*`）。不在白名单里回 403 `model_not_allowed`（Claude Code 入口是 `permission_error`），`GET /v1/models` 也只列白名单放行的模型。
+
+到上限时回 429 `key_quota_exceeded`，带 `X-Should-Retry: false`（Anthropic、OpenAI 的 SDK 看到它不自动重试）；每天的上限另带 `Retry-After`，是到北京时间 00:00 的秒数。计数口径：
+
+- 请求次数按客户端请求计，换号重试不重复计。放行时先计上，最后失败的（没号可用、上游报错）再退还，所以只算成功的请求，号池出问题时客户端的自动重试不会把次数烧光；客户端中途断开的照算；
+- token、积分在上游回复后计，上游没回积分的请求不计积分。并发请求在放行时还没计入 token 和积分，可能略超上限；
+- 管理员密钥不受这些限制。
+
+用量统计和请求记录都按密钥区分：用量里客户端密钥记它的 id、管理员密钥记 `admin`，没开鉴权和 1.3.0 之前的数据不区分；请求记录的 `api_key` 是密钥名，管理员密钥记「管理员」。密钥连同原文和计数存在数据目录的 `api_keys.json`（`0600`），用量计数每 10 秒写一次盘，停机时再写一次。
 
 ## Claude Code 与 Codex 入口
 

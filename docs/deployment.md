@@ -173,6 +173,7 @@ Compose 部署：`git pull && docker compose up -d --build`。
 | 账号凭证（明文 token，务必妥善保管） | `auths/` |
 | 池状态（积分、冷却、计数、暂停标记） | `data/state.json` |
 | 用量统计与请求归档 | `data/usage.json`、`data/request-logs/` |
+| 客户端密钥（含密钥原文和各自的用量） | `data/api_keys.json` |
 | 配置 | `config.json`（或 `data/config.json`） |
 
 配置了 Upstash Redis 后，池状态和会话绑定还会异步镜像到 Redis（7 天 TTL），重启时取较新的一份。

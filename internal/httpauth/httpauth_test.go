@@ -50,19 +50,19 @@ func TestVerifyBearerWithoutHeaderStillCompares(t *testing.T) {
 	}
 }
 
-func TestVerifyAPIKey(t *testing.T) {
+func TestToken(t *testing.T) {
 	cases := []struct {
 		name          string
-		key           string
+		xAPIKey       bool
 		authz, apiKey string
-		want          bool
+		want          string
 	}{
-		{"x-api-key 正确", "sk-abc", "", "sk-abc", true},
-		{"x-api-key 错误", "sk-abc", "", "sk-wrong", false},
-		{"空 key 放行 x-api-key", "", "", "whatever", true},
-		{"Bearer 正确", "sk-abc", "Bearer sk-abc", "", true},
-		{"两个头都带时只看 Authorization", "sk-abc", "Bearer sk-wrong", "sk-abc", false},
-		{"都不带", "sk-abc", "", "", false},
+		{"Bearer", false, "Bearer sk-abc", "", "sk-abc"},
+		{"不认 x-api-key 时忽略它", false, "", "sk-abc", ""},
+		{"认 x-api-key", true, "", "sk-abc", "sk-abc"},
+		{"两个头都带时只看 Authorization", true, "Bearer sk-a", "sk-b", "sk-a"},
+		{"Authorization 不是 Bearer", true, "Basic xxx", "sk-b", ""},
+		{"都不带", true, "", "", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -70,10 +70,16 @@ func TestVerifyAPIKey(t *testing.T) {
 			if c.apiKey != "" {
 				r.Header.Set("X-Api-Key", c.apiKey)
 			}
-			if got := VerifyAPIKey(r, c.key); got != c.want {
-				t.Errorf("VerifyAPIKey(key=%q, authz=%q, x-api-key=%q) = %v, want %v", c.key, c.authz, c.apiKey, got, c.want)
+			if got := Token(r, c.xAPIKey); got != c.want {
+				t.Errorf("Token(authz=%q, x-api-key=%q, %v) = %q, want %q", c.authz, c.apiKey, c.xAPIKey, got, c.want)
 			}
 		})
+	}
+}
+
+func TestEqual(t *testing.T) {
+	if !Equal("sk-abc", "sk-abc") || Equal("sk-abc", "sk-abcd") || Equal("", "sk-abc") {
+		t.Error("Equal 结果不对")
 	}
 }
 

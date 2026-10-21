@@ -213,6 +213,8 @@ export interface UsageResp {
   by_realm: KeyedUsage[] | null
   by_account: KeyedUsage[] | null
   by_model: KeyedUsage[] | null
+  /** 按密钥：key 是密钥 id（管理员是 admin，空串是没开鉴权或加密钥维度之前的数据），extra 是显示名 */
+  by_key?: KeyedUsage[] | null
   series: UsagePoint[] | null
   credit_by_account?: CreditUsage[] | null
   credit_by_model?: CreditUsage[] | null
@@ -405,6 +407,8 @@ export interface RequestEvent {
   /** 调用来源（logging.request_client_info 关闭时为空） */
   client_ip?: string
   user_agent?: string
+  /** 用的密钥：客户端密钥记名字，管理员密钥记「管理员」，没开鉴权为空 */
+  api_key?: string
 }
 
 export interface RequestMetrics {
@@ -501,4 +505,58 @@ export interface SelfUpdateStatus {
   rolled_back?: string
   /** 优雅停机最长等待（秒） */
   grace_sec: number
+}
+
+/** 客户端密钥的用量上限，没设的项 = 不限 */
+export interface KeyLimits {
+  requests?: number
+  tokens?: number
+  credits?: number
+}
+
+export interface KeyUsage {
+  requests: number
+  tokens: number
+  credits: number
+}
+
+/** 面板里建的客户端密钥（面板只认管理员密钥，所以列表里带原文） */
+export interface ApiKey {
+  id: string
+  name: string
+  note?: string
+  secret: string
+  enabled: boolean
+  created_at: string
+  /** 没有 = 不过期 */
+  expires_at?: string
+  daily_limit: KeyLimits
+  total_limit: KeyLimits
+  /** 模型白名单（* 通配，按实际发上游的模型名匹配），空 = 不限 */
+  models?: string[] | null
+  last_used_at?: string
+  used: KeyUsage
+  /** 北京时间今天的用量 */
+  today: KeyUsage
+  day?: string
+  /** 按网关的时钟算的是否已过期 */
+  expired: boolean
+}
+
+export interface KeysResp {
+  keys: ApiKey[] | null
+  admin_key_set: boolean
+  /** /v1/* 是否必须带密钥（设了管理员密钥或建过客户端密钥） */
+  required: boolean
+}
+
+/** 新建、修改密钥时提交的字段（修改也要整份提交） */
+export interface KeyInput {
+  name: string
+  note: string
+  enabled: boolean
+  expires_at: string | null
+  daily_limit: KeyLimits
+  total_limit: KeyLimits
+  models: string[]
 }

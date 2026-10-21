@@ -19,8 +19,6 @@ import (
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator/builtin"
-
-	"github.com/yreidev/workbuddy2api-panel/internal/httpauth"
 )
 
 var translators = builtin.Registry()
@@ -33,9 +31,9 @@ var chatPaths = map[string]bool{
 }
 
 func (h *Handler) registerBridgeRoutes() {
-	h.mux.HandleFunc("POST /v1/messages", h.withKeyAuth(sdktranslator.FormatClaude, h.anthropicMessages))
-	h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withKeyAuth(sdktranslator.FormatClaude, h.countTokens))
-	h.mux.HandleFunc("POST /v1/responses", h.withKeyAuth(sdktranslator.FormatOpenAIResponse, h.openaiResponses))
+	h.mux.HandleFunc("POST /v1/messages", h.withKeyAuth(sdktranslator.FormatClaude, true, h.anthropicMessages))
+	h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withKeyAuth(sdktranslator.FormatClaude, true, h.countTokens))
+	h.mux.HandleFunc("POST /v1/responses", h.withKeyAuth(sdktranslator.FormatOpenAIResponse, true, h.openaiResponses))
 	h.mux.HandleFunc("/v1/v1/", h.doubledV1)
 }
 
@@ -60,18 +58,6 @@ func (h *Handler) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 // openaiResponses POST /v1/responses（Codex CLI、OpenAI Responses SDK）。
 func (h *Handler) openaiResponses(w http.ResponseWriter, r *http.Request) {
 	h.bridge(w, r, sdktranslator.FormatOpenAIResponse)
-}
-
-// withKeyAuth 同 withAuth，另认 x-api-key 头（Claude Code 设 ANTHROPIC_API_KEY 时只发它），
-// 报错按入口协议的格式写。
-func (h *Handler) withKeyAuth(format sdktranslator.Format, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !httpauth.VerifyAPIKey(r, h.loadLive().APIKey) {
-			writeBridgeError(w, format, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
-			return
-		}
-		next(w, r)
-	}
 }
 
 func (h *Handler) bridge(w http.ResponseWriter, r *http.Request, format sdktranslator.Format) {

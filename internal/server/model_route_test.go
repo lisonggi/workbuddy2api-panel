@@ -9,31 +9,6 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
 )
 
-func TestGlobMatch(t *testing.T) {
-	cases := []struct {
-		pattern, s string
-		want       bool
-	}{
-		{"claude-*haiku*", "claude-haiku-4-5-20251001", true},
-		{"claude-*haiku*", "Claude-3-5-HAIKU", true},
-		{"claude-*", "claude", false},
-		{"claude-*", "claude-", true},
-		{"*", "anything", true},
-		{"gpt-*-codex*", "gpt-5.5-codex", true},
-		{"gpt-*-codex*", "gpt-5.5", false},
-		{"a*a", "a", false},
-		{"a*b*c", "axxbyyc", true},
-		{"a*b*c", "acb", false},
-		{"exact", "EXACT", true},
-		{"exact", "exactly", false},
-	}
-	for _, c := range cases {
-		if got := globMatch(c.pattern, c.s); got != c.want {
-			t.Errorf("globMatch(%q, %q)=%v want %v", c.pattern, c.s, got, c.want)
-		}
-	}
-}
-
 // routeRig 国内版目录 glm-5.2、国际版目录 gpt-5.5，开跨域合池（目录外的名字走国内版），带一组路由规则。
 func routeRig(t *testing.T, globalEnabled bool, routes ...livecfg.ModelRoute) (*Handler, *crossRealmUpstream) {
 	t.Helper()

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yreidev/workbuddy2api-panel/internal/apikeys"
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/changelog"
 	"github.com/yreidev/workbuddy2api-panel/internal/httpauth"
@@ -41,7 +42,8 @@ type Config struct {
 	Upstream  *upstream.Client
 	Scheduler *scheduler.Scheduler // 手动触发签到/保活；nil 时对应接口返回 501
 	AuthDir   string               // OAuth 登录完成后凭证落盘目录
-	APIKey    string               // 空 = 不鉴权（与主服务同语义）；与 Live 同时给出时 Live 优先
+	APIKey    string               // 管理员密钥，空 = 不鉴权（与主服务同语义）；与 Live 同时给出时 Live 优先
+	Keys      *apikeys.Store       // 客户端密钥（nil = 密钥接口返回 501）
 	RedisMode string               // "upstash" / "noop"，仅观测透出
 	Version   string               // 网关版本号（语义化版本，不带 v）
 
@@ -218,6 +220,11 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/usage/save", p.withAuth(p.usageSave))
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
+	p.mux.HandleFunc("GET /panel/api/keys", p.withAuth(p.keysList))
+	p.mux.HandleFunc("POST /panel/api/keys", p.withAuth(p.keyCreate))
+	p.mux.HandleFunc("POST /panel/api/keys/{id}", p.withAuth(p.keyUpdate))
+	p.mux.HandleFunc("POST /panel/api/keys/{id}/regenerate", p.withAuth(p.keyRegenerate))
+	p.mux.HandleFunc("POST /panel/api/keys/{id}/delete", p.withAuth(p.keyDelete))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
 }
 
@@ -328,6 +335,7 @@ func (p *Panel) requestLogs(w http.ResponseWriter, r *http.Request) {
 		Model:     q.Get("model"),
 		ClientIP:  q.Get("client_ip"),
 		UserAgent: q.Get("user_agent"),
+		APIKey:    q.Get("api_key"),
 		From:      parseTimeParam(q.Get("from")),
 		To:        parseTimeParam(q.Get("to")),
 	})
@@ -792,11 +800,28 @@ func (p *Panel) usage(w http.ResponseWriter, r *http.Request) {
 			nicks[s.UID] = s.Nickname
 		}
 	}
+	// key：只看这个密钥（客户端密钥的 id、admin；- 表示没开鉴权和旧数据）。
+	if v, ok := q["key"]; ok && len(v) > 0 && v[0] != "" {
+		win.KeySet = true
+		if v[0] != "-" {
+			win.Key = v[0]
+		}
+	}
 	var currentRate func(realm, model string) string
 	if p.cfg.Upstream != nil {
 		currentRate = p.cfg.Upstream.ModelRate
 	}
-	writeJSON(w, http.StatusOK, p.cfg.Usage.SnapshotWindow(win, nicks, currentRate))
+	snap := p.cfg.Usage.SnapshotWindow(win, nicks, currentRate)
+	names := map[string]string{}
+	if p.cfg.Keys != nil {
+		for _, k := range p.cfg.Keys.List(time.Now()) {
+			names[k.ID] = k.Name
+		}
+	}
+	for i := range snap.ByKey {
+		snap.ByKey[i].Extra = keyLabel(snap.ByKey[i].Key, names)
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 // parseTimeParam 解析时间查询参数：unix 秒（前端默认）或 RFC3339（便于手工调

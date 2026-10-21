@@ -3,7 +3,8 @@ package server
 import (
 	"context"
 	"log"
-	"strings"
+
+	"github.com/yreidev/workbuddy2api-panel/internal/glob"
 )
 
 // routedKey 请求上下文标记：模型名已经在入口路由过（Claude Code / Codex 入口先路由再翻译），
@@ -27,7 +28,7 @@ func (h *Handler) routeModel(ctx context.Context, model string) (string, bool) {
 		return model, false
 	}
 	for _, rt := range routes {
-		if globMatch(rt.Match, model) {
+		if glob.Match(rt.Match, model) {
 			log.Printf("INFO: [server] model route %s -> %s (rule %q)", model, rt.Target, rt.Match)
 			return rt.Target, true
 		}
@@ -49,25 +50,4 @@ func (h *Handler) catalogHas(model string) (has, known bool) {
 		return h.cfg.Upstream.RealmHasModel("global", model), true
 	}
 	return false, true
-}
-
-// globMatch 只认 * 通配（任意长度，含空串），不区分大小写；其余字符按字面比较。
-func globMatch(pattern, s string) bool {
-	pattern, s = strings.ToLower(pattern), strings.ToLower(s)
-	parts := strings.Split(pattern, "*")
-	if len(parts) == 1 {
-		return pattern == s
-	}
-	if !strings.HasPrefix(s, parts[0]) {
-		return false
-	}
-	s = s[len(parts[0]):]
-	for _, part := range parts[1 : len(parts)-1] {
-		i := strings.Index(s, part)
-		if i < 0 {
-			return false
-		}
-		s = s[i+len(part):]
-	}
-	return strings.HasSuffix(s, parts[len(parts)-1])
 }
