@@ -13,6 +13,7 @@
 // dist 的结构：
 //   - dist/index.html      页面骨架（无内联脚本）
 //   - dist/theme-init.js   首屏前套上明暗主题
+//   - dist/favicon.svg、favicon-32.png、apple-touch-icon.png  网页图标
 //   - dist/assets/*        打包后的脚本与样式，文件名带内容哈希，可永久缓存
 //
 // 安全头对"面板页面与全部 /panel/api/* 响应"统一生效：CSP 限制脚本只能来自本服务，
@@ -113,15 +114,21 @@ func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
 	p.serveBytes(w, r, "index.html", b)
 }
 
-// themeInit 首屏主题脚本（文件名不带哈希，不做长缓存）。
-func (p *Panel) themeInit(w http.ResponseWriter, r *http.Request) {
-	b, err := fs.ReadFile(p.assets, "theme-init.js")
-	if err != nil {
-		http.NotFound(w, r)
-		return
+// rootFiles dist 根目录下按原名提供的文件：首屏主题脚本和网页图标（来自 web/public）。
+// 只放行这几个，dist 里别的文件不对外。
+var rootFiles = []string{"theme-init.js", "favicon.svg", "favicon-32.png", "apple-touch-icon.png"}
+
+// rootFile 输出 dist 根目录下的一个文件（文件名不带哈希，不做长缓存）。
+func (p *Panel) rootFile(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		b, err := fs.ReadFile(p.assets, name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		p.serveBytes(w, r, name, b)
 	}
-	w.Header().Set("Cache-Control", "no-cache")
-	p.serveBytes(w, r, "theme-init.js", b)
 }
 
 // asset 输出打包后的脚本与样式。文件名带内容哈希，可永久缓存。
@@ -147,6 +154,7 @@ var contentTypes = map[string]string{
 	".js":   "text/javascript; charset=utf-8",
 	".css":  "text/css; charset=utf-8",
 	".svg":  "image/svg+xml",
+	".png":  "image/png",
 }
 
 // serveBytes 按扩展名写 Content-Type；客户端接受 gzip 且文件不小时返回压缩版本

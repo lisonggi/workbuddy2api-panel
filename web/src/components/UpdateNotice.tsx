@@ -19,6 +19,7 @@ import {
   DISMISSED_UPDATE_KEY, SEEN_VERSION_KEY, inlineParts, pickNotice, readStored, restartOutcome, shouldRecordSeen, updateProgress, writeStored,
   type NoticeMode, type PendingRestart, type UpdateStep,
 } from '../lib/update'
+import { LICENSE_URL, NOTICE_URL, REPO_URL, UPSTREAMS } from '../lib/notice'
 import type { Release, SelfUpdatePhase, SelfUpdateStatus, VersionResp } from '../lib/types'
 import { BusyButton } from './Feedback'
 import { useConfirm } from './useConfirm'
@@ -200,6 +201,11 @@ export function UpdateNotice({ manual, onManualChange }: { manual: ManualPanel; 
   )
 }
 
+/** 新标签页打开的外链，带常驻下划线 */
+function ExtLink({ href, children }: { href: string; children: ReactNode }) {
+  return <Link href={href} target="_blank" rel="noopener noreferrer" className={TEXT_LINK}>{children}</Link>
+}
+
 function NoticeModal({ open, onClose, title, desc, footer, children }: {
   open: boolean
   onClose: () => void
@@ -308,7 +314,19 @@ function AboutModal({ open, onClose, data, onShowUpdate, onRollback }: {
         )}
         <dt className="text-muted">一键更新</dt>
         <dd>{!su ? '未接入' : su.supported ? '可用' : su.reason}</dd>
+        <dt className="text-muted">许可</dt>
+        <dd>
+          <ExtLink href={LICENSE_URL}>AGPL-3.0-only</ExtLink>，附<ExtLink href={NOTICE_URL}>署名条款</ExtLink>
+        </dd>
+        <dt className="text-muted">源码</dt>
+        <dd><ExtLink href={REPO_URL}>yreidev/workbuddy2api-panel</ExtLink></dd>
       </dl>
+      <p className="mt-4 text-xs text-muted">
+        © 2026 yreidev 与贡献者，基于 {UPSTREAMS.map((u, i) => (
+          <span key={u.name}>{i > 0 && ' 与 '}<ExtLink href={u.url}>{u.name}</ExtLink></span>
+        ))}。
+        本程序按原样提供，不提供任何担保。你可以依 AGPL-3.0 复制、修改和分发；复制或改写须保留版权声明，并在说明文档和界面里注明出处、附上链接。
+      </p>
       {su?.rolled_back && (
         <Alert status="warning" className="mt-4">
           <Alert.Indicator />

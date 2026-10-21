@@ -80,6 +80,9 @@ func TestServeAssetsFromSyntheticDist(t *testing.T) {
 	p := newPanelWithAssets(fstest.MapFS{
 		"index.html":         {Data: []byte(`<!doctype html><script type="module" src="/panel/assets/app-abc.js"></script>`)},
 		"theme-init.js":      {Data: []byte("(function(){})()")},
+		"favicon.svg":        {Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)},
+		"favicon-32.png":     {Data: []byte("\x89PNG")},
+		"secret.txt":         {Data: []byte("x")},
 		"assets/app-abc.js":  {Data: []byte(bigJS)},
 		"assets/app-abc.css": {Data: []byte(bigCSS)},
 	})
@@ -94,6 +97,19 @@ func TestServeAssetsFromSyntheticDist(t *testing.T) {
 	rec = get(p, "GET", "/panel/theme-init.js")
 	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
 		t.Fatalf("theme-init code=%d cache=%q", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+
+	// 网页图标：按扩展名给类型；不在清单里的根目录文件不对外，清单里但没构建出来的回 404
+	for url, wantType := range map[string]string{"/panel/favicon.svg": "image/svg+xml", "/panel/favicon-32.png": "image/png"} {
+		rec := get(p, "GET", url)
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != wantType || rec.Header().Get("Cache-Control") != "no-cache" {
+			t.Errorf("%s code=%d type=%q cache=%q", url, rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Cache-Control"))
+		}
+	}
+	for _, url := range []string{"/panel/secret.txt", "/panel/apple-touch-icon.png"} {
+		if c := get(p, "GET", url).Code; c != http.StatusNotFound {
+			t.Errorf("%s code=%d want 404", url, c)
+		}
 	}
 
 	// 带哈希的资源：类型正确、永久缓存

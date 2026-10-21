@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）；SPDX-License-Identifier: AGPL-3.0-only；https://github.com/yreidev/workbuddy2api-panel -->
+  <!-- 面板图标：主题色圆角方块上一来一回两支箭头，表示网关转发。改了这里要重新导出同目录的 favicon-32.png（32×32）和 apple-touch-icon.png（180×180） -->
+  <rect width="64" height="64" rx="14" fill="#0485F7"/>
+  <g fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 22h30m-8-8 8 8-8 8"/>
+    <path d="M48 42H18m8-8-8 8 8 8"/>
+  </g>
+</svg>

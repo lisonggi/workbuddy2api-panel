@@ -177,7 +177,9 @@ func (p *Panel) Logs() *Ring { return p.logs }
 
 func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/{$}", p.index)
-	p.mux.HandleFunc("GET /panel/theme-init.js", p.themeInit)
+	for _, name := range rootFiles {
+		p.mux.HandleFunc("GET /panel/"+name, p.rootFile(name))
+	}
 	p.mux.HandleFunc("GET /panel/assets/{file}", p.asset)
 	p.mux.HandleFunc("GET /panel/api/overview", p.withAuth(p.overview))
 	p.mux.HandleFunc("GET /panel/api/version", p.withAuth(p.version))
