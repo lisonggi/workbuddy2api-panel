@@ -207,6 +207,37 @@ func TestBridgeAuth(t *testing.T) {
 	}
 }
 
+// TestDoubledV1 Base URL 多带 /v1 时不打上游、不校验密钥，回 400 说明怎么改：Claude Code 的路径用
+// Anthropic 格式（404 会被它说成模型不存在），其余用 OpenAI 格式。
+func TestDoubledV1(t *testing.T) {
+	h, calls := bridgeHandler(t, 200, sseOK, true)
+	h.cfg.Live = livecfg.New(livecfg.Snapshot{APIKey: "sk-test"})
+	for _, path := range []string{"/v1/v1/messages", "/v1/v1/messages/count_tokens"} {
+		rec := post(h, path, strings.Replace(claudeBody, "%s", "false", 1))
+		typ, msg := anthropicErr(t, rec)
+		if rec.Code != 400 || typ != "invalid_request_error" || !strings.Contains(msg, "Base URL 不要带 /v1") ||
+			!strings.Contains(msg, path) || !strings.Contains(msg, "ANTHROPIC_BASE_URL") {
+			t.Errorf("%s → code=%d type=%s msg=%s", path, rec.Code, typ, msg)
+		}
+	}
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/v1/chat/completions"}, {http.MethodPost, "/v1/v1/responses"}, {http.MethodGet, "/v1/v1/models"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{}`)))
+		var e struct {
+			Error struct{ Message, Code string } `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || rec.Code != 400 || e.Error.Code != "invalid_base_url" ||
+			!strings.Contains(e.Error.Message, "多带了一个 /v1") || !strings.Contains(e.Error.Message, tc.path) {
+			t.Errorf("%s %s → code=%d body=%s", tc.method, tc.path, rec.Code, rec.Body)
+		}
+	}
+	if *calls != 0 {
+		t.Errorf("不该打上游：calls=%d", *calls)
+	}
+}
+
 func TestBridgeUnknownModel(t *testing.T) {
 	auth.SetGlobalEnabled(true)
 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })

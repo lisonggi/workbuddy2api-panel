@@ -24,6 +24,8 @@
 | `GET /readyz` | 无 | 就绪检查：平时 200，收到停止信号后 503 |
 | `/panel/` | 面板内输入 | Web 管理面板；接口见[面板接口](panel.md#面板接口) |
 
+Base URL 多写了 `/v1`、请求成了 `/v1/v1/...` 时，网关不校验密钥、不打上游，直接回 400 说明怎么改（Claude Code 的路径按 Anthropic 格式，其余按 OpenAI 格式）。不回 404 是因为 Claude Code 收到 404 一律提示模型不存在，看不到原因。
+
 鉴权规则：`api_key` 非空时校验 `Authorization: Bearer <api_key>`；两个 `/v1/messages` 端点在没有 `Authorization` 头时也认 `x-api-key: <api_key>`（Claude Code 用 `ANTHROPIC_API_KEY` 时发这个头）；`api_key` 为空时全部放行。`/healthz`、`/readyz` 始终不鉴权。每个响应都带 `X-Request-Id`。
 
 ## Claude Code 与 Codex 入口

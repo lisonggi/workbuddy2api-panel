@@ -36,6 +36,20 @@ func (h *Handler) registerBridgeRoutes() {
 	h.mux.HandleFunc("POST /v1/messages", h.withKeyAuth(sdktranslator.FormatClaude, h.anthropicMessages))
 	h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withKeyAuth(sdktranslator.FormatClaude, h.countTokens))
 	h.mux.HandleFunc("POST /v1/responses", h.withKeyAuth(sdktranslator.FormatOpenAIResponse, h.openaiResponses))
+	h.mux.HandleFunc("/v1/v1/", h.doubledV1)
+}
+
+// doubledV1 Base URL 多带了 /v1 的请求：Claude Code 自己会拼 /v1/messages，ANTHROPIC_BASE_URL
+// 写成 …/v1 就成了 /v1/v1/messages。照实回 404 的话 Claude Code 一律提示「所选模型不存在」，
+// 看不到原因，所以回 400 并按入口协议说明怎么改。不校验密钥：地址不对时先改地址。
+func (h *Handler) doubledV1(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/v1/messages") {
+		writeBridgeError(w, sdktranslator.FormatClaude, http.StatusBadRequest, "invalid_base_url",
+			"Base URL 不要带 /v1：Claude Code 会自己拼上 /v1/messages，请求成了 "+r.URL.Path+"。把 ANTHROPIC_BASE_URL 末尾的 /v1 去掉。")
+		return
+	}
+	writeOpenAIError(w, http.StatusBadRequest, "invalid_base_url",
+		"Base URL 多带了一个 /v1：请求成了 "+r.URL.Path+"。把 Base URL 末尾的 /v1 去掉。")
 }
 
 // anthropicMessages POST /v1/messages（Claude Code、Anthropic SDK）。
