@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+# SPDX-License-Identifier: AGPL-3.0-only
+# 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 """一次性任务脚本：chat_5（和 AI 聊天 5 次，+100 积分 +5 能量）.
 
 通过 {billing}/v2/report 上报 chat_request_send 事件完成进度累计。

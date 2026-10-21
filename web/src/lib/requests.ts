@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 请求指标（/panel/api/request_metrics、request_logs）的展示口径，与上游旧面板一致（见 requests.test.ts）。
 import { fmtMs, fmtTok } from './format'
 import type { RequestEvent } from './types'

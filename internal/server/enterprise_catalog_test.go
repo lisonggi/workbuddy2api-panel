@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // enterprise_catalog_test.go 企业号按自己的目录接模型：企业专属模型只派给目录里有它的企业号，
 // 个人号照常接普通模型；/v1/models 列出企业专属模型并标 enterprise_only。
 package server

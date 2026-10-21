@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 添加账号：浏览器 OAuth 登录（免重启热加载进池）或导入 JSON（账号池导出的凭证 / cockpit tools 导出的账号）。
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUpRightFromSquare, Copy } from '@gravity-ui/icons'

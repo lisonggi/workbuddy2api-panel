@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // login.go 登录请求：发起授权（auth/state）、轮询令牌（auth/token）、取账号（account），
 // 形状对齐官方桌面端后台服务的登录。
 //

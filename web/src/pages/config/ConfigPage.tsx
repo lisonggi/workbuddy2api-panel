@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 配置：直接改 config.json。能热生效的字段保存即生效，装配期字段（监听地址、超时等）标「需重启」。
 // 写入是深合并 + 原子替换，表单只提交它管理的键，未知键原样保留。
 import { useMemo, useState } from 'react'

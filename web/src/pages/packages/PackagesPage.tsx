@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 积分构成：积分到期分布（按剩余天数、账号分色）、账号对比卡片、单账号逐包明细。
 // 数据逐账号实时查上游（慢），与账号池页的到期提醒共用一份缓存：第一次进来自动查，之后切回来直接用缓存
 // 并标出数据年龄，点「刷新」才实时查（同上游 8391a05）。

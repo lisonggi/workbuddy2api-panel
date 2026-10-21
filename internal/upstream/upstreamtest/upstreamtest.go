@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // Package upstreamtest 给其他包的测试用：按官方接口的形状造积分、签到状态与网页登录态
 // （登录码 → client-login）的假响应，免得每个包的假上游各写一遍。只在测试里导入。
 package upstreamtest

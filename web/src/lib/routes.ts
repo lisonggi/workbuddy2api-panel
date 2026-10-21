@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 模型路由规则（config.json 的 model_routes）：匹配口径与网关 internal/server/model_route.go、internal/glob 一致。
 
 export interface ModelRoute {

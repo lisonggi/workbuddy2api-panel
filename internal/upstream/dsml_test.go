@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // dsml_test.go 覆盖模型原生工具调用标记修复层（dsml.go）。
 //
 // 所有夹具都用包内常量拼装（markupOpen / markupPipe / ...），不在源码里写死真实

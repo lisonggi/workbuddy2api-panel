@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+# SPDX-License-Identifier: AGPL-3.0-only
+# 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 """一次性任务脚本：first_buddy（领取一只 Buddy，+300 积分 +8 能量）.
 
 链路（照抄 probe_active.py 的 unlock 模式，实测可行）：

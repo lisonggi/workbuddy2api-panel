@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // global 模型目录探测：纯动态产出模型名及其窗口 / 能力元数据（v3-config-merge）。
 //
 // 个人号只拉 /v3/config（桌面端内置 CLI 的 UA，与官方桌面端同一份目录）；企业号并发再探

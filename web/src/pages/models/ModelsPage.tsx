@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 模型与档位：上方是模型路由规则；下方实时查询上游模型目录（国内版、国际版两个域），展示积分倍率、思考档位、上下文与输出上限。
 // 输出上限列若有 scripts/probe_max_tokens.py 的实测结果，标注钳制情况；没有则显示上游声称值。
 import { useMemo, useState, type ReactNode } from 'react'

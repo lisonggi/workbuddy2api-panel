@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 凭证导出：后端按 uid 返回与数据目录 workbuddy-<uid>.json 同形的凭证文档，这里拼成要下载的文件。
 // 单个账号 → workbuddy-<uid>.json（一个对象，和数据目录里的文件一模一样）；多个 → 一个数组文件。
 // 两种文件面板「添加账号 → 导入」都认，企业 ID、域、设备 token 不丢。

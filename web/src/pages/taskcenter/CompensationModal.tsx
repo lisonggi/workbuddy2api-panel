@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 积分补偿（官方不定期发放的补偿活动）：打开弹窗逐账号查状态，可单号领取或领取全部；额度与领取期限均采用官方返回值。
 // 签到排程会自动检查并领取，这里是手动入口，所以和券码一样收在任务中心的按钮里，不常驻页面。
 import { Button, Chip, Modal, toast } from '@heroui/react'

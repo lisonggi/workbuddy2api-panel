@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 模型锁池：被上游按模型限流的模型（哪些模型不能用、锁了几个号、还要锁多久）。
 // 账号表回答「哪个账号不能用」，这里回答「哪个模型不能用」。窄屏换成卡片。
 import { Chip, Table, useMediaQuery } from '@heroui/react'

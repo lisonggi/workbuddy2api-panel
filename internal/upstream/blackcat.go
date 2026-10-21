@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // blackcat.go 夜猫子任务（black_cat）+ 新手礼包/补偿 API。
 //
 // 判据（WorkBuddy-Daily 项目实测口径 + 本网关验证）：black_cat 要求在

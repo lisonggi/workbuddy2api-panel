@@ -178,17 +178,17 @@ jobs:
           fi
           echo "panel assert OK"
 
-      - name: 打包（windows=zip 三件套，其余=tar.gz）
+      - name: 打包（windows=zip，其余=tar.gz；许可证随包分发）
         run: |
           V="${{ steps.ver.outputs.v }}"
           case "${{ matrix.goos }}" in
             windows)
               NAME="wb2api-panel-v${V}-windows-amd64.zip"
-              zip -q "$NAME" wb2api.exe config.example.json README.md
+              zip -q "$NAME" wb2api.exe config.example.json README.md LICENSE NOTICE
               ;;
             *)
               NAME="wb2api-panel-v${V}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
-              tar czf "$NAME" wb2api config.example.json README.md
+              tar czf "$NAME" wb2api config.example.json README.md LICENSE NOTICE
               ;;
           esac
           echo "name=$NAME" >> "$GITHUB_ENV"

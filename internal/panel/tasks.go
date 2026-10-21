@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // tasks.go 面板「积分任务」接口：查询任务进度、接受任务、领取奖励。
 //
 // 上游能力（internal/upstream/tasks.go）的三层薄封装；前端表格展示

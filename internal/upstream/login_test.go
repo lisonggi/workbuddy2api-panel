@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // login_test.go 登录三段请求（发起授权、轮询令牌、取账号）的形状、错误与取账号重试。
 // 假上游用 blackcat_test.go 的 newUpFake，不连外网。
 package upstream

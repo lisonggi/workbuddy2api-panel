@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // modelsdev.go models.dev 按需兜底（context_length 四级查找链的第 4 级）。
 //
 // 定位：只对「上游动态值缺失 + 静态种子表未收录 + model.json 未缓存」的模型查

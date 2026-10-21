@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // account_catalog.go 企业号各自的模型目录，以及按目录判断某个号能不能接某个模型。
 //
 // 域目录（storeRealmModels）每个域只拉一份，用的是个人号。企业号的名单因企业而异：

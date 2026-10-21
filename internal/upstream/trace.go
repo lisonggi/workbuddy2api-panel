@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // trace.go 官方后台服务登录、刷新令牌请求的链路头。
 //
 // 依据（10-20 读官方桌面端 5.8.3 / 5.8.4 安装包）：两个安装包 product.json 的

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 更新提醒：本浏览器的提醒记录（localStorage）、该弹哪个窗，以及更新日志条目里的行内标记。
 // 记录读写失败（无痕模式等）按没记过处理：最多是同一条提醒在本次会话之外再弹一次。
 import type { SelfUpdateStatus, VersionResp } from './types'

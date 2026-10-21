@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 账号详情抽屉：展示后端已有、账号表放不下的运维信息——模型级限额台账、成本台账、
 // 最早到期批次、连败 / 熔断计数、最近一次请求。数据取自总览（随 5 秒轮询实时更新）。
 import type { ReactNode } from 'react'

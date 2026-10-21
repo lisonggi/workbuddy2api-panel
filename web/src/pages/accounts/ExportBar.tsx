@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 凭证导出：账号表多选后的操作（已选 N 个 / 导出凭证 / 取消选择）、勾选框，以及详情抽屉里的单个导出按钮。
 // 宽屏操作放在搜索框旁；窄屏卡片列表很长，操作改放底部吸附条（同配置页的保存条），滚到哪都看得到。
 import type { ReactNode } from 'react'

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+# SPDX-License-Identifier: AGPL-3.0-only
+# 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 # 提交信息检查，规则见 docs/commits.md。
 #   scripts/commit-msg.sh <消息文件>             检查一条提交信息（.githooks/commit-msg 调用）
 #   scripts/commit-msg.sh --commits <rev-list 参数>  沿第一父提交检查这些提交（CI 调用），

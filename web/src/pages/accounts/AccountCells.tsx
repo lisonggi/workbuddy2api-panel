@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 账号的各个展示单元（名称、状态、积分、用量），账号表、手机卡片、详情抽屉共用。
 import { Chip, ProgressBar } from '@heroui/react'
 import { activeRateLimits, creditPercent, isUnlimited, rateLimitInfo, type Health } from '../../lib/accounts'

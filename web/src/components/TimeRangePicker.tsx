@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 时间范围选择：预设下拉 +「自定义」时的起止（精确到分钟，本地时区）。用量页与请求记录共用，口径见 lib/timerange.ts。
 import {
   DateField, DateRangePicker, Label, ListBox, RangeCalendar, Select, TimeField, type DateValue, type RangeValue, type TimeValue,

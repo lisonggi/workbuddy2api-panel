@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // global_register.go 国际版（global realm）新账号注册激活与地区完善。
 //
 // 背景（ANALYSIS-workbuddy-client-reverse.md）：新 global 账号需先完成注册地区

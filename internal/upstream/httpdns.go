@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // httpdns.go 腾讯云 HTTPDNS 客户端：给国内版可信入口解析出可直连的 IP。
 //
 // 依据：官方桌面端 5.8.3 内置 CLI 的 HTTPDNS 模块（10-20 读安装包确认）。官方默认走

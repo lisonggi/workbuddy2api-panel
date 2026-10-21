@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 连败降权（issue #114）：NoteFailures 计数 + 达阈临时出池 + NoteSuccess 清零。
 // 与冷却/熔断「并存取更长者不叠加」由 entry.healthy 的并列或门天然保证
 // （三个截止是或门，任一未到期即不可选，生效的一定是最远者——见 entry.degradeUntil 注释）。

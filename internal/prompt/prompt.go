@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // Package prompt 提供网关自有系统提示词：内置默认 + 文件覆盖 + 降级中性提示词。
 //
 // 背景：客户端（Claude Code/Codex 等 CLI）在 system prompt 注入固定模板句，

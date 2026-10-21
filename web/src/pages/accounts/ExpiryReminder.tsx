@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 积分到期提醒：每个账号最近一批要过期的积分、到期前日均至少要耗多少。数据与积分构成页共用一份缓存。
 // 逐账号实时查上游，账号一多打开页面就卡，所以打开账号池不自动查，只在点「检查」时查（同上游 8391a05）；
 // 没查之前先用总览里各账号最早一批到期的快照顶上，不查上游（同上游 0ab6690）。

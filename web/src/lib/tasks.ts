@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 可一键完成的任务（与后端 internal/panel/autotask.go 的 autoActions 表一致）：判据为行为事件、可经网关复现。
 // 其余任务需在官方客户端内交互，面板只展示指引。键含点号（Model_chat_GLM5.2），必须写成字符串键。
 export const AUTO_TASKS: Record<string, string> = {

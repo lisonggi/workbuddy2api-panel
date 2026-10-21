@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 积分扣除历史：按所选时间范围统计上游返回的 usage.credit，按账号、按模型（带请求时的积分倍率）两个维度页内切换。
 // 只统计明确返回了积分的请求；升级前只有 token 的历史不会伪造积分，所以「积分 / 1M Token」只用同时
 // 有积分和 token 的样本算。缓存命中率 = 上游前缀缓存命中 / (命中 + 未命中)，低命中意味着费用成倍放大。

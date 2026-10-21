@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 单个账号的积分任务：查询上游任务进度；「接受」为报名（幂等），「领取」在进度达标后可用，
 // 可自动完成的任务给「一键完成」。所有操作走网关，无需外部脚本。
 import { useState } from 'react'

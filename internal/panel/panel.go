@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // Package panel 内嵌式 Web 管理面板：账号池总览、单号运维（解冻/禁用/签到/
 // 刷新余额/移除）、浏览器内 OAuth 添加账号（免重启热加载进池）、手动批量
 // 签到/保活，以及运行日志环形缓冲（镜像 log 包与 chat 表格日志）。

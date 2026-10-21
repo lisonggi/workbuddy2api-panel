@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // dsml.go 上游正文里的「模型原生工具调用标记」修复层。
 //
 // 背景：本网关背后的 WorkBuddy 上游最终由 DeepSeek 系模型出结果，它的工具调用原生

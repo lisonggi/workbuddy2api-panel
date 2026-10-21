@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 外壳：左侧导航（窄屏收进抽屉）+ 顶栏（页面标题、运行时长、明暗切换、刷新余额、添加账号）。
 // HeroUI 没有侧栏/顶栏组件，布局用 Tailwind 搭，里面的导航、按钮、抽屉都是 HeroUI 组件。
 import { useEffect, useState, type ComponentType, type SVGProps } from 'react'

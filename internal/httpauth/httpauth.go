@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // Package httpauth 网关与面板共用的 Bearer 鉴权原语。
 //
 // 单独成包的原因：server（/v1/*、/status）与 panel（/panel/api/*）两处鉴权

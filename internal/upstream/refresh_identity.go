@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // refresh_identity.go 刷新令牌后照官方合并账号、核对身份。
 //
 // 依据（10-20 读官方桌面端 5.8.3 内置 CLI 确认）：refreshSession 用新令牌取到账号后，

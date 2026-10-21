@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 单个账号的运维动作（签到 / 刷新余额 / 查看任务 / 解冻 / 暂停与恢复选号 / 禁用 / 移除），账号表、手机卡片、详情抽屉共用。
 import { useState } from 'react'
 import { toast } from '@heroui/react'

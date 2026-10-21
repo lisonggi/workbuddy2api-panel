@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+# SPDX-License-Identifier: AGPL-3.0-only
+# 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 """一次性任务脚本：RichMeow_Chat（桌面端对话 1 次，+100 积分 +5 能量 +限定 Buddy 盲盒）.
 
 任务书：先查 eventCode 是否与 chat_request_send 不同（在 probe_active.py / Go 代码

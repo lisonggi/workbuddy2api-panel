@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // playbook.go 灵感案例（桌面端发现页）的数据。官方 5.8.3 渲染层从静态站点拉，不用登录
 // （getDiscoverBaseUrl：https://static.workbuddy.cn/workbuddy/playbook）：
 //

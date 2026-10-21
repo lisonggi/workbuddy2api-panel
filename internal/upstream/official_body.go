@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // official_body.go 出站 chat body 补官方 CLI 会补的字段（WorkBuddy 桌面端 5.8.3 / 5.8.4 安装包内置的
 // @tencent-ai/codebuddy-code 2.161.0，dist/codebuddy-lite-wb.mjs 的 injectReasoningSummaryIfNeeded）。
 package upstream

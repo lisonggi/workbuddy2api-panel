@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 账号池：统计（点一下按状态筛选）+ 积分到期提醒 + 搜索 + 账号表（可排序，点行看详情，可多选导出凭证）+ 批量任务 + 模型锁池。窄屏把表格换成卡片列表。
 import { useMemo, useState } from 'react'
 import {

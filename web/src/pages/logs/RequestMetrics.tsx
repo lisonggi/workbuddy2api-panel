@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 请求记录：完成数、成功率、HTTP 成功率、平均耗时、进行中，以及请求明细（最新的在前）。
 // 只展示请求元数据（时间、状态、模型、账号、调用来源、耗时、token、积分、请求 ID），不含提示词与响应正文。
 // 归档开着时按时间范围与条数从 JSONL 归档读；关键字与结果筛选只在已读到的条目上做，不发新请求。

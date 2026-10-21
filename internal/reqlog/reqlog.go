@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // Package reqlog 记录脱敏的请求级指标与可选 JSONL 归档。
 //
 // 内存指标有界保存最近 100 条并维护进程级计数；磁盘归档只写请求元数据，

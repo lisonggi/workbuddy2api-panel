@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // ring.go 固定容量的结构化日志环形缓冲（并发安全，实现 io.Writer）。
 // main 把 log 包输出与 chat 表格日志经 MultiWriter 镜像进来，面板
 // /panel/api/logs 读取快照；超出容量的旧行按 FIFO 淘汰。

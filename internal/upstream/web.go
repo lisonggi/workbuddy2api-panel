@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // web.go 官网网页形状的请求头与请求发送：成长中心（任务、猫猫、连登、抽奖、热力图、
 // 补签卡）、积分补偿、新手礼包、试用。
 //

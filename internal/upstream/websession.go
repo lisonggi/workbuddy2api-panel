@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // websession.go 每个账号的官网网页登录态（Cookie 罐）及其获取流程。
 //
 // 依据（10-20 读官方桌面端 5.8.3 与官网前端代码确认；生产实测见 web.go 文件头）：

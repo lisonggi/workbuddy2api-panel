@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 积分保底（credit floor）：账号余额低于 floor 时，对实测收费模型（tier 2）
 // 不再参与选号——防止收费请求把余额打穿、连免费模型都 402 冷却到次日签到。
 // tier 0（免费）与 tier 1（无观测）不受影响：保底保的是「还有余额可用」，

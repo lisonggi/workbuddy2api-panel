@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // checkin_retry_test.go 钉住签到/余额维护类计费调用的瞬时错误有界重试：
 // 上游 5xx（实测偶发 code 10000 / http 500）与网络抖动重试，业务错误（已签到/
 // 参数错）不重试——重试只会原样再失败一次。

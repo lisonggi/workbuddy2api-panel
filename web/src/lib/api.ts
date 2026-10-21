@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 面板接口请求：统一带上访问密钥（Bearer，与 /v1/* 同一口径），401 时通知外壳弹出密钥框。
 
 const KEY_STORAGE = 'wb2api.key'

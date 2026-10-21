@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 时间范围（用量页、请求记录共用）：预设 → 查询参数（纯函数，见 timerange.test.ts；口径与上游旧面板 trange* 一致）。
 //
 // 区间一律由浏览器算好再发：

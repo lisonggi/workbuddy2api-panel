@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 密钥：给别人用的客户端密钥，只能调 /v1/*，登不了面板。每个密钥可以设到期时间、每天和总量的用量上限、
 // 模型白名单，列表里看今天和累计用量。管理员密钥是配置页的 api_key，不受这些限制。
 // 网关把密钥存在 data/api_keys.json（0600，含原文），面板只认管理员密钥，所以这里能随时复制原文。

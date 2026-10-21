@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // resources.go 个人号积分：照官方桌面端 5.8.3 的查法（BackendProvider.getCurrentPlan → fetchUserResources）。
 //
 // 三个接口同时发，两个域路径相同（不带 /v2），都带 Accept-Language（zh / en）：

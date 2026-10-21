@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // device_token.go X-Device-Token 的文件兜底读取（与桌面端共用状态文件）。
 //
 // 容器内无桌面端 Turing Shield SDK，无法像 Python fork（xiaofan6ya/converter.py）那样

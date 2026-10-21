@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 更新提醒与一键更新：升级后第一次打开弹「本次更新」，有新版本时弹「有新版本」（列出新版本的变更，
 // 能一键更新就给「更新到 vX」按钮，否则给手动升级方法）。每条提醒在本浏览器只自动弹一次（记在 localStorage），
 // 没升级前侧栏一直有「有新版本」入口可以再打开；点侧栏版本号打开「版本信息」，可立即检查、退回自带版本。

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 面板接口（/panel/api/*）的返回类型，手写对齐 internal/panel 与 internal/pool 的 JSON 字段。
 // Go 端 time.Time 的零值序列化为 "0001-01-01T00:00:00Z"，展示前要当作「无」处理（见 format.ts 的 isZeroTime）。
 

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 各页面共用的加载、出错、空状态和确认框，统一口径：
 // 加载中用骨架占位；出错说清原因并给「重试」；已有数据时刷新失败不清空页面（只提示）。
 import type { ComponentProps, ReactNode } from 'react'

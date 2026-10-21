@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // signin 一次性批量签到工具：遍历 ./auths/workbuddy-*.json 全部账号，
 // 自动 RefreshToken（过期时），逐个调 daily-checkin，顺手查余额。
 package main

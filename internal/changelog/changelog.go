@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // Package changelog 解析 docs/CHANGELOG.md（Keep a Changelog 格式），并按语义化版本比较版本号。
 //
 // 只认面板需要的结构：「## [x.y.z] - 日期」开一个版本，「### 分组」开一个分组，「- 」开头的行是

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // tasks.go growth 域「任务」接口：列表查询 / 接受 / 领取奖励。
 //
 // 来源：官网网页 growthSpace-*.js（路径与请求体）+ 上游 scripts/task_common.py 实测口径，

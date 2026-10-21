@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 配置页的字段定义：每个表单字段对应 config.json 里的一个路径（与旧版 CFG_MAP 一致），
 // 按标签页分组。保存时只提交表单管理的键，后端深合并，未知键原样保留。
 

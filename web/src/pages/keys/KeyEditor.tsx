@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 新建 / 编辑客户端密钥的弹窗，和建好后的「接入方法」弹窗（密钥原文 + 各客户端的填法）。
 import { useMemo, useState } from 'react'
 import { Copy } from '@gravity-ui/icons'

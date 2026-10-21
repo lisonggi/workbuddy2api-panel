@@ -93,7 +93,7 @@ tar xzf wb2api-panel-linux-amd64.tar.gz
 
 想固定版本，到 [Releases](https://github.com/yreidev/workbuddy2api-panel/releases) 下载带版本号的包（如 `wb2api-panel-v1.0.0-linux-amd64.tar.gz`），每个版本的变更写在它的 Release 说明里。
 
-每个包里是 `wb2api`、`config.example.json` 和 `README.md`；同一个 Release 里的 `checksums.txt` 可用 `sha256sum -c --ignore-missing checksums.txt` 校验。二进制没有签名，在 macOS 上用浏览器下载后运行可能被系统拦截，执行 `xattr -d com.apple.quarantine wb2api` 解除即可（用上面的 `curl` 下载不会被标记）。
+每个包里是 `wb2api`、`config.example.json`、`README.md` 和许可证 `LICENSE`、`NOTICE`；同一个 Release 里的 `checksums.txt` 可用 `sha256sum -c --ignore-missing checksums.txt` 校验。二进制没有签名，在 macOS 上用浏览器下载后运行可能被系统拦截，执行 `xattr -d com.apple.quarantine wb2api` 解除即可（用上面的 `curl` 下载不会被标记）。
 
 ## 从源码构建
 

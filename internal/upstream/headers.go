@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // headers.go 构造上游请求头：对话（ChatHeaders）、桌面端后台服务（BillingHeaders）、
 // 刷新令牌（RefreshHeaders），以及它们共用的官方请求框架形状（frameworkHeaders）。
 package upstream

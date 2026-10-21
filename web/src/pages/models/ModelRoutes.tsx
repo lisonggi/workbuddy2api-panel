@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 模型路由：客户端发来的模型名不在上游目录里时（Claude Code、Codex 的默认模型名），按规则改用目标模型。
 // 规则存 config.json 的 model_routes，保存即热生效；匹配口径与网关一致（lib/routes.ts）。
 import { useMemo, useState } from 'react'

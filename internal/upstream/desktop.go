@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // desktop.go 桌面客户端行为指纹上报（事件链业务字段按 WorkBuddy Desktop 5.8.3 安装包核对，
 // 公共字段与请求头照 5.8.3 安装包，见 eventFingerprint）。
 //

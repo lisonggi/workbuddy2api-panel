@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // context_catalog.go context_length / max_output_tokens 字段级静态兜底知识表。
 //
 // 数据来源四级（model-json-dynamic 任务书；查找链入口在 model_catalog.go 的

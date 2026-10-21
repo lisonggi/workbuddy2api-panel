@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // checkin_status_test.go 钉住「今日已签到」观测：NoteCheckinDone 标记当日，
 // statusOf 输出 CheckinDone（跨零点自然过期），持久化往返不丢。
 package pool

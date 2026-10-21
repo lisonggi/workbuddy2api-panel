@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // tool_pairing_test.go 出站工具配对三步（merge/repack/cleanup）的行为钉桩。
 //
 // 断言口径来自 2026-09-20 的线上实机定位：上游对「声明 tool_calls 的 assistant 之后必须

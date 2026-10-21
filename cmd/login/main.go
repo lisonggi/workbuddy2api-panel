@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // login.go — WorkBuddy OAuth 登录（设备授权流程，CN realm；--realm=global 供国际版）。
 //
 // 两个子命令，由 login.sh 顺序驱动：

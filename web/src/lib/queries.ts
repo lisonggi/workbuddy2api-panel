@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 所有读接口的查询（TanStack Query）。打上游的接口（模型、积分包、任务、券码、补偿）不随窗口聚焦自动重查，
 // 只读网关内存的接口（总览、日志、队列、版本）按页面需要轮询；标签页切到后台时轮询自动暂停。
 import { QueryClient, keepPreviousData, useQuery } from '@tanstack/react-query'

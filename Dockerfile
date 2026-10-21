@@ -36,6 +36,8 @@ COPY --from=build /out/login /app/login
 COPY --from=build /out/credit /app/credit
 COPY login.sh signin.sh credit.sh /app/
 COPY scripts/probe_active.py /app/scripts/probe_active.py
+# 许可证随程序一起分发（AGPL-3.0 与附加条款）
+COPY LICENSE NOTICE /app/
 RUN sed -i 's/\r$//' /app/login.sh /app/signin.sh /app/credit.sh && chmod 755 /app/login.sh /app/signin.sh /app/credit.sh
 USER app
 EXPOSE 7863

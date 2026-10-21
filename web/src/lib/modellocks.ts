@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 模型锁池的展示口径（纯函数，见 modellocks.test.ts）。后端已排好序，这里只做文案。
 import { dur, timeMs } from './format'
 import type { ModelLockRow } from './types'

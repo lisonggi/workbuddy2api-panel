@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 运行日志页：上方是请求指标（RequestMetrics.tsx），下方是运行日志——最近 500 行（网关内存环形缓冲），按频道 / 级别 / 关键字筛选。
 // 停在底部时每 5 秒跟随新日志；往上翻看旧日志时冻结画面（日志环满了会从顶部淘汰旧行，
 // 不冻结的话翻看中的内容会整体上移），滚回底部或点「回到最新」再继续跟随。

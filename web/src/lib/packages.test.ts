@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 从 Go 端 internal/panel/frontend_test.go 平移过来的两个用例（断言值原样保留）。
 import { describe, expect, it } from 'vitest'
 import {

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // Package selfupdate 面板一键更新：从本仓库的 GitHub Release 下载当前平台的包，校验后放进数据目录的
 // bin/，再优雅停机并 exec 原地重启。程序自带的那份（镜像里的 /app/wb2api）始终不动：
 //

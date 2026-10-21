@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 积分构成：一个账号的余额是若干积分包之和。包按来源命名（「国内运营裂变包」「拉新权益包」
 // 「个人体验版」…），面额从 6 到 1500 不等，且按次发放。所以两个任务完成度完全一致的账号，
 // 余额可能差上千——差别只在包里。这里把逐包明细摊开，并给每个来源一个稳定配色，跨账号对比时同色即同类。

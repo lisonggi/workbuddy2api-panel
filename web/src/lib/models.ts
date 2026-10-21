@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 模型列表的筛选、排序与实测上限关联（纯函数，见 models.test.ts）。
 // 模型目录一次拉全（几十条），筛选排序都在前端做：改条件零延迟，也不会每调一次筛选就打一次上游。
 import type { Model, Probe } from './types'

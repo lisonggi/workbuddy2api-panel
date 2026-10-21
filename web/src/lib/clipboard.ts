@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 复制文本：clipboard API 只在安全上下文（https / localhost）可用，
 // 远程 http 访问面板时拿不到 navigator.clipboard，退回 execCommand。
 export function copyText(text: string): Promise<void> {

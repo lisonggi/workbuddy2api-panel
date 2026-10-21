@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // turns.go 客户端没给会话 id 时，给每个对话轮分配 X-Conversation-Request-ID。
 //
 // 轮级键（TurnKey）只看请求内容。两段不相干的对话到某一轮为止逐字相同时（最常见的是

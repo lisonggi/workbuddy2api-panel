@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // handler_credit_floor_test.go 积分保底的可观测性与端到端拦截：
 // /status 透出 credit_floor；触底账号打收费模型时网关无号可选（503）。
 package server

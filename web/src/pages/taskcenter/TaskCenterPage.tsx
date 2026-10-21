@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 任务中心：扫描全部账号的成长任务待办，排成一列一键执行（账号间可并发，账号内串行）。
 // 执行时轮询队列状态；切走再回来，若本页会话启动（或正在执行）的队列还在跑，会接着显示进度。
 import { useEffect, useRef, useState } from 'react'

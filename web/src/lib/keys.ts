@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 客户端密钥的展示与表单整理（纯函数，见 keys.test.ts）。口径与网关 internal/apikeys 一致：
 // 上限按「已用 ≥ 上限」拦，0 或不填 = 不限；白名单只认 * 通配，按实际发上游的模型名（不带域前缀）匹配。
 import { fmtCredit, fmtTok, timeMs } from './format'

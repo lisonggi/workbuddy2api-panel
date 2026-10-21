@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // profile_test.go 钉住账号资料拉取（issue #94）：网页登录态 Cookie + web 平台头可访问
 // /console/account；只解析 nickname，uid 不一致防串号；业务错误原样返回。
 package upstream

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // transport.go 出站 Transport 构造的单一事实来源（连接层加固，吸收 kongjianguan
 // 4 连击实测经验的前三件，见 .claude/reports/fork-scan-absorb.md T-2）：
 // 真正禁 h2 / TLS 握手超时 / 短 keepalive 探测，全参数集中定义可测试可调整。

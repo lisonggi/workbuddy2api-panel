@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // sanitize.go 出站请求体脱敏：剥离上游内容审核黑名单指纹。
 //
 // 背景：客户端（Claude Code 类 CLI）在 system prompt 注入若干固定模板句，

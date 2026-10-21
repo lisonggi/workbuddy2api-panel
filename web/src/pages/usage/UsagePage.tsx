@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 用量：所选时间范围内的请求数与 token 用量（卡片、时序图、按账号 / 模型 / 域 / 密钥明细同一口径）。
 // 选了密钥时整页（含积分扣除）只算这个密钥的请求。
 import { useMemo, useState, type ReactNode } from 'react'

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // config.go 面板配置页接口：读取当前配置、校验并保存（热生效 + 重启项标注）。
 //
 // 分工：cmd/server 持有 Config 类型与校验逻辑（Load/normalize），此处只做

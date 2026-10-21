@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // websession_test.go 网页登录态（登录码 → client-login → Cookie 罐）的请求形状、
 // 复用、401 重取、失败语义、并发与多账号隔离。
 package upstream

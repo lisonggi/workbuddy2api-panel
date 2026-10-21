@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // scenes.go 首页模板（官方叫场景 scene）的列表。官方 5.8.3 首页的模板按钮来自内置的设计模板
 // 和远程列表 https://download.codebuddy.cn/plugin-marketplace/scenes-v2.json（英文界面是
 // scenes-v2-en.json），公开文件，不用登录。任务中心只对国内版开放，取中文列表。

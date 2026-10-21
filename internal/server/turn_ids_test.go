@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // turn_ids_test.go X-Conversation-Request-ID 按对话轮分配：客户端没给会话 id 时，
 // 逐字相同的两个开轮请求拿到不同的 ID，各自的工具调用续轮找回自己那一轮的 ID。
 package server

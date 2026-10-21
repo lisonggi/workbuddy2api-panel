@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 开学季券码（活动 9/24 已结束，历史券码仍可查）：抽奖抽中的第三方券（KFC / 瑞幸 / 酷狗等），
 // 券码到对应 app / 小程序兑换。二维码由 uqr 在本地生成（面板 CSP 只允许同源，不能用外部二维码服务）。
 import { useState } from 'react'

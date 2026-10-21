@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // scheduler_wait_test.go 钉住 waitSlot 的三态与墙钟口径：timer 的等待基于单调
 // 时钟，机器睡眠会冻结它——分段等待 + 每段墙钟重判把冻结的影响限制在一段之内
 // （「睡眠不足整个等待周期时 fire 被顺延、墙钟时点被错过且不补跑」的正面修复）。

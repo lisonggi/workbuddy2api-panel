@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // school.go 开学季活动（school-season，活动期 2026-09-13 ~ 09-24）纯 API 自动化。
 //
 // 判据（2026-09-13 小程序 MCP 逆向 + 三账号实测，protocol.md §7.11）：

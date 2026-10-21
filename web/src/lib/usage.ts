@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 yreidev 与贡献者（见 NOTICE）
+// SPDX-License-Identifier: AGPL-3.0-only
+// 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
+
 // 用量时序图的数据整理（纯函数，见 usage.test.ts）。
 // x 轴是真实时间轴，不按序号等距：没请求的时段不产生桶，1 小时和 8 小时的间隔必须画得不一样宽，
 // 否则「什么时候用的」会失真。后端返回的是本地时区时间，这里按本地时间解析。
