@@ -4,7 +4,8 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  accountHealth, activeRateLimits, creditPercent, creditsText, filterAccounts, isFrozen, poolCredits, rateLimitInfo, sortAccounts,
+  accountHealth, activeRateLimits, cardSortKey, creditPercent, creditsText, filterAccounts, isFrozen, parseCardSort, poolCredits, rateLimitInfo,
+  sortAccounts,
 } from './accounts'
 import type { Account } from './types'
 
@@ -78,6 +79,17 @@ describe('账号表辅助', () => {
 
 // 从上游 internal/panel/frontend_test.go 的 TestAppJSRateLimitMeta 平移（期望值原样保留）：
 // 同时支持上游 reset_at、网关 until 和两者都没有三种形态，以及模型不可用。
+describe('卡片排序', () => {
+  it('表格排序状态与卡片下拉互转', () => {
+    expect(cardSortKey(undefined)).toBe('default')
+    expect(cardSortKey({ column: 'credits', direction: 'descending' })).toBe('credits:descending')
+    expect(cardSortKey({ column: 'nope', direction: 'descending' })).toBe('default')
+    expect(parseCardSort('credits:descending')).toEqual({ column: 'credits', direction: 'descending' })
+    expect(parseCardSort('default')).toBeUndefined()
+    expect(parseCardSort('credits:sideways')).toBeUndefined()
+  })
+})
+
 describe('rateLimitInfo', () => {
   const t = (h: number) => new Date(2026, 8, 28, h, 0, 0).getTime()
   const at = t(14)

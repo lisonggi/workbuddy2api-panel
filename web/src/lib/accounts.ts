@@ -120,6 +120,34 @@ export function creditPercent(a: Account, poolMax: number): number {
 
 export type AccountSortKey = 'name' | 'credits' | 'errors' | 'last_success'
 
+export type AccountSortDirection = 'ascending' | 'descending'
+
+/** 卡片视图的排序选项：卡片没有表头可点，用下拉选；值是「排序键:方向」，default = 接口返回的原顺序 */
+export const CARD_SORT_OPTIONS: { id: string; label: string }[] = [
+  { id: 'default', label: '默认顺序' },
+  { id: 'credits:descending', label: '积分从多到少' },
+  { id: 'credits:ascending', label: '积分从少到多' },
+  { id: 'errors:descending', label: '失败从多到少' },
+  { id: 'errors:ascending', label: '失败从少到多' },
+  { id: 'last_success:descending', label: '最近成功在前' },
+  { id: 'last_success:ascending', label: '最久没成功在前' },
+  { id: 'name:ascending', label: '名称 A→Z' },
+  { id: 'name:descending', label: '名称 Z→A' },
+]
+
+/** 表格的排序状态 → 卡片下拉的选项 id（表格、卡片共用一份排序状态，切换视图时排序不丢） */
+export function cardSortKey(sort: { column?: string | number; direction?: string } | undefined): string {
+  const id = sort?.column != null ? `${sort.column}:${sort.direction ?? 'ascending'}` : 'default'
+  return CARD_SORT_OPTIONS.some((o) => o.id === id) ? id : 'default'
+}
+
+/** 卡片下拉的选项 id → 排序状态；default 或不认识的 id 返回 undefined（不排序） */
+export function parseCardSort(id: string): { column: AccountSortKey; direction: AccountSortDirection } | undefined {
+  if (!CARD_SORT_OPTIONS.some((o) => o.id === id) || id === 'default') return undefined
+  const [column, direction] = id.split(':') as [AccountSortKey, AccountSortDirection]
+  return { column, direction }
+}
+
 export function filterAccounts(list: Account[], fetchedAt: number, status: StatusFilter, q: string): Account[] {
   const kw = q.trim().toLowerCase()
   return list.filter((a) => {

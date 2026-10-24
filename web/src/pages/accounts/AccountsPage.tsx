@@ -2,20 +2,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
-// 账号池：统计（点一下按状态筛选）+ 积分到期提醒 + 搜索 + 账号表（可排序，点行看详情，可多选导出凭证）+ 批量任务 + 模型锁池。窄屏把表格换成卡片列表。
+// 账号池：统计（点一下按状态筛选）+ 积分到期提醒 + 搜索 + 账号卡片或账号表（可排序，可多选导出凭证）+ 批量任务 + 模型锁池。
+// 宽屏默认卡片网格，可切换成表格（记在本浏览器）；窄屏只有卡片。
 import { useMemo, useState } from 'react'
 import {
-  Button, Card, Checkbox, SearchField, Table, ToggleButton, ToggleButtonGroup, useMediaQuery, type Selection, type SortDescriptor,
+  Button, Card, Checkbox, Label, ListBox, SearchField, Select, Table, ToggleButton, ToggleButtonGroup, useMediaQuery, type Selection, type SortDescriptor,
 } from '@heroui/react'
-import { accountHealth, filterAccounts, poolCredits, sortAccounts, type AccountSortKey, type StatusFilter } from '../../lib/accounts'
+import {
+  accountHealth, CARD_SORT_OPTIONS, cardSortKey, filterAccounts, parseCardSort, poolCredits, sortAccounts, type AccountSortKey, type StatusFilter,
+} from '../../lib/accounts'
 import { post } from '../../lib/api'
 import { ago } from '../../lib/format'
-import { toastError, useNow, useStartedToast } from '../../lib/hooks'
+import { toastError, useNow, useStartedToast, useStoredChoice } from '../../lib/hooks'
 import { useOverview } from '../../lib/queries'
 import type { Account, Overview } from '../../lib/types'
 import { Empty, Loaded } from '../../components/Feedback'
 import { Panel, Stat } from '../../components/Panel'
 import { AccountButtons } from './AccountButtons'
+import { AccountCard } from './AccountCard'
 import { AccountName, CreditsCell, StatusCell, UsageChips } from './AccountCells'
 import { AccountDrawer } from './AccountDrawer'
 import { ExpiryReminder } from './ExpiryReminder'
@@ -33,6 +37,8 @@ export function AccountsPage() {
   )
 }
 
+const VIEWS = ['cards', 'table'] as const
+
 const BATCH: { path: string; label: string; done: string }[] = [
   { path: 'checkin_all', label: '全部签到', done: '全部签到已开始' },
   { path: 'travel_all', label: '旅行巡检', done: '旅行巡检已开始（含领养链路）' },
@@ -46,6 +52,9 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
   const [status, setStatus] = useState<StatusFilter>('all')
   const [q, setQ] = useState('')
   const [sort, setSort] = useState<SortDescriptor | undefined>()
+  const [view, setView] = useStoredChoice('wb2api.accountsView', VIEWS, 'cards')
+  // 表格最小宽 1140px，窄屏放不下，只给卡片
+  const cards = !isDesktop || view === 'cards'
   const [detail, setDetail] = useState<string | null>(null)
   const [tasksOf, setTasksOf] = useState<string | null>(null)
   const { busy, run, confirmEl } = useAccountActions(setTasksOf)
@@ -125,11 +134,10 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
               <SearchField.ClearButton />
             </SearchField.Group>
           </SearchField>
-          {isDesktop ? (
-            selected.length > 0 && <div className="flex items-center gap-3"><ExportActions selected={selected} onClear={clearSelection} /></div>
-          ) : (
-            // 窄屏卡片没有表头复选框，在这里给「全选」
-            rows.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3">
+            {isDesktop && selected.length > 0 && <ExportActions selected={selected} onClear={clearSelection} />}
+            {/* 卡片没有表头复选框和可点的表头，在这里给「全选」和排序 */}
+            {cards && rows.length > 0 && (
               <SelectionCheckbox
                 label="全选"
                 isSelected={selected.length === rows.length}
@@ -138,44 +146,59 @@ function Accounts({ data, fetchedAt }: { data: Overview; fetchedAt: number }) {
               >
                 <span className="text-sm">全选</span>
               </SelectionCheckbox>
-            )
-          )}
+            )}
+            {cards && (
+              <Select aria-label="排序" value={cardSortKey(sort)} onChange={(k) => k != null && setSort(parseCardSort(String(k)))} className="w-36">
+                <Label className="sr-only">排序</Label>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover>
+                  <ListBox>
+                    {CARD_SORT_OPTIONS.map((o) => <ListBox.Item key={o.id} id={o.id} textValue={o.label}>{o.label}<ListBox.ItemIndicator /></ListBox.Item>)}
+                  </ListBox>
+                </Select.Popover>
+              </Select>
+            )}
+            {isDesktop && (
+              <ToggleButtonGroup
+                aria-label="显示方式"
+                size="sm"
+                selectionMode="single"
+                disallowEmptySelection
+                selectedKeys={[view]}
+                onSelectionChange={(keys) => { const k = [...keys][0]; if (k === 'cards' || k === 'table') setView(k) }}
+              >
+                <ToggleButton id="cards">卡片</ToggleButton>
+                <ToggleButton id="table">表格</ToggleButton>
+              </ToggleButtonGroup>
+            )}
+          </div>
         </div>
         {accounts.length === 0 ? (
           <Empty title="账号池是空的">点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号。</Empty>
         ) : rows.length === 0 ? (
           <Empty title="没有符合条件的账号" action={<Button size="sm" variant="secondary" onPress={() => { setQ(''); setStatus('all') }}>清除筛选</Button>} />
-        ) : isDesktop ? (
+        ) : !cards ? (
           <AccountTable rows={rows} fetchedAt={fetchedAt} now={now} poolMax={poolMax} sort={sort} onSort={setSort} selection={selection} onSelect={setSelection} busy={busy} run={run} onOpen={setDetail} />
         ) : (
-          <div className="flex flex-col gap-3">
-            {rows.map((a) => {
-              const health = accountHealth(a, fetchedAt)
-              return (
-                <Card key={a.uid} variant="secondary" className="gap-3 p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex min-w-0 items-start gap-2">
-                      <SelectionCheckbox label={'选择 ' + (a.nickname || a.uid)} isSelected={selected.includes(a.uid)} onChange={(v) => toggle(a.uid, v)} />
-                      <AccountName a={a} />
-                    </div>
-                    <Button size="sm" variant="tertiary" onPress={() => setDetail(a.uid)}>详情</Button>
-                  </div>
-                  <StatusCell a={a} health={health} now={now} />
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <CreditsCell a={a} poolMax={poolMax} now={now} />
-                    <div className="flex flex-col gap-0.5 text-xs text-muted">
-                      <span>成功 {a.success_count || 0} · 失败 <span className="text-danger">{a.err_total || 0}</span></span>
-                      <span>在途 {a.in_flight || 0}</span>
-                      <span>最近成功 {ago(a.last_success, now)}</span>
-                    </div>
-                  </div>
-                  <UsageChips a={a} />
-                  <AccountButtons a={a} health={health} busy={busy} run={run} />
-                </Card>
-              )
-            })}
-            {selected.length > 0 && (
-              <Card className="sticky bottom-3 z-30 flex-row flex-wrap items-center gap-3 p-3 shadow-lg">
+          // 卡片至少 340px 宽，放得下几列就排几列
+          <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))]">
+            {rows.map((a) => (
+              <AccountCard
+                key={a.uid}
+                a={a}
+                health={accountHealth(a, fetchedAt)}
+                now={now}
+                poolMax={poolMax}
+                selected={selected.includes(a.uid)}
+                onSelect={(v) => toggle(a.uid, v)}
+                onOpen={() => setDetail(a.uid)}
+                busy={busy}
+                run={run}
+              />
+            ))}
+            {/* 宽屏的导出按钮在搜索框那一行，窄屏滚动时贴在底部 */}
+            {!isDesktop && selected.length > 0 && (
+              <Card className="sticky bottom-3 z-30 col-span-full flex-row flex-wrap items-center gap-3 p-3 shadow-lg">
                 <ExportActions selected={selected} onClear={clearSelection} />
               </Card>
             )}

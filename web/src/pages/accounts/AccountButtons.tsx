@@ -14,11 +14,13 @@ import type { AccountAction } from './useAccountActions'
  * 不给「签到」「任务」，「余额」改叫「额度」（刷新分配给这个号的企业额度）。
  * 国际版没有签到活动（上游 400「签到活动未开启或已过期」），也不给「签到」。
  */
-export function AccountButtons({ a, health, busy, run, nowrap, extra }: {
+export function AccountButtons({ a, health, busy, run, nowrap, compact, extra }: {
   a: Account
   health: Health
   /** 表格里一行放下，不折行（卡片和抽屉里允许折行） */
   nowrap?: boolean
+  /** 按钮收紧间距（卡片用），放不下照样折行 */
+  compact?: boolean
   /** 额外按钮（如抽屉里的「导出凭证」），放在「移除」之前，让危险操作留在最后 */
   extra?: ReactNode
   busy: string | null
@@ -29,7 +31,7 @@ export function AccountButtons({ a, health, busy, run, nowrap, extra }: {
       size="sm"
       variant={opts.variant ?? 'ghost'}
       aria-label={opts.ariaLabel}
-      className={`${nowrap ? 'px-2' : ''} ${opts.className ?? ''}`}
+      className={`${nowrap || compact ? 'px-2' : ''} ${opts.className ?? ''}`}
       isPending={busy === a.uid + ':' + action}
       onPress={() => run(a, action)}
     >
@@ -37,7 +39,7 @@ export function AccountButtons({ a, health, busy, run, nowrap, extra }: {
     </Button>
   )
   return (
-    <div className={`flex items-center ${nowrap ? 'flex-nowrap gap-0.5' : 'flex-wrap gap-1'}`}>
+    <div className={`flex items-center ${nowrap ? 'flex-nowrap gap-0.5' : compact ? 'flex-wrap gap-0.5' : 'flex-wrap gap-1'}`}>
       {/* 今日已签仍可点：重新签到会顺带刷新余额 */}
       {!a.enterprise && a.realm !== 'global' && (a.checkin_done ? btn('checkin', '已签', { className: 'text-muted', ariaLabel: '今日已签到，点击重新签到并刷新余额' }) : btn('checkin', '签到'))}
       {a.enterprise ? btn('balance', '额度', { ariaLabel: '刷新企业版分配额度' }) : btn('balance', '余额')}
