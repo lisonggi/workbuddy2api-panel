@@ -357,8 +357,8 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。
 	sch.SetGrowthHook(pn.RunGrowthQueueOnce)
+	// 对话请求的表格流水行只打 stdout，不进面板的运行日志（面板看「请求记录」）。
 	log.SetOutput(io.MultiWriter(os.Stderr, pn.Logs()))
-	server.SetChatLogOutput(io.MultiWriter(os.Stdout, pn.Logs()))
 
 	h := server.NewHandler(server.Config{
 		Pool:         p,

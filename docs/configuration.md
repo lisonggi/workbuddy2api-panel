@@ -41,7 +41,7 @@
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `logging.request_archive_enabled` | `true` | 请求元数据按天归档为 `requests-<日期>.jsonl`。只记模型、账号、耗时、token 等元数据，**不记提示词、响应正文和 Authorization** |
+| `logging.request_archive_enabled` | `true` | 请求元数据按天归档为 `requests-<日期>.jsonl`。只记模型、账号、耗时、token 等元数据，失败的请求另记失败原因（回给客户端的错误消息，最多 200 字），**不记提示词、响应正文和 Authorization** |
 | `logging.request_retention_days` | `7` | 归档保留天数 |
 | `logging.request_archive_max_mb` | `100` | 归档总容量上限（MiB），超出先删最旧的 |
 | `logging.request_client_info` | `true` | 是否记录调用来源（客户端 IP 与 User-Agent）。IP 属于个人信息，共享部署可关 |

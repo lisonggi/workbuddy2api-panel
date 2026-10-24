@@ -3,13 +3,18 @@
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
 // 运行日志的频道与级别判定（级别靠关键字，与旧版一致）。
+// 1.5.0 起对话请求的流水行不进运行日志（看「请求记录」页），频道只剩任务和系统。
 import type { LogEntry } from './types'
 
-export const LOG_CHANNELS = ['all', 'task', 'chat', 'sys'] as const
+export const LOG_CHANNELS = ['all', 'task', 'sys'] as const
 export type LogChannel = (typeof LOG_CHANNELS)[number]
-export const CHANNEL_LABEL: Record<string, string> = { all: '全部', task: '任务', chat: '对话', sys: '系统' }
+export const CHANNEL_LABEL: Record<string, string> = { all: '全部', task: '任务', sys: '系统' }
 
 export const isLogChannel = (v: unknown): v is LogChannel => LOG_CHANNELS.includes(v as LogChannel)
+
+/** 旧的「运行日志 → 对话」链接（?ch=chat），打开时转到请求记录页 */
+export const isLegacyChatLink = (search: unknown): boolean =>
+  typeof search === 'object' && search !== null && (search as { ch?: unknown }).ch === 'chat'
 
 export type LogLevel = 'error' | 'warn' | 'info'
 export const LEVEL_FILTERS = ['all', 'warn', 'error'] as const

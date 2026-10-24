@@ -99,6 +99,8 @@ type Event struct {
 	UserAgent       string `json:"user_agent,omitempty"`
 	// APIKey 请求带的密钥：客户端密钥记名字，管理员密钥记「管理员」，没开鉴权为空。不记原文。
 	APIKey string `json:"api_key,omitempty"`
+	// Error 失败原因：回给客户端的错误消息（流中途出错时是上游的错误帧），最多 200 字；成功的请求为空。
+	Error string `json:"error,omitempty"`
 }
 
 // Filter 用于从归档中筛选最近记录。字符串字段一律「包含」匹配（大小写不敏感），

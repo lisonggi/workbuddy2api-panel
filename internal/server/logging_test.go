@@ -257,6 +257,88 @@ func TestRequestMetricsDetectsStreamErrorFrame(t *testing.T) {
 	if len(s.Recent) != 1 || s.Recent[0].Outcome != reqlog.OutcomeStreamError || s.Recent[0].OK {
 		t.Fatalf("stream error metrics = %+v", s.Recent)
 	}
+	if s.Recent[0].Error != "upstream failed" {
+		t.Errorf("流中途出错应记上游错误帧的消息，实际 %q", s.Recent[0].Error)
+	}
+}
+
+// 失败的请求记下回给客户端的错误消息，成功的不记。
+func TestRequestLogRecordsFailureReason(t *testing.T) {
+	fail := true
+	up := newFakeUpstream(t, func(string) (int, string, bool) {
+		if fail {
+			return 400, `{"code":11115,"msg":"prompt is too long: 200000 tokens > 128000"}`, false
+		}
+		return 200, sseOK, true
+	})
+	reqLog := reqlog.New(reqlog.Config{})
+	h := NewHandler(Config{
+		Pool:       testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
+		Upstream:   up,
+		RequestLog: reqLog,
+	})
+	send := func() {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions",
+			strings.NewReader(`{"model":"glm-5.2","stream":false,"messages":[{"role":"user","content":"hi"}]}`)))
+	}
+	send()
+	fail = false
+	send()
+	s := reqLog.Snapshot()
+	if len(s.Recent) != 2 {
+		t.Fatalf("recent = %+v", s.Recent)
+	}
+	ok, bad := s.Recent[0], s.Recent[1] // 最新的在前
+	if bad.OK || !strings.Contains(bad.Error, "prompt is too long") {
+		t.Errorf("失败请求的原因 = %q", bad.Error)
+	}
+	if !ok.OK || ok.Error != "" {
+		t.Errorf("成功请求不应有原因: %+v", ok)
+	}
+}
+
+func TestFailureReason(t *testing.T) {
+	cases := []struct {
+		name string
+		st   *chatStat
+		body string
+		want string
+	}{
+		{"聊天入口", nil, `{"error":{"message":"missing or invalid API key","type":"api_error"}}`, "missing or invalid API key"},
+		{"Claude Code 入口", nil, `{"type":"error","error":{"type":"rate_limit_error","message":"busy"}}`, "busy"},
+		{"Responses 流式失败", &chatStat{errMsg: `{"type":"response.failed","response":{"error":{"code":"x","message":"failed"}}}`}, "", "failed"},
+		{"上游原文", &chatStat{errMsg: `{"code":6004,"msg":"rate limit"}`}, "", "rate limit"},
+		{"字符串 error", nil, `{"error":"bad"}`, "bad"},
+		{"顶层 message", nil, `{"message":"oops"}`, "oops"},
+		{"不是 JSON", nil, "  upstream\n  timeout ", "upstream timeout"},
+		{"JSON 里没有消息", nil, `{"code":1}`, `{"code":1}`},
+		{"没有错误响应", &chatStat{}, "", ""},
+	}
+	for _, c := range cases {
+		if got := failureReason(c.st, []byte(c.body)); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+	long := failureReason(nil, []byte(strings.Repeat("错", maxFailureReasonRunes+10)))
+	if r := []rune(long); len(r) != maxFailureReasonRunes+1 || r[len(r)-1] != '…' {
+		t.Errorf("超长原因应截到 %d 字加省略号，实际 %d 字", maxFailureReasonRunes, len(r))
+	}
+}
+
+// 响应观察器只留失败响应的正文，且有上限。
+func TestResponseObserverCapturesErrorBody(t *testing.T) {
+	okObs := &responseObserver{ResponseWriter: httptest.NewRecorder()}
+	_, _ = okObs.Write([]byte("data: hi\n\n"))
+	if okObs.errBody != nil {
+		t.Fatalf("成功响应不应留正文: %q", okObs.errBody)
+	}
+	obs := &responseObserver{ResponseWriter: httptest.NewRecorder()}
+	obs.WriteHeader(http.StatusBadRequest)
+	_, _ = obs.Write([]byte(strings.Repeat("x", maxErrorBodyCapture-10)))
+	_, _ = obs.Write([]byte(strings.Repeat("y", 100)))
+	if len(obs.errBody) != maxErrorBodyCapture {
+		t.Fatalf("失败正文应截到 %d 字节，实际 %d", maxErrorBodyCapture, len(obs.errBody))
+	}
 }
 
 func TestParseModelFromBody(t *testing.T) {

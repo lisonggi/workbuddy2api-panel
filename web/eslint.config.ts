@@ -31,6 +31,8 @@ export default defineConfig([
     rules: {
       // 事件回调（onPress、onSubmit）可以是 async 函数，返回的 Promise 由组件自己处理
       '@typescript-eslint/no-misused-promises': ['error', { checksVoidReturn: { attributes: false } }],
+      // 路由的 beforeLoad 按 TanStack Router 的用法 throw redirect()，它不是 Error 对象
+      '@typescript-eslint/only-throw-error': ['error', { allow: [{ from: 'package', package: '@tanstack/router-core', name: 'Redirect' }] }],
     },
   },
 ])

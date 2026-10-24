@@ -186,7 +186,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if status == 0 {
 				status = http.StatusOK
 			}
-			h.cfg.RequestLog.Record(trace.event(status))
+			h.cfg.RequestLog.Record(trace.event(status, obs.errBody))
 		}()
 		h.mux.ServeHTTP(obs, r)
 		return
@@ -1169,6 +1169,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 502 观测没有意义）。
 				st.status = http.StatusBadGateway
 				st.outcome = reqlog.OutcomeStreamError
+				st.errMsg = "upstream returned an empty stream (200 with no frames)"
 				log.Printf("WARN: [server] stream acct=%s model=%s: empty upstream stream (200+0 frames)", logfmt.Label(acct.UID, acct.Nickname), bareModel)
 			case errFrame != "":
 				// 上游以 error 帧报错（6004 限流 / 内容拦截 / 审核）：按帧内容分类并
@@ -1179,6 +1180,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.applyErrorPolicy(acct.UID, kind, errFrame, bareModel, nil)
 				st.status = http.StatusServiceUnavailable
 				st.outcome = reqlog.OutcomeStreamError
+				st.errMsg = errFrame
 				log.Printf("WARN: [server] stream acct=%s model=%s: upstream error frame kind=%s payload=%s",
 					logfmt.Label(acct.UID, acct.Nickname), bareModel, kind, logfmt.Truncate(errFrame, 200))
 			case sErr != nil:

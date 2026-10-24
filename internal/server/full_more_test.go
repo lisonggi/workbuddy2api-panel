@@ -614,10 +614,10 @@ func TestFull8LoggingEdges(t *testing.T) {
 	}
 
 	tr := &requestTrace{}
-	if e := tr.event(200); e.Outcome != reqlog.OutcomeSuccess {
+	if e := tr.event(200, nil); e.Outcome != reqlog.OutcomeSuccess {
 		t.Fatalf("200 outcome = %q", e.Outcome)
 	}
-	if e := tr.event(500); e.Outcome != reqlog.OutcomeHTTPError {
+	if e := tr.event(500, nil); e.Outcome != reqlog.OutcomeHTTPError {
 		t.Fatalf("500 outcome = %q", e.Outcome)
 	}
 

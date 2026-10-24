@@ -193,14 +193,14 @@ func TestPanelLogs(t *testing.T) {
 	if p.Logs() == nil {
 		t.Fatal("Logs() 应返回环形缓冲")
 	}
-	_, _ = p.logs.Write([]byte("| # 1 | 200 | chat\ncheckin u1: 签到成功\nplain sys line\n"))
+	_, _ = p.logs.Write([]byte("checkin u1: 签到成功\nplain sys line\n"))
 	rec := get(p, http.MethodGet, "/panel/api/logs")
 	autoWantCode(t, rec, http.StatusOK)
 	entries, _ := autoDecode(t, rec)["entries"].([]any)
-	if len(entries) != 3 {
-		t.Fatalf("应有 3 条日志: %v", entries)
+	if len(entries) != 2 {
+		t.Fatalf("应有 2 条日志: %v", entries)
 	}
-	want := []string{ChChat, ChTask, ChSys}
+	want := []string{ChTask, ChSys}
 	for i, v := range entries {
 		m, _ := v.(map[string]any)
 		if m["ch"] != want[i] {

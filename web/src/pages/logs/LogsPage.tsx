@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
-// 运行日志页：上方是请求指标（RequestMetrics.tsx），下方是运行日志——最近 500 行（网关内存环形缓冲），按频道 / 级别 / 关键字筛选。
+// 运行日志页：网关的系统与任务日志，最近 500 行（网关内存环形缓冲），按频道 / 级别 / 关键字筛选。
+// 每次调用 API 的记录在「请求记录」页，对话流水行不进这里。
 // 停在底部时每 5 秒跟随新日志；往上翻看旧日志时冻结画面（日志环满了会从顶部淘汰旧行，
 // 不冻结的话翻看中的内容会整体上移），滚回底部或点「回到最新」再继续跟随。
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -13,9 +14,8 @@ import { useLogs } from '../../lib/queries'
 import type { LogEntry } from '../../lib/types'
 import { Empty, Loaded } from '../../components/Feedback'
 import { Panel } from '../../components/Panel'
-import { RequestMetrics } from './RequestMetrics'
 
-const CH_COLOR: Record<string, 'accent' | 'success' | 'default'> = { task: 'accent', chat: 'success', sys: 'default' }
+const CH_COLOR: Record<string, 'accent' | 'default'> = { task: 'accent', sys: 'default' }
 const LEVEL_TEXT = { error: 'text-danger', warn: 'text-warning', info: '' }
 
 /** 冻结后又来了多少行（日志环满 500 行后总数不变，所以按冻结时最后一行的位置算） */
@@ -72,12 +72,10 @@ export function LogsPage() {
   }
 
   return (
-    <>
-    <RequestMetrics />
     <Panel
       title="运行日志"
       desc={ch === 'all'
-        ? `最近 ${live.length} 行 · 任务 ${counts.task || 0} · 对话 ${counts.chat || 0} · 系统 ${counts.sys || 0}`
+        ? `最近 ${live.length} 行 · 任务 ${counts.task || 0} · 系统 ${counts.sys || 0}`
         : `${CHANNEL_LABEL[ch]} ${counts[ch] || 0} 行`}
       contentClassName="flex flex-col gap-3"
     >
@@ -132,6 +130,5 @@ export function LogsPage() {
         )}
       </Loaded>
     </Panel>
-    </>
   )
 }

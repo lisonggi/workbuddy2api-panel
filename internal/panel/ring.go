@@ -3,11 +3,12 @@
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
 // ring.go 固定容量的结构化日志环形缓冲（并发安全，实现 io.Writer）。
-// main 把 log 包输出与 chat 表格日志经 MultiWriter 镜像进来，面板
-// /panel/api/logs 读取快照；超出容量的旧行按 FIFO 淘汰。
+// main 把 log 包输出经 MultiWriter 镜像进来，面板 /panel/api/logs 读取快照；
+// 超出容量的旧行按 FIFO 淘汰，不分频道。
 //
-// 每行入环时按前缀规则归类频道（chat=对话请求表格行 / task=任务动作 /
-// sys=系统与其它），面板日志视图按频道筛选——对话流量大时任务结果不被冲掉。
+// 对话请求的表格流水行只打到 stdout、不进这里：同样的信息面板「请求记录」里有，
+// 而且流量一大就会把任务和系统日志挤出环。每行入环时按前缀规则归类频道
+// （task=任务动作 / sys=系统与其它），面板日志视图按频道筛选。
 package panel
 
 import (
@@ -19,7 +20,6 @@ import (
 
 // 日志频道。
 const (
-	ChChat = "chat"
 	ChTask = "task"
 	ChSys  = "sys"
 )
@@ -44,9 +44,6 @@ var tsPrefixRe = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} `)
 
 // classifyLine 按行首特征归类频道。
 func classifyLine(line string) string {
-	if strings.HasPrefix(line, "| #") { // chat 表格日志（server/logging.go logChatRow）
-		return ChChat
-	}
 	for _, p := range taskPrefixes {
 		if strings.HasPrefix(line, p) {
 			return ChTask

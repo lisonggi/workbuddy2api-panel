@@ -3,12 +3,12 @@
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
 import { describe, expect, it } from 'vitest'
-import { filterLogs, logLevel } from './logs'
+import { filterLogs, isLegacyChatLink, logLevel } from './logs'
 
 const entries = [
   { ts: '', ch: 'task', text: '签到完成 uid=a' },
   { ts: '', ch: 'task', text: '签到失败 uid=b' },
-  { ts: '', ch: 'chat', text: '限流冷却 600s' },
+  { ts: '', ch: 'sys', text: '限流冷却 600s' },
   { ts: '', ch: 'sys', text: 'Panel Started' },
 ]
 
@@ -23,6 +23,14 @@ describe('logs', () => {
     expect(filterLogs(entries, 'task', 'all', '').length).toBe(2)
     expect(filterLogs(entries, 'all', 'warn', '').map((e) => e.text)).toEqual(['签到失败 uid=b', '限流冷却 600s'])
     expect(filterLogs(entries, 'all', 'error', '').map((e) => e.text)).toEqual(['签到失败 uid=b'])
-    expect(filterLogs(entries, 'all', 'all', 'panel').map((e) => e.ch)).toEqual(['sys'])
+    expect(filterLogs(entries, 'all', 'all', 'panel').map((e) => e.text)).toEqual(['Panel Started'])
+    expect(filterLogs(entries, 'sys', 'all', '').length).toBe(2)
+  })
+
+  it('旧的对话频道链接认得出来', () => {
+    expect(isLegacyChatLink({ ch: 'chat' })).toBe(true)
+    expect(isLegacyChatLink({ ch: 'task' })).toBe(false)
+    expect(isLegacyChatLink({})).toBe(false)
+    expect(isLegacyChatLink(undefined)).toBe(false)
   })
 })

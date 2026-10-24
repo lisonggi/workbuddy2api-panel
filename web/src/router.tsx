@@ -5,15 +5,16 @@
 // 路由：hash 模式（#/accounts），Go 端只需要提供 /panel/ 一个页面，不用做前端路由回落。
 // 用图表的两个页面（用量、积分构成）按需加载，Recharts 不进首屏。
 import {
-  Navigate, createHashHistory, createRootRoute, createRoute, createRouter, lazyRouteComponent,
+  Navigate, createHashHistory, createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect,
 } from '@tanstack/react-router'
 import { Shell } from './components/Shell'
-import { isLogChannel, type LogChannel } from './lib/logs'
+import { isLegacyChatLink, isLogChannel, type LogChannel } from './lib/logs'
 import { AccountsPage } from './pages/accounts/AccountsPage'
 import { ConfigPage } from './pages/config/ConfigPage'
 import { KeysPage } from './pages/keys/KeysPage'
 import { LogsPage } from './pages/logs/LogsPage'
 import { ModelsPage } from './pages/models/ModelsPage'
+import { RequestMetrics } from './pages/requests/RequestMetrics'
 import { TaskCenterPage } from './pages/taskcenter/TaskCenterPage'
 
 const rootRoute = createRootRoute({
@@ -42,10 +43,15 @@ const logsRoute = createRoute({
   component: LogsPage,
   staticData: { title: '运行日志' },
   validateSearch: (s: Record<string, unknown>): { ch?: LogChannel } => (isLogChannel(s.ch) ? { ch: s.ch } : {}),
+  // 对话频道已并入请求记录页，旧链接 #/logs?ch=chat 转过去（validateSearch 会丢掉 chat，所以看原始的 location.search）
+  beforeLoad: ({ location }) => {
+    if (isLegacyChatLink(location.search)) throw redirect({ to: '/requests', replace: true })
+  },
 })
+const requestsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/requests', component: RequestMetrics, staticData: { title: '请求记录' } })
 
 const routeTree = rootRoute.addChildren([
-  indexRoute, accountsRoute, usageRoute, packagesRoute, taskCenterRoute, modelsRoute, keysRoute, configRoute, logsRoute,
+  indexRoute, accountsRoute, usageRoute, requestsRoute, packagesRoute, taskCenterRoute, modelsRoute, keysRoute, configRoute, logsRoute,
 ])
 
 // 旧版面板的地址是 #accounts、#usage…（没有斜杠），书签打开时换成新格式

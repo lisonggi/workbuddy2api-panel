@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
-// 请求记录：完成数、成功率、HTTP 成功率、平均耗时、进行中，以及请求明细（最新的在前）。
-// 只展示请求元数据（时间、状态、模型、账号、调用来源、耗时、token、积分、请求 ID），不含提示词与响应正文。
+// 请求记录页：完成数、成功率、HTTP 成功率、平均耗时、进行中，以及请求明细（最新的在前）。
+// 只展示请求元数据（时间、状态、失败原因、模型、账号、调用来源、耗时、token、积分、请求 ID），不含提示词与响应正文。
+// 失败原因是回给客户端的错误消息；网关的系统日志在「运行日志」页。
 // 归档开着时按时间范围与条数从 JSONL 归档读；关键字与结果筛选只在已读到的条目上做，不发新请求。
 import { useMemo, useState } from 'react'
 import { Chip, Label, ListBox, SearchField, Select, Table, useMediaQuery } from '@heroui/react'
@@ -98,7 +99,7 @@ export function RequestMetrics() {
         <SearchField aria-label="搜索请求记录" value={q} onChange={setQ} className="w-full sm:w-72">
           <SearchField.Group>
             <SearchField.SearchIcon />
-            <SearchField.Input placeholder="搜索 IP / UA / 模型 / 账号 / 密钥 / 请求 ID" />
+            <SearchField.Input placeholder="搜索模型、账号、密钥、原因、IP、UA、请求 ID" />
             <SearchField.ClearButton />
           </SearchField.Group>
         </SearchField>
@@ -132,11 +133,12 @@ export function RequestMetrics() {
       <Loaded query={query} rows={4}>
         {() => shown.length === 0 ? <Empty title={all.length ? '没有符合当前筛选条件的请求记录' : '暂无请求记录'} /> : isDesktop ? (
           <Table variant="secondary">
-            <Table.ScrollContainer className="max-h-[32rem] overflow-y-auto">
-              <Table.Content aria-label="请求记录" className="min-w-[1200px]">
+            <Table.ScrollContainer className="max-h-[70dvh] overflow-y-auto">
+              <Table.Content aria-label="请求记录" className="min-w-[1400px]">
                 <Table.Header className="sticky top-0 z-10 bg-surface">
                   <Table.Column isRowHeader>时间</Table.Column>
                   <Table.Column>结果</Table.Column>
+                  <Table.Column>原因</Table.Column>
                   <Table.Column>模型</Table.Column>
                   <Table.Column>账号</Table.Column>
                   <Table.Column>密钥</Table.Column>
@@ -152,6 +154,9 @@ export function RequestMetrics() {
                     <Table.Row key={(e.request_id || '') + i} id={(e.request_id || '') + i} aria-label={requestLogText(e)}>
                       <Table.Cell className="whitespace-nowrap font-mono tabular-nums">{clock(e)}</Table.Cell>
                       <Table.Cell><Outcome e={e} /></Table.Cell>
+                      <Table.Cell>
+                        {e.error ? <Hint tip={e.error} className="block max-w-64 truncate text-xs text-danger">{e.error}</Hint> : dash}
+                      </Table.Cell>
                       <Table.Cell className="whitespace-nowrap font-mono">{e.model || '—'}</Table.Cell>
                       <Table.Cell className="whitespace-nowrap">{e.account || '—'}</Table.Cell>
                       <Table.Cell className="whitespace-nowrap">{e.api_key || dash}</Table.Cell>
@@ -170,13 +175,14 @@ export function RequestMetrics() {
             </Table.ScrollContainer>
           </Table>
         ) : (
-          <ul className="flex max-h-[60dvh] flex-col divide-y divide-separator overflow-y-auto">
+          <ul className="flex max-h-[70dvh] flex-col divide-y divide-separator overflow-y-auto">
             {shown.map((e, i) => (
               <li key={(e.request_id || '') + i} className="flex flex-col gap-1 py-2.5 text-sm" aria-label={requestLogText(e)}>
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-mono text-xs text-muted">{clock(e)}</span>
                   <Outcome e={e} />
                 </div>
+                {e.error && <p className="wrap-anywhere text-xs text-danger">{e.error}</p>}
                 <div className="flex flex-wrap gap-x-3 gap-y-0.5">
                   <span className="font-mono">{e.model || '—'}</span>
                   <span className="text-muted">{e.account || '—'}</span>

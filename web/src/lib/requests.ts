@@ -52,6 +52,7 @@ export function requestLogText(e: RequestEvent): string {
   return [
     when,
     String(e.status || '—') + ' ' + (OUTCOME_LABEL[e.outcome] || e.outcome || '—'),
+    e.error ? '原因 ' + e.error : '',
     e.model || '—',
     e.account || '—',
     e.api_key ? '密钥 ' + e.api_key : '',
@@ -66,7 +67,7 @@ export function requestLogText(e: RequestEvent): string {
 }
 
 export interface RequestFilter {
-  /** 对 IP / UA / 模型 / 账号 / 密钥 / 请求 ID 做包含匹配，空格分词后逐个 AND */
+  /** 对 IP / UA / 模型 / 账号 / 密钥 / 失败原因 / 请求 ID 做包含匹配，空格分词后逐个 AND */
   q: string
   /** 结果精确匹配，空 = 不筛 */
   outcome: string
@@ -77,6 +78,6 @@ export function matchRequest(e: RequestEvent, f: RequestFilter): boolean {
   if (f.outcome && e.outcome !== f.outcome) return false
   const kws = f.q.toLowerCase().split(/\s+/).filter(Boolean)
   if (!kws.length) return true
-  const text = [e.client_ip, e.user_agent, e.model, e.account, e.api_key, e.request_id].filter(Boolean).join(' ').toLowerCase()
+  const text = [e.client_ip, e.user_agent, e.model, e.account, e.api_key, e.error, e.request_id].filter(Boolean).join(' ').toLowerCase()
   return kws.every((kw) => text.includes(kw))
 }

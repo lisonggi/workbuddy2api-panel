@@ -30,6 +30,13 @@ import (
 // 否则一条请求就能把归档行撑大。截断只影响展示，不影响请求处理。
 const maxUserAgentLen = 200
 
+// maxFailureReasonRunes 请求记录里失败原因保留的字数；maxErrorBodyCapture 为提取原因
+// 最多留下的失败响应正文字节数（只看开头，错误 JSON 的 message 一般就在前面）。
+const (
+	maxFailureReasonRunes = 200
+	maxErrorBodyCapture   = 4 << 10
+)
+
 // chatSeq 进程级请求序号。
 var chatSeq atomic.Int64
 
@@ -37,12 +44,12 @@ var chatSeq atomic.Int64
 // 测试包经 TestMain 置 false 关闭 stdout 噪音，需要断言行输出的测试用 withChatLog 临时开启（R5）。
 var chatLogEnabled = true
 
-// chatLogOut 聊天表格日志的输出目标。生产默认 os.Stdout；main 在启用管理面板时
-// 经 SetChatLogOutput 注入 MultiWriter，把每行镜像进 /panel/api/logs 的环形缓冲，
-// stdout 行为不变。需在开始服务前调用一次（无并发竞争窗口）。
+// chatLogOut 聊天表格日志的输出目标，生产就是 os.Stdout。面板的运行日志不收这些行：
+// 同样的信息在「请求记录」里，混进日志环还会把任务和系统日志挤掉。
+// 测试经 SetChatLogOutput 换成缓冲区，需在开始服务前调用（无并发竞争窗口）。
 var chatLogOut io.Writer = os.Stdout
 
-// SetChatLogOutput 替换聊天表格日志输出目标（仅 main 启动期调用一次）。
+// SetChatLogOutput 替换聊天表格日志输出目标（测试用）。
 func SetChatLogOutput(w io.Writer) { chatLogOut = w }
 
 // chatStat 单个 chat 请求的日志统计；handler 挂 defer，请求出口后落一行。
@@ -73,6 +80,10 @@ type chatStat struct {
 	// 关闭，或非 chat 路径），展示层一律以 "-" 兜底。
 	clientIP  string
 	userAgent string
+
+	// errMsg 流已开始后才出错时的原因（HTTP 头已发出、状态码是 200，响应观察器截不到
+	// 失败正文）；其余失败的原因从回给客户端的错误响应里取，见 failureReason。
+	errMsg string
 
 	logged bool
 }
@@ -402,7 +413,8 @@ func requestTraceFrom(r *http.Request) *requestTrace {
 	return tr
 }
 
-func (t *requestTrace) event(status int) reqlog.Event {
+// event 组装一条请求记录。errBody 是失败响应正文的开头（见 responseObserver），用来提取失败原因。
+func (t *requestTrace) event(status int, errBody []byte) reqlog.Event {
 	e := reqlog.Event{
 		Time:      t.start,
 		RequestID: t.id,
@@ -443,14 +455,63 @@ func (t *requestTrace) event(status int) reqlog.Event {
 		}
 	}
 	e.OK = status >= 200 && status < 300 && e.Outcome == reqlog.OutcomeSuccess
+	if !e.OK {
+		e.Error = failureReason(t.stat, errBody)
+	}
 	return e
 }
 
+// failureReason 失败原因：流中途出错用 chatStat 记下的原因，其余取回给客户端的错误消息。
+// 合并空白后截到 maxFailureReasonRunes 字；客户端中途断开这类没有错误响应的返回空串。
+func failureReason(st *chatStat, errBody []byte) string {
+	reason := ""
+	if st != nil && st.errMsg != "" {
+		reason = errorMessage(st.errMsg)
+	} else if len(errBody) > 0 {
+		reason = errorMessage(string(errBody))
+	}
+	reason = strings.Join(strings.Fields(reason), " ")
+	if r := []rune(reason); len(r) > maxFailureReasonRunes {
+		reason = string(r[:maxFailureReasonRunes]) + "…"
+	}
+	return reason
+}
+
+// errorMessage 从错误 JSON 里取消息：聊天、Codex 与 Claude Code 入口是 {"error":{"message"}}，
+// Responses 流式失败是 {"response":{"error":{"message"}}}，上游原文常见 {"msg"} / {"message"}。
+// 不是 JSON 或没有这些字段时原样返回。
+func errorMessage(body string) string {
+	var v map[string]any
+	if json.Unmarshal([]byte(body), &v) != nil {
+		return body
+	}
+	if r, ok := v["response"].(map[string]any); ok {
+		v = r
+	}
+	switch e := v["error"].(type) {
+	case map[string]any:
+		if m, ok := e["message"].(string); ok && m != "" {
+			return m
+		}
+	case string:
+		if e != "" {
+			return e
+		}
+	}
+	for _, k := range []string{"message", "msg"} {
+		if m, ok := v[k].(string); ok && m != "" {
+			return m
+		}
+	}
+	return body
+}
+
 // responseObserver 捕获 handler 实际写出的 HTTP 状态，同时保留 Flusher/Unwrap，
-// 避免破坏 SSE 逐帧刷新。
+// 避免破坏 SSE 逐帧刷新。失败响应（状态 ≥ 400）顺带留下正文开头，供请求记录提取失败原因。
 type responseObserver struct {
 	http.ResponseWriter
-	status int
+	status  int
+	errBody []byte
 }
 
 func (o *responseObserver) WriteHeader(code int) {
@@ -463,6 +524,9 @@ func (o *responseObserver) WriteHeader(code int) {
 func (o *responseObserver) Write(p []byte) (int, error) {
 	if o.status == 0 {
 		o.status = http.StatusOK
+	}
+	if o.status >= http.StatusBadRequest && len(o.errBody) < maxErrorBodyCapture {
+		o.errBody = append(o.errBody, p[:min(len(p), maxErrorBodyCapture-len(o.errBody))]...)
 	}
 	return o.ResponseWriter.Write(p)
 }

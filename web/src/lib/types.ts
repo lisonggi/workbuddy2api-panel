@@ -413,6 +413,8 @@ export interface RequestEvent {
   user_agent?: string
   /** 用的密钥：客户端密钥记名字，管理员密钥记「管理员」，没开鉴权为空 */
   api_key?: string
+  /** 失败原因：回给客户端的错误消息（流中途出错时是上游的错误帧），最多 200 字；成功的请求没有 */
+  error?: string
 }
 
 export interface RequestMetrics {
