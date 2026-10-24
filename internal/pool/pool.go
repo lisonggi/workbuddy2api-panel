@@ -73,6 +73,13 @@ type Pool struct {
 	// maxInFlightGlobal global 域单账号在途上限分档（WAF 403 修复 P1-1：global 域
 	// WAF 风控更紧，压低并发）；0 = 未设置，回落 maxInFlight（不分档，零回归）。
 	maxInFlightGlobal int
+	// waveThreshold / waveWindow / wavePause 风控波熔断参数（SetRestrictionWave 注入；
+	// 默认值见 defaultRestrictionWave*，threshold 0 = 关闭）。waveHits 是各域窗口内
+	// 被 11140 限制的记录，运行态，不持久化（重启后从零记起）。
+	waveThreshold int
+	waveWindow    time.Duration
+	wavePause     time.Duration
+	waveHits      map[string][]restrictionHit
 	// randInt64N 仅供测试注入确定性随机源；nil 时用 math/rand/v2 全局源。
 	// 生产代码不应设置此字段。
 	randInt64N func(n int64) int64
@@ -108,6 +115,9 @@ func New(stateFp string) *Pool {
 		// config 显式 "0" 关停（SetCostExploreInterval(0)）。
 		costExploreInterval: defaultCostExploreInterval,
 		exploreLast:         map[string]time.Time{},
+		waveThreshold:       defaultRestrictionWaveThreshold,
+		waveWindow:          defaultRestrictionWaveWindow,
+		wavePause:           defaultRestrictionWavePause,
 	}
 	if stateFp != "" {
 		p.load()

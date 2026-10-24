@@ -128,7 +128,11 @@ func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason strin
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
-		e.until = time.Now().Add(d)
+		now := time.Now()
+		if e.wavePausedLocked(now) && now.Add(d).Before(e.until) {
+			return // 风控波暂停期内，更短的冷却不覆盖暂停
+		}
+		e.until = now.Add(d)
 		e.coolKind = kind
 		e.reason = reason
 		// 非模型级冷却入口：清空会参与路由的模型级冷却，避免上一次
@@ -165,7 +169,7 @@ func (p *Pool) CooldownSoftForModel(uid string, base time.Duration, resetAt time
 				ResetAt: resetAt,
 				Reason:  reason,
 			}
-		} else {
+		} else if !e.wavePausedLocked(now) { // 风控波暂停期内不记账号级软冷却
 			// 无解析时间（普通软冷却）：有界退避（base 起按 softStreak 翻倍、封顶
 			// softRateMax）。注意：**在软冷却中**（until 未到期）时不推进/不延长。
 			if e.coolKind != CoolSoft || !now.Before(e.until) {
@@ -408,6 +412,9 @@ func (p *Pool) CooldownSoftRate(uid string, base time.Duration, resetAt time.Tim
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		now := time.Now()
+		if e.wavePausedLocked(now) {
+			return // 风控波暂停期内不记账号级软冷却：暂停结束后真被限流会再记
+		}
 		if !resetAt.IsZero() {
 			e.until = p.cappedSoftUntilLocked(now, resetAt)
 		} else if e.coolKind != CoolSoft || !now.Before(e.until) {

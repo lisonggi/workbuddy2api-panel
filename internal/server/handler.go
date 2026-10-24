@@ -1602,13 +1602,17 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, notFoundCooldown, "upstream 404")
 	case upstream.ErrAccountFault:
 		// 账号级授权/配额故障按 msg 分野（口径与 Classify 的 accountFaultMarkers 一致）：
-		//   - "request illegal"（code 11140）→ 账号级**授权封禁**：硬禁用（Disable）。
+		//   - "request illegal"（code 11140）→ 账号被上游风控限制（「账号存在异常行为」）：
+		//     硬禁用（Disable）。只封对话、token 仍有效，重新登录一般解不开，要去官方申诉；
+		//     同时记入风控波（NoteRestriction），同域短时间内多个号被限就整域暂停。
 		//   - 14017（trial not activated）→ register 未完成，补完 register 后可能自愈，
 		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。14015 授权过期、
 		//     14016 企业未激活同样软冷却，原因文案带上业务码。
 		// 大小写不敏感（与 Classify 的 marker 匹配同口径）。
 		if strings.Contains(strings.ToLower(body), "request illegal") {
-			h.cfg.Pool.Disable(uid, "account banned by upstream (11140 request illegal), re-login required")
+			h.cfg.Pool.Disable(uid, "account restricted by upstream (11140 request illegal); "+
+				"appeal via official WorkBuddy support, re-login usually does not help")
+			h.cfg.Pool.NoteRestriction(uid)
 			return
 		}
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.softCooldown(), upstream.AccountFaultReason(body))

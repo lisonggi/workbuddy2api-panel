@@ -330,8 +330,8 @@ func TestApplyErrorPolicyKinds(t *testing.T) {
 		h, p := policyFixture(t)
 		h.applyErrorPolicy("u1", upstream.ErrAccountFault, "request illegal", "m", nil)
 		st, _ := p.Status("u1")
-		if !st.Disabled {
-			t.Errorf("11140 request illegal 应禁用: %+v", st)
+		if !st.Disabled || !strings.Contains(st.DisabledReason, "appeal") {
+			t.Errorf("11140 request illegal 应禁用并提示申诉: %+v", st)
 		}
 
 		h2, p2 := policyFixture(t)
@@ -339,6 +339,24 @@ func TestApplyErrorPolicyKinds(t *testing.T) {
 		st2, _ := p2.Status("u1")
 		if !st2.Cooling || st2.Disabled {
 			t.Errorf("14017 应软冷却: %+v", st2)
+		}
+	})
+
+	t.Run("11140 风控波暂停同域", func(t *testing.T) {
+		p := testPoolWith(
+			&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999},
+			&auth.Auth{UID: "u2", AccessToken: "at", ExpiresAt: 9999999999},
+			&auth.Auth{UID: "u3", AccessToken: "at", ExpiresAt: 9999999999},
+		)
+		up := newFakeUpstream(t, func(string) (int, string, bool) { return 200, `{"code":0}`, false })
+		h := NewHandler(Config{Pool: p, Upstream: up})
+		h.applyErrorPolicy("u1", upstream.ErrAccountFault, "request illegal", "m", nil)
+		if st, _ := p.Status("u3"); st.Cooling {
+			t.Fatalf("一个号被限不应暂停同域: %+v", st)
+		}
+		h.applyErrorPolicy("u2", upstream.ErrAccountFault, "request illegal", "m", nil)
+		if st, _ := p.Status("u3"); !st.Cooling || st.CoolKind != "restriction_wave" {
+			t.Errorf("两个号被限应暂停同域其余的号: %+v", st)
 		}
 	})
 

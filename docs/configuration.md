@@ -119,6 +119,8 @@
 | `pool.degrade_threshold` | `5` | 未知错误连败几次临时出池 |
 | `pool.degrade_cooldown` / `pool.degrade_cooldown_max` | `10m` / `2h` | 连败出池时长与上限 |
 | `pool.idle_weight_per_hour` / `pool.idle_weight_max` | `0.5` / `5.0` | 闲置补偿：每闲置一小时加的权重与上限 |
+| `pool.restriction_wave_threshold` | `2` | 风控波暂停：`restriction_wave_window` 内同一个域有这么多个号被上游 `11140` 风控限制，就暂停该域其余的号，见[网关与选号](gateway.md#错误分类与账号处置)；`0` = 关闭 |
+| `pool.restriction_wave_window` / `pool.restriction_wave_pause` | `15m` / `30m` | 风控波的统计窗口与暂停时长；空或非正值回落默认 |
 
 ### 模型路由
 

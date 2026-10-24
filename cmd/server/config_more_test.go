@@ -119,6 +119,9 @@ func TestNormalizeDefaultsAndClamps(t *testing.T) {
 	c.Pool.CostExploreInterval = ""
 	c.Pool.ExpiringSoon = "-5m"
 	c.Pool.CreditFloor = -3
+	c.Pool.RestrictionWaveThreshold = -1
+	c.Pool.RestrictionWaveWindow = ""
+	c.Pool.RestrictionWavePause = "-5m"
 	c.Listen = "7863"
 	c.Schedule.BlackcatHours = nil
 	c.Schedule.GrowthHours = nil
@@ -143,6 +146,9 @@ func TestNormalizeDefaultsAndClamps(t *testing.T) {
 	}
 	if c.Pool.CostExploreInterval != "30m" || c.CostExploreIntervalDur != 30*time.Minute {
 		t.Fatalf("探索窗口应回落 30m: %q %v", c.Pool.CostExploreInterval, c.CostExploreIntervalDur)
+	}
+	if c.Pool.RestrictionWaveThreshold != 0 || c.RestrictionWaveWindowDur != 15*time.Minute || c.RestrictionWavePauseDur != 30*time.Minute {
+		t.Fatalf("风控波应阈值钳 0、时长回落默认: %d %v %v", c.Pool.RestrictionWaveThreshold, c.RestrictionWaveWindowDur, c.RestrictionWavePauseDur)
 	}
 	if c.Pool.ExpiringSoon != "0" || c.ExpiringSoonDur != 0 {
 		t.Fatalf("负窗口应钳 0: %q %v", c.Pool.ExpiringSoon, c.ExpiringSoonDur)
@@ -187,6 +193,8 @@ func TestNormalizeDurationErrors(t *testing.T) {
 		{"会话GC非法", func(c *Config) { c.SessionSticky.GCInterval = "bad" }, "session_sticky.gc_interval"},
 		{"快过期窗口非法", func(c *Config) { c.Pool.ExpiringSoon = "bad" }, "pool.expiring_soon"},
 		{"探索窗口非法", func(c *Config) { c.Pool.CostExploreInterval = "bad" }, "pool.cost_explore_interval"},
+		{"风控波窗口非法", func(c *Config) { c.Pool.RestrictionWaveWindow = "bad" }, "pool.restriction_wave_window"},
+		{"风控波暂停非法", func(c *Config) { c.Pool.RestrictionWavePause = "bad" }, "pool.restriction_wave_pause"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -262,4 +270,22 @@ func TestNormalizePromptModes(t *testing.T) {
 			t.Fatalf("err=%v，应含 prompt.mode", err)
 		}
 	})
+}
+
+// TestRestrictionWaveConfig 风控波默认开（2 个号 / 15m / 30m），显式 0 关闭，时长可改。
+func TestRestrictionWaveConfig(t *testing.T) {
+	c, err := ParseConfig([]byte(`{"pool": {"max_in_flight": 3}}`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if c.Pool.RestrictionWaveThreshold != 2 || c.RestrictionWaveWindowDur != 15*time.Minute || c.RestrictionWavePauseDur != 30*time.Minute {
+		t.Fatalf("缺省应为 2 / 15m / 30m: %d %v %v", c.Pool.RestrictionWaveThreshold, c.RestrictionWaveWindowDur, c.RestrictionWavePauseDur)
+	}
+	c, err = ParseConfig([]byte(`{"pool": {"restriction_wave_threshold": 0, "restriction_wave_window": "10m", "restriction_wave_pause": "1h"}}`))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if c.Pool.RestrictionWaveThreshold != 0 || c.RestrictionWaveWindowDur != 10*time.Minute || c.RestrictionWavePauseDur != time.Hour {
+		t.Fatalf("显式值应生效: %d %v %v", c.Pool.RestrictionWaveThreshold, c.RestrictionWaveWindowDur, c.RestrictionWavePauseDur)
+	}
 }

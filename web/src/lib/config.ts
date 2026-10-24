@@ -113,6 +113,10 @@ export const CONFIG_TABS: ConfigTab[] = [
           num('degrade_threshold', ['pool', 'degrade_threshold'], '连败降权阈值', '5', { min: 1, hint: '未知错误连败 N 次临时出池' }),
           duration('degrade_cooldown', ['pool', 'degrade_cooldown'], '连败降权时长', '10m'),
           duration('degrade_cooldown_max', ['pool', 'degrade_cooldown_max'], '连败降权上限', '2h'),
+          num('restriction_wave_threshold', ['pool', 'restriction_wave_threshold'], '风控波阈值', '2',
+            { min: 0, hint: '窗口内同一个域有这么多个号被上游 11140 风控限制，就暂停该域其余的号；0 关闭' }),
+          duration('restriction_wave_window', ['pool', 'restriction_wave_window'], '风控波统计窗口', '15m'),
+          duration('restriction_wave_pause', ['pool', 'restriction_wave_pause'], '风控波暂停时长', '30m', '到期自动恢复；账号池里点「解冻」可提前恢复单个号'),
         ],
       },
       {

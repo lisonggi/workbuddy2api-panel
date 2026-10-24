@@ -161,6 +161,7 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 	p.SetSoftRateMax(cfg.SoftRateMaxDur)                 // 软冷却指数退避封顶（soft_rate_max，默认 2h）
 	p.SetCostExploreInterval(cfg.CostExploreIntervalDur) // costTier 探索窗口（issue #136，默认 30m；0 关停）
 	p.SetCreditFloor(cfg.Pool.CreditFloor)               // 积分保底（默认 0 = 关闭）
+	p.SetRestrictionWave(cfg.Pool.RestrictionWaveThreshold, cfg.RestrictionWaveWindowDur, cfg.RestrictionWavePauseDur)
 	p.SetWeights(cfg.Pool.IdleWeightPerHour, cfg.Pool.IdleWeightMax)
 	p.SetPreferExpiring(cfg.Pool.PreferExpiring)
 
@@ -595,7 +596,7 @@ var renameConfig = os.Rename
 // 热生效范围（设计取舍）：
 //   - api_key / cooldown.soft_rate / features.sanitize_blacklist_fingerprints / pool.cross_realm / panel.update_check / model_routes → livecfg 快照
 //   - features.sanitize_blacklist_fingerprints / upstream.model_optimization → upstream.Client 的 atomic 开关
-//   - pool.* → pool.SetBreaker/SetMaxInFlight/SetSoftRateMax/SetWeights/SetCostExploreInterval/SetPreferExpiring/SetCreditFloor
+//   - pool.* → pool.SetBreaker/SetMaxInFlight/SetSoftRateMax/SetWeights/SetCostExploreInterval/SetPreferExpiring/SetCreditFloor/SetRestrictionWave
 //   - schedule.* → scheduler.Reconfigure/SetBalanceInterval/SetExpiringSoonWindow
 //
 // 需重启（涉及监听地址、HTTP client 超时、auth_dir 等装配期依赖）：
@@ -682,6 +683,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	p.SetSoftRateMax(newCfg.SoftRateMaxDur)
 	p.SetCostExploreInterval(newCfg.CostExploreIntervalDur) // costTier 探索窗口热生效（0 关停）
 	p.SetCreditFloor(newCfg.Pool.CreditFloor)               // 积分保底热生效（0 = 关闭）
+	p.SetRestrictionWave(newCfg.Pool.RestrictionWaveThreshold, newCfg.RestrictionWaveWindowDur, newCfg.RestrictionWavePauseDur)
 	p.SetWeights(newCfg.Pool.IdleWeightPerHour, newCfg.Pool.IdleWeightMax)
 	p.SetPreferExpiring(newCfg.Pool.PreferExpiring)
 	sch.SetExpiringSoonWindow(newCfg.ExpiringSoonDur)

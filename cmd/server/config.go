@@ -228,6 +228,13 @@ type Config struct {
 		// 合成的一个池里选号，规则不变（实测免费优先，再按积分 / 闲置等权重加权随机）；
 		// 带前缀的照旧只走该域。/v1/models 同时列出不带前缀的模型名。热生效。
 		CrossRealm bool `json:"cross_realm"`
+		// 风控波熔断：restriction_wave_window 内同一个域有 restriction_wave_threshold 个号
+		// 被上游 11140「账号存在异常行为」限制，就把该域其余的号暂停 restriction_wave_pause。
+		// 默认 2 个 / "15m" / "30m"（照 workbuddy2api-hub #629 的做法）；阈值 0 = 关闭，
+		// 负值钳 0；两个时长空值或非正值回落默认。热生效。
+		RestrictionWaveThreshold int    `json:"restriction_wave_threshold"`
+		RestrictionWaveWindow    string `json:"restriction_wave_window"`
+		RestrictionWavePause     string `json:"restriction_wave_pause"`
 	} `json:"pool"`
 
 	SessionSticky struct {
@@ -249,6 +256,9 @@ type Config struct {
 	ExpiringSoonDur        time.Duration `json:"-"`
 	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
+	// RestrictionWaveWindowDur / RestrictionWavePauseDur 解析后的风控波窗口与暂停时长。
+	RestrictionWaveWindowDur time.Duration `json:"-"`
+	RestrictionWavePauseDur  time.Duration `json:"-"`
 	// ServerReadTimeoutDur 解析后的入站请求读取上限（issue #100）；0 = 不限制。
 	ServerReadTimeoutDur time.Duration `json:"-"`
 }
@@ -314,6 +324,9 @@ func Default() *Config {
 	c.Pool.ExpiringSoon = "168h" // 快过期窗口默认 7 天：官方活动奖励积分多在两周内过期
 	// costTier 探索默认 30m（issue #136：垄断破除 + 搭车改道零新增请求）；"0" 关停。
 	c.Pool.CostExploreInterval = "30m"
+	c.Pool.RestrictionWaveThreshold = 2
+	c.Pool.RestrictionWaveWindow = "15m"
+	c.Pool.RestrictionWavePause = "30m"
 	c.SessionSticky.Enabled = true
 	c.SessionSticky.TTL = "30m"
 	c.SessionSticky.GCInterval = "5m"
@@ -559,6 +572,16 @@ func (c *Config) normalize() error {
 	if c.CostExploreIntervalDur < 0 {
 		c.CostExploreIntervalDur = 0
 	}
+	// 风控波：阈值 0 是合法值（关闭），负值钳 0；时长 0 没有合理语义，空值或非正值回落默认。
+	if c.Pool.RestrictionWaveThreshold < 0 {
+		c.Pool.RestrictionWaveThreshold = 0
+	}
+	if c.RestrictionWaveWindowDur, err = parseDurationOr(c.Pool.RestrictionWaveWindow, "15m"); err != nil {
+		return fmt.Errorf("pool.restriction_wave_window: %w", err)
+	}
+	if c.RestrictionWavePauseDur, err = parseDurationOr(c.Pool.RestrictionWavePause, "30m"); err != nil {
+		return fmt.Errorf("pool.restriction_wave_pause: %w", err)
+	}
 	// 积分保底：负值钳 0（= 关闭）。0 是合法默认（关闭），无需空值回落。
 	if c.Pool.CreditFloor < 0 {
 		c.Pool.CreditFloor = 0
@@ -633,6 +656,20 @@ func (c *Config) normalize() error {
 }
 
 // normalizeModelRoutes 去掉两端空白并校验：match、target 都不能为空，target 不能带通配。
+// parseDurationOr 解析时长；空值或非正值用 def（def 须是合法时长）。
+func parseDurationOr(s, def string) (time.Duration, error) {
+	if s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, err
+		}
+		if d > 0 {
+			return d, nil
+		}
+	}
+	return time.ParseDuration(def)
+}
+
 func (c *Config) normalizeModelRoutes() error {
 	for i := range c.ModelRoutes {
 		rt := &c.ModelRoutes[i]

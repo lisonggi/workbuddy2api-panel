@@ -33,6 +33,7 @@ describe('accountHealth', () => {
   it('取三种冷却里最晚的截止时刻，并按来源命名', () => {
     expect(accountHealth({ ...base, cool_remaining_sec: 60 }, now)).toEqual({ state: 'cooling', coolEnd: now + 60_000, kind: '限流冷却' })
     expect(accountHealth({ ...base, cool_remaining_sec: 60, cool_kind: 'hard_credit' }, now).kind).toBe('积分冷却')
+    expect(accountHealth({ ...base, cool_remaining_sec: 60, cool_kind: 'restriction_wave' }, now).kind).toBe('风控暂停')
     expect(accountHealth({ ...base, cool_remaining_sec: 60, breaker_until: iso(now + 120_000) }, now).kind).toBe('熔断')
     expect(accountHealth({ ...base, cool_remaining_sec: 60, degrade_until: iso(now + 90_000) }, now).kind).toBe('连败降权')
   })

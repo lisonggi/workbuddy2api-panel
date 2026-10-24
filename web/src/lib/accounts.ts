@@ -15,7 +15,7 @@ export interface Health {
   state: AccountState
   /** 冷却截止时刻（毫秒）；未冷却为 null。暂停选号的账号也可能同时在冷却 */
   coolEnd: number | null
-  /** 冷却类型：熔断 / 连败降权 / 积分冷却 / 限流冷却 */
+  /** 冷却类型：熔断 / 连败降权 / 积分冷却 / 风控暂停 / 限流冷却 */
   kind: string
 }
 
@@ -32,7 +32,8 @@ export function accountHealth(a: Account, fetchedAt: number): Health {
   if (end <= fetchedAt) return a.paused ? { state: 'paused', coolEnd: null, kind: '已暂停选号' } : { state: 'ok', coolEnd: null, kind: '可用' }
   const kind = breaker > Math.max(soft, degrade) ? '熔断'
     : degrade > soft ? '连败降权'
-    : a.cool_kind === 'hard_credit' ? '积分冷却' : '限流冷却'
+    : a.cool_kind === 'hard_credit' ? '积分冷却'
+    : a.cool_kind === 'restriction_wave' ? '风控暂停' : '限流冷却'
   return { state: a.paused ? 'paused' : 'cooling', coolEnd: end, kind }
 }
 

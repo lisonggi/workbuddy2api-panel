@@ -15,8 +15,9 @@ import (
 type CoolKind int
 
 const (
-	CoolHard CoolKind = iota // 余额不足 → 冷却到次日 04:00（等签到恢复）
-	CoolSoft                 // 429 → 短冷却
+	CoolHard  CoolKind = iota // 余额不足 → 冷却到次日 04:00（等签到恢复）
+	CoolSoft                  // 429 → 短冷却
+	CoolPause                 // 风控波：同域短时间内多个号被 11140 限制 → 整域暂停（见 wave.go）
 )
 
 func (k CoolKind) String() string {
@@ -25,6 +26,8 @@ func (k CoolKind) String() string {
 		return "hard_credit"
 	case CoolSoft:
 		return "soft_rate"
+	case CoolPause:
+		return "restriction_wave"
 	}
 	return "unknown"
 }
