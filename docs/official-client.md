@@ -18,7 +18,17 @@
 
 成长中心、积分补偿、新手礼包、试用只在官网网页上，同日读了 `www.workbuddy.cn` 成长中心页的前端代码。
 
-npm 上更新的 CLI 只作对照，取值以安装包内置的版本为准：用户实际跑的是安装包里的 CLI，网关在 UA 里报的也是它的版本号。
+npm 上更新的 CLI 只作对照，取值以安装包内置的版本为准：用户实际跑的是安装包里的 CLI，网关在 UA 里报的也是它的版本号。npm 上的 CLI 几乎每天发一版，和桌面端不同步；只把 UA 里的 `CLI/<版本>` 换成 npm 的新版本，会凑出官方不存在的组合（5.8.3 的桌面端不会带 2.174.0 的 CLI），新版 CLI 多发或改发的头也对不上。
+
+### 与 npm 2.174.0 的对照
+
+2026-10-24 社区传「官方改了登录」，同类项目同日按独立 CLI 2.174.0 重写了登录（它们之前停在 `CLI/2.63.2`）。当天从 npm 下载 `@tencent-ai/codebuddy-code` 2.174.0（台湾时间 10-24 04:32 发布）只解包阅读，包里也带了桌面端用的 `dist/codebuddy-lite-wb.mjs` 和 `dist/lazy-lite-wb/`，和 5.8.3 内置的 2.161.0 比对：
+
+- 登录和刷新令牌没有变：发起授权、轮询令牌、取账号、刷新令牌、授权被拒的业务码、`calculateExpiresAt` 除了压缩后的变量名都一样。
+- 新增了一套交接登录：`GET /v2/plugin/auth/handoff/info?code=<码>` 查身份、`POST /v2/plugin/auth/handoff/token`（请求体 `{code}`）换令牌、`GET /v2/plugin/auth/handoff/account` 取账号（`loginWithHandoff`）。CLI 自己不调用它，应该是给桌面端外壳把别处的登录交过来用的；原来的扫码流程照旧保留。
+- 对话请求多了一个头 `X-Agent-Runtime`：取会话的 `codebuddy.ai/agentRuntime` 或环境变量 `CODEBUDDY_AGENT_RUNTIME`，只认 `local-agent`、`cloud-agent`、`agent-agent`，都没有时是 `other`。2.161.0 不发。桌面端换用新 CLI 后会发什么值没确认。
+
+结论：网关的登录不用改，版本号等桌面端出新版再一起换。比对时发现的两处网关缺口（授权被拒的提示、毫秒的到期时间）在 1.5.1 补上了，见[登录](#登录)与[刷新令牌](#刷新令牌)。
 
 ## 几类请求
 
