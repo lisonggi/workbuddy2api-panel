@@ -390,6 +390,123 @@ func TestSanitizeMessagesScrubsReasoningField(t *testing.T) {
 	}
 }
 
+const (
+	dshGUIA = "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names."
+	dshGUIB = `When the user refers to "this page", "this GUI", or "this app" without naming another target, they mean this GUI.`
+)
+
+// 自我介绍句（11128 渠道指纹）整句换成中性句，句子之后的内容原样保留。
+func TestIdentitySentenceRewritten(t *testing.T) {
+	cases := map[string]string{
+		"You are an AI agent powered by DeepSeek Harness.":                                    "You are a helpful AI assistant.",
+		"You are an AI assistant built on DeepSeek. Use tools wisely.":                        "You are a helpful AI assistant. Use tools wisely.",
+		"You are Codex Agent, built by OpenAI.":                                               "You are a helpful AI assistant.",
+		"you are an llm TRAINED BY someone.":                                                  "You are a helpful AI assistant.",
+		"You are powered by the model named Claude Opus 4.5. The exact model ID is x-4-5.":    "You are a helpful AI assistant. The exact model ID is x-4-5.",
+		"Intro.\nYou are a coding agent powered by the deepseek-v4.1-flash model.\nTools: a.": "Intro.\nYou are a helpful AI assistant.\nTools: a.",
+		"You are an AI agent powered by DeepSeek Harness\nnext line":                          "You are a helpful AI assistant.\nnext line",
+	}
+	for in, want := range cases {
+		if got := sanitizeText(in); got != want {
+			t.Errorf("sanitizeText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// 分词修饰宾语、不是自我介绍的句子不动；只出现动词短语时连预检都不进。
+func TestIdentityLookalikeNotTouched(t *testing.T) {
+	for _, in := range []string{
+		"You are free to use tools built by the community.",
+		"This plugin is powered by DeepSeek and made by volunteers.",
+		"You are an agent. The CLI was built by OpenAI.",
+	} {
+		if got := sanitizeText(in); got != in {
+			t.Errorf("should be untouched: %q -> %q", in, got)
+		}
+	}
+}
+
+// GUI 描述段：A 句只换句尾语序，品牌再缩成 DeepSeek，B 句不动。
+func TestDSHGUIParagraphRewritten(t *testing.T) {
+	want := "You are interacting with the user through the DeepSeek Web GUI whose URL is named in the runtime context. " + dshGUIB
+	if got := sanitizeText(dshGUIA + " " + dshGUIB); got != want {
+		t.Errorf("GUI paragraph:\n got %q\nwant %q", got, want)
+	}
+	lower := strings.ToLower(dshGUIA)
+	if got := sanitizeText(lower); strings.Contains(got, "the runtime context names") || strings.Contains(got, "harness") {
+		t.Errorf("case-insensitive GUI rewrite failed: %q", got)
+	}
+}
+
+// 品牌词只认散文里的空格形式，路径、包名、标识符里的连字符和下划线形式不动。
+func TestDSHBrandRewrittenOnlyInProse(t *testing.T) {
+	if got := sanitizeText("Built with DeepSeek\tHarness today"); got != "Built with DeepSeek today" {
+		t.Errorf("brand not reduced: %q", got)
+	}
+	for _, in := range []string{
+		"github.com/deepseek-ai/deepseek-harness/tree/main",
+		"import deepseek_harness as dsh",
+		"/opt/deepseek-harness/app",
+		"a test harness for DeepSeek",
+	} {
+		if got := sanitizeText(in); got != in {
+			t.Errorf("identifier should be untouched: %q -> %q", in, got)
+		}
+	}
+}
+
+// OhMyOpenCode 子代理身份串：连在一起才是指纹，两半各自出现不动。
+func TestOmOIdentityRewritten(t *testing.T) {
+	in := "You are Sisyphus-Junior - Focused executor from OhMyOpenCode, a helper."
+	if got := sanitizeText(in); got != "You are Sisyphus-Junior - Focused executor, a helper." {
+		t.Errorf("OmO not rewritten: %q", got)
+	}
+	for _, in := range []string{"Sisyphus-Junior alone", "from OhMyOpenCode alone"} {
+		if got := sanitizeText(in); got != in {
+			t.Errorf("half should be untouched: %q -> %q", in, got)
+		}
+	}
+}
+
+// 改写结果再过一遍不再变化。
+func TestChannelFingerprintRewriteIdempotent(t *testing.T) {
+	for _, in := range []string{
+		dshGUIA + " " + dshGUIB,
+		"You are an AI agent powered by DeepSeek Harness. Be brief.",
+		"Sisyphus-Junior - Focused executor from OhMyOpenCode",
+	} {
+		once := sanitizeText(in)
+		if twice := sanitizeText(once); twice != once {
+			t.Errorf("not idempotent: %q -> %q -> %q", in, once, twice)
+		}
+	}
+}
+
+// 作用域：和其他规则一样，user、assistant、tool 消息里的渠道指纹也改。
+func TestChannelFingerprintScrubbedInEveryRole(t *testing.T) {
+	ms := []any{
+		map[string]any{"role": "system", "content": "You are an AI agent powered by DeepSeek Harness."},
+		map[string]any{"role": "user", "content": dshGUIA + " " + dshGUIB},
+		map[string]any{"role": "assistant", "content": "You are a coding agent powered by the deepseek-v4.1-flash model."},
+		map[string]any{"role": "tool", "content": "Sisyphus-Junior - Focused executor from OhMyOpenCode"},
+	}
+	if !sanitizeMessages(ms) {
+		t.Fatal("expected change")
+	}
+	for i, m := range ms {
+		c := m.(map[string]any)["content"].(string)
+		if containsFoldASCII(c, "harness") || strings.Contains(c, "powered by") || strings.Contains(c, "OhMyOpenCode") {
+			t.Errorf("message %d still carries fingerprint: %q", i, c)
+		}
+	}
+}
+
+func TestContainsFoldASCII(t *testing.T) {
+	if !containsFoldASCII("xx DeepSeek HARNESS", "harness") || containsFoldASCII("harnes", "harness") || containsFoldASCII("", "a") {
+		t.Fatal("containsFoldASCII wrong")
+	}
+}
+
 // newTestUpstream 起一个假上游并捕获请求。
 func newTestUpstream(t *testing.T, h http.HandlerFunc) *httptest.Server {
 	t.Helper()

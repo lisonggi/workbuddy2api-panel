@@ -96,7 +96,7 @@ flowchart LR
 | 服务端错误 | HTTP ≥ 500 | 计入连续失败，达阈值熔断 | 熔断到期或成功后清零 |
 | 上下文超限 | 400 / 404 / 413 + `code 11115` 或超限文案 | **不罚账号、不换号**（换哪个号都一样），原文返回 | 即时 |
 | 请求体解析失败 | 400 + `code 11101` | **不罚账号、不换号**，原文返回 | 即时 |
-| 内容拦截 | 400 + 审核文案 | **不罚账号**，按下一节降级重试 | 即时 |
+| 内容拦截 | 400 + `code 11128` 或审核文案 | **不罚账号**，按下一节降级重试 | 即时 |
 | 其他客户端错误 | 其余 4xx / 业务码非 0 | 不处罚，换号重试 | 即时 |
 
 业务码的含义和归类照官方客户端（WorkBuddy 桌面端内置的 CLI）的错误码表；业务码比状态码和文案更可靠，先按它判。上下文超限的文案也照官方的词表认，覆盖各家模型供应商的说法。
@@ -123,7 +123,13 @@ Claude Code、Codex 等客户端会在系统提示词里放固定模板句，上
 
    内置提示词约 2KB（[`internal/prompt/defaultprompt.md`](../internal/prompt/defaultprompt.md)）；`prompt.file` 可替换成你自己的。
 
-2. **指纹脱敏**（`features.sanitize_blacklist_fingerprints`）清洗用户、助手消息里的指纹串。
+2. **指纹脱敏**（`features.sanitize_blacklist_fingerprints`）清洗所有消息里的指纹串，系统提示词、用户、助手、工具消息，以及工具调用参数和推理内容都算。上游的「渠道指纹」拦截（400 + `code 11128`，`Illegal API invocation from an unapproved channel`）按大小写不敏感的连续子串匹配，网关处理这几类：
+   - Claude Code、Codex 的固定模板句和 `x-anthropic-billing-header` 这类键值，改一个词或整段删掉；
+   - 「You are … powered by / built on / created by …」这类自我介绍句，整句换成 `You are a helpful AI assistant.`；
+   - DeepSeek Harness 的提示词：「… DeepSeek Harness Web GUI whose URL the runtime context names.」改个语序，正文里的 `DeepSeek Harness` 缩成 `DeepSeek`；
+   - OhMyOpenCode 插件的 `Sisyphus-Junior - Focused executor from OhMyOpenCode`。
+
+   后三类规则参考了 workbuddy2api-hub、workbuddy-manager、cpa-multi-plugins 等项目的实测（见 README 致谢）。
 
 **降级重试**：请求被内容审核拦下时，网关判定为系统提示词误报，**在同一请求内**换成中性提示词重试一次；第二次仍被拦，说明是用户内容本身触发审核，如实返回给客户端。触发降级后到次日 00:00（北京时间）前，后续请求直接用中性提示词，不再先撞一次 400。降级状态只在内存里，重启清零。内容拦截不罚账号。
 
