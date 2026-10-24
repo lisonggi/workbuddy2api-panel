@@ -35,6 +35,29 @@ func TestParseFlat(t *testing.T) {
 	}
 }
 
+// 官方客户端存的到期时间是毫秒，读进来要换成秒；网关自己写的秒原样保留，两种形态都一样。
+func TestParseExpiresAtMillis(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want int64
+	}{
+		{"嵌套形毫秒", `{"auth":{"accessToken":"at","expiresAt":1753600000123},"account":{"uid":"u1"}}`, 1753600000},
+		{"嵌套形秒", `{"auth":{"accessToken":"at","expiresAt":1753600000},"account":{"uid":"u1"}}`, 1753600000},
+		{"扁平形毫秒", `{"accessToken":"at","expiresAt":1753600000999,"uid":"u2"}`, 1753600000},
+		{"扁平形秒", `{"accessToken":"at","expiresAt":1753600000,"uid":"u2"}`, 1753600000},
+		{"没有到期时间", `{"accessToken":"at","uid":"u2"}`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Parse([]byte(tc.raw))
+			if err != nil || a.ExpiresAt != tc.want {
+				t.Fatalf("ExpiresAt=%v err=%v，想要 %d", a, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseMissingToken(t *testing.T) {
 	if _, err := Parse([]byte(`{"uid":"u3"}`)); err == nil {
 		t.Fatal("want error for missing accessToken")

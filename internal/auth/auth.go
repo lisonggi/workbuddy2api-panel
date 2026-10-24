@@ -270,10 +270,22 @@ func (a *Auth) NeedsRefresh(within time.Duration) bool {
 	return time.Now().Add(within).Unix() >= a.ExpiresAt
 }
 
+// expiresAtSeconds 把凭证里的到期时间统一成 Unix 秒。网关自己写的是秒，官方客户端存的是
+// 毫秒（calculateExpiresAt：Date.now()+1e3*expiresIn），原样当秒读会永远不主动刷新，
+// 令牌到期后只剩 401。大于 1e11 的按毫秒算：1e11 秒是公元 5138 年，1e11 毫秒是 1973 年，不会混。
+func expiresAtSeconds(v int64) int64 {
+	if v > 1e11 {
+		return v / 1000
+	}
+	return v
+}
+
 // Parse 兼容两种磁盘形态：
 //
 //	嵌套形 {"auth":{...},"account":{...}}  （插件 OAuth 输出）
 //	扁平形 {"accessToken":...,"uid":...}   （手写/旧版）
+//
+// expiresAt 秒和毫秒都认，读进来一律是秒（expiresAtSeconds）。
 func Parse(raw []byte) (*Auth, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("empty auth storage")
@@ -311,7 +323,7 @@ func Parse(raw []byte) (*Auth, error) {
 		a = Auth{
 			AccessToken:        n.Auth.AccessToken,
 			RefreshToken:       n.Auth.RefreshToken,
-			ExpiresAt:          n.Auth.ExpiresAt,
+			ExpiresAt:          expiresAtSeconds(n.Auth.ExpiresAt),
 			Domain:             n.Auth.Domain,
 			realm:              n.Auth.Realm,
 			UID:                n.Account.UID,
@@ -348,7 +360,7 @@ func Parse(raw []byte) (*Auth, error) {
 		a = Auth{
 			AccessToken:        f.AccessToken,
 			RefreshToken:       f.RefreshToken,
-			ExpiresAt:          f.ExpiresAt,
+			ExpiresAt:          expiresAtSeconds(f.ExpiresAt),
 			Domain:             f.Domain,
 			realm:              f.Realm,
 			UID:                f.UID,
