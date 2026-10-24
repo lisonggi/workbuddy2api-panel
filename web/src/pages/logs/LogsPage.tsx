@@ -6,7 +6,7 @@
 // 停在底部时每 5 秒跟随新日志；往上翻看旧日志时冻结画面（日志环满了会从顶部淘汰旧行，
 // 不冻结的话翻看中的内容会整体上移），滚回底部或点「回到最新」再继续跟随。
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Button, Chip, SearchField, ToggleButton, ToggleButtonGroup } from '@heroui/react'
+import { Button, Chip, SearchField, Surface, ToggleButton, ToggleButtonGroup } from '@heroui/react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { CHANNEL_LABEL, LOG_CHANNELS, filterLogs, logLevel, type LevelFilter, type LogChannel } from '../../lib/logs'
 import { useLogs } from '../../lib/queries'
@@ -109,10 +109,11 @@ export function LogsPage() {
       </div>
       <Loaded query={query} rows={8}>
         {() => (
-          <div
+          <Surface
             ref={box}
             onScroll={onScroll}
-            className="h-[60dvh] min-h-72 overflow-auto rounded-xl bg-surface-secondary p-3 font-mono text-xs leading-6"
+            variant="secondary"
+            className="h-[60dvh] min-h-72 overflow-auto rounded-xl p-3 font-mono text-xs leading-6"
           >
             {shown.length === 0 ? (
               <Empty title={live.length ? '没有符合条件的日志' : '暂无日志'} />
@@ -127,7 +128,7 @@ export function LogsPage() {
                 )
               })
             )}
-          </div>
+          </Surface>
         )}
       </Loaded>
     </Panel>

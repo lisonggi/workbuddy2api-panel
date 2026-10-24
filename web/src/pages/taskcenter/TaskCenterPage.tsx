@@ -14,6 +14,7 @@ import { qk, useQueue } from '../../lib/queries'
 import { growthTitles } from '../../lib/tasks'
 import type { QueueItem, QueueState, RunQueueResp, ScanAccount } from '../../lib/types'
 import { BusyButton, Empty } from '../../components/Feedback'
+import { Hint } from '../../components/Hint'
 import { Panel } from '../../components/Panel'
 import { useConfirm } from '../../components/useConfirm'
 import { CompensationModal } from './CompensationModal'
@@ -184,7 +185,7 @@ export function TaskCenterPage() {
                       </span>
                       <span className="hidden text-right tabular-nums text-muted sm:block">{r.prog}</span>
                       <span className="justify-self-end sm:justify-self-start"><Chip size="sm" variant="soft" color={st.color}>{st.label}</Chip></span>
-                      {r.message && <span className="col-span-2 break-all text-xs text-muted sm:col-span-1 sm:truncate" title={r.message}>{r.message}</span>}
+                      {r.message && <Hint tip={r.message} className="col-span-2 break-all text-xs text-muted sm:col-span-1 sm:truncate">{r.message}</Hint>}
                     </li>
                   )
                 })}

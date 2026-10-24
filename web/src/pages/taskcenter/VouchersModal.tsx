@@ -6,7 +6,7 @@
 // 券码到对应 app / 小程序兑换。二维码由 uqr 在本地生成（面板 CSP 只允许同源，不能用外部二维码服务）。
 import { useState } from 'react'
 import { Copy, QrCode } from '@gravity-ui/icons'
-import { Button, Card, Chip, Modal, toast } from '@heroui/react'
+import { Button, Card, Chip, Modal, toast, Typography } from '@heroui/react'
 import { encode } from 'uqr'
 import { copyText } from '../../lib/clipboard'
 import { useVouchers } from '../../lib/queries'
@@ -80,7 +80,7 @@ function VoucherCard({ v }: { v: Voucher }) {
         {v.granted_at ? ' · ' + v.granted_at.slice(0, 10) + ' 抽中' : ''}
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        <code className="select-all rounded-lg bg-surface px-3 py-1.5 font-mono text-base font-semibold tracking-wider">{v.code || '-'}</code>
+        <Typography.Code className="select-all rounded-lg bg-surface px-3 py-1.5 text-base font-semibold tracking-wider">{v.code || '-'}</Typography.Code>
         <div className="ml-auto flex gap-1">
           {v.code && <Button size="sm" variant="ghost" onPress={() => setQr(!qr)}><QrCode />{qr ? '收起' : '二维码'}</Button>}
           <Button size="sm" variant="ghost" isDisabled={!v.code} onPress={() => void copy()}><Copy />复制</Button>

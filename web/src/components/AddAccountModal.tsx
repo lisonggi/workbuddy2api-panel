@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUpRightFromSquare, Copy } from '@gravity-ui/icons'
 import {
-  Alert, Button, Description, Label, Modal, Radio, RadioGroup, Spinner, Tabs, toast,
+  Alert, Button, Description, Label, Modal, Radio, RadioGroup, Spinner, Tabs, toast, Typography,
 } from '@heroui/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { creditsText } from '../lib/accounts'
@@ -103,7 +103,7 @@ function LoginPanel({ onClose }: { onClose: () => void }) {
     return (
       <div className="flex flex-col gap-3">
         <p className="text-sm">在浏览器打开以下链接并登录：</p>
-        <code className="select-all break-all rounded-xl bg-surface-secondary px-3 py-2.5 text-xs text-accent">{session.url}</code>
+        <Typography.Code className="select-all break-all rounded-xl bg-surface-secondary px-3 py-2.5 text-xs text-accent">{session.url}</Typography.Code>
         <div className="flex flex-wrap gap-2">
           <Button variant="primary" onPress={() => window.open(session.url, '_blank', 'noopener')}>
             <ArrowUpRightFromSquare />在浏览器打开

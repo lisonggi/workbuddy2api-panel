@@ -6,8 +6,7 @@
 import { useMemo, useState } from 'react'
 import { Copy } from '@gravity-ui/icons'
 import {
-  Button, Calendar, ComboBox, DateField, DatePicker, Description, Input, Label, ListBox, Modal, NumberField, Switch, Tag, TagGroup,
-  TextArea, TextField, toast, type DateValue,
+  Button, Calendar, ComboBox, DateField, DatePicker, type DateValue, Description, Input, Label, ListBox, Modal, NumberField, Surface, Switch, Tag, TagGroup, TextArea, TextField, toast,
 } from '@heroui/react'
 import { CalendarDateTime, getLocalTimeZone } from '@internationalized/date'
 import { useQueryClient } from '@tanstack/react-query'
@@ -299,7 +298,7 @@ export function KeyUsageGuide({ k: open, onClose }: { k: ApiKey | null; onClose:
               <div key={it.title} className="flex flex-col gap-1">
                 <span className="text-sm text-muted">{it.title}</span>
                 <div className="flex items-start gap-1">
-                  <pre className="min-w-0 flex-1 rounded-lg bg-surface-secondary px-3 py-2 font-mono text-sm break-all whitespace-pre-wrap select-all">{it.text}</pre>
+                  <Surface<'pre'> variant="secondary" render={(props) => <pre {...props} />} className="min-w-0 flex-1 rounded-lg px-3 py-2 font-mono text-sm break-all whitespace-pre-wrap select-all">{it.text}</Surface>
                   <Button isIconOnly size="sm" variant="ghost" aria-label={'复制' + it.what} onPress={() => copy(it.text, it.what)}><Copy /></Button>
                 </div>
               </div>

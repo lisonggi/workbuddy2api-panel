@@ -4,9 +4,10 @@
 
 // 模型锁池：被上游按模型限流的模型（哪些模型不能用、锁了几个号、还要锁多久）。
 // 账号表回答「哪个账号不能用」，这里回答「哪个模型不能用」。窄屏换成卡片。
-import { Chip, Table, useMediaQuery } from '@heroui/react'
+import { Chip, Surface, Table, useMediaQuery } from '@heroui/react'
 import { earliestUnlock, lockLeft, lockState, lockSummary } from '../../lib/modellocks'
 import type { ModelLockRow } from '../../lib/types'
+import { Hint } from '../../components/Hint'
 import { Panel } from '../../components/Panel'
 
 const realmLabel = (r: string) => (r === 'global' ? '国际版' : '国内版')
@@ -48,7 +49,7 @@ export function ModelLocks({ rows, now }: { rows: ModelLockRow[]; now: number })
                       <Table.Cell className="whitespace-nowrap text-right font-mono tabular-nums">{lockLeft(earliestUnlock(r), now)}</Table.Cell>
                       <Table.Cell className="whitespace-nowrap text-right font-mono tabular-nums">{lockLeft(r.fully_unlock_at, now)}</Table.Cell>
                       <Table.Cell>
-                        {r.reason ? <span title={r.reason} className="line-clamp-2 max-w-72 break-all text-xs text-muted">{r.reason}</span> : <span className="text-muted">—</span>}
+                        {r.reason ? <Hint tip={r.reason} className="line-clamp-2 max-w-72 break-all text-xs text-muted">{r.reason}</Hint> : <span className="text-muted">—</span>}
                       </Table.Cell>
                     </Table.Row>
                   )
@@ -62,7 +63,7 @@ export function ModelLocks({ rows, now }: { rows: ModelLockRow[]; now: number })
           {rows.map((r) => {
             const st = lockState(r.state)
             return (
-              <li key={r.realm + ':' + r.model} className="flex flex-col gap-1 rounded-xl bg-surface-secondary px-3 py-2 text-sm">
+              <Surface<'li'> key={r.realm + ':' + r.model} variant="secondary" render={(props) => <li {...props} />} className="flex flex-col gap-1 rounded-xl px-3 py-2 text-sm">
                 <div className="flex items-start justify-between gap-2">
                   <span className="break-all font-mono">{r.model}</span>
                   <Chip size="sm" variant="soft" color={st.color} className="shrink-0">{st.label}</Chip>
@@ -74,7 +75,7 @@ export function ModelLocks({ rows, now }: { rows: ModelLockRow[]; now: number })
                   最早 {lockLeft(earliestUnlock(r), now)} 后解锁 · 全池 {lockLeft(r.fully_unlock_at, now)} 后解锁
                 </div>
                 {r.reason && <div className="break-all text-xs text-muted">{r.reason}</div>}
-              </li>
+              </Surface>
             )
           })}
         </ul>

@@ -15,6 +15,7 @@ import {
 import { initialRange } from '../../lib/timerange'
 import type { RequestEvent, RequestMetrics as Metrics } from '../../lib/types'
 import { BusyButton, Empty, ErrorBox, Loaded } from '../../components/Feedback'
+import { Hint } from '../../components/Hint'
 import { InfoTip, Panel } from '../../components/Panel'
 import { TimeRangePicker } from '../../components/TimeRangePicker'
 
@@ -156,7 +157,7 @@ export function RequestMetrics() {
                       <Table.Cell className="whitespace-nowrap">{e.api_key || dash}</Table.Cell>
                       <Table.Cell className="whitespace-nowrap font-mono text-xs">{e.client_ip || dash}</Table.Cell>
                       <Table.Cell>
-                        {e.user_agent ? <span className="block max-w-56 truncate text-xs" title={e.user_agent}>{e.user_agent}</span> : dash}
+                        {e.user_agent ? <Hint tip={e.user_agent} className="block max-w-56 truncate text-xs">{e.user_agent}</Hint> : dash}
                       </Table.Cell>
                       <Table.Cell className="text-right font-mono tabular-nums">{fmtMs(e.duration_ms)}</Table.Cell>
                       <Table.Cell className="text-right font-mono tabular-nums"><Tokens e={e} /></Table.Cell>

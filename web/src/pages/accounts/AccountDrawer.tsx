@@ -5,7 +5,7 @@
 // 账号详情抽屉：展示后端已有、账号表放不下的运维信息——模型级限额台账、成本台账、
 // 最早到期批次、连败 / 熔断计数、最近一次请求。数据取自总览（随 5 秒轮询实时更新）。
 import type { ReactNode } from 'react'
-import { Chip, Drawer, Separator, useMediaQuery } from '@heroui/react'
+import { Chip, Drawer, Separator, Surface, useMediaQuery } from '@heroui/react'
 import { activeRateLimits, creditsText, rateLimitInfo, type Health } from '../../lib/accounts'
 import { ago, dateTime, formatLatency, formatRate, formatTokenCount, fmtTok, timeMs, until } from '../../lib/format'
 import type { Account } from '../../lib/types'
@@ -102,7 +102,7 @@ function Body({ a, health, now, busy, run }: {
               {limited.map((m) => {
                 const info = rateLimitInfo(m, now)
                 return (
-                  <li key={m.model} className="rounded-xl bg-surface-secondary px-3 py-2 text-sm">
+                  <Surface<'li'> key={m.model} variant="secondary" render={(props) => <li {...props} />} className="rounded-xl px-3 py-2 text-sm">
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate font-medium">{info.model}</span>
                       <Chip size="sm" variant="soft" color={info.unavailable ? 'default' : 'warning'}>
@@ -111,7 +111,7 @@ function Body({ a, health, now, busy, run }: {
                     </div>
                     <div className="text-xs text-muted">{info.detail}</div>
                     {m.reason && <div className="mt-0.5 break-all text-xs text-muted">{m.reason}</div>}
-                  </li>
+                  </Surface>
                 )
               })}
             </ul>

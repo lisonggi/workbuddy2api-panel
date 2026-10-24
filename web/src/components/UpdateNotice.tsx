@@ -10,7 +10,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Circle, CircleCheckFill } from '@gravity-ui/icons'
 import { useQueryClient } from '@tanstack/react-query'
-import { Alert, buttonVariants, Button, Chip, Label, Link, Modal, ProgressBar, Spinner, toast } from '@heroui/react'
+import { Alert, Button, buttonVariants, Chip, Label, Link, Modal, ProgressBar, Spinner, Surface, toast, Typography } from '@heroui/react'
 import { post } from '../lib/api'
 import { fmtBytes, dateTime } from '../lib/format'
 import { toastError, useNow } from '../lib/hooks'
@@ -40,13 +40,14 @@ export function UpdateBadge({ onPress }: { onPress: () => void }) {
   const { data } = useVersion()
   if (!data?.update_available) return null
   return (
-    <button
-      type="button"
-      onClick={onPress}
-      className="rounded-full bg-accent-soft px-1.5 py-px text-[11px] font-medium text-accent-soft-foreground hover:opacity-80"
+    <Button
+      size="sm"
+      variant="secondary"
+      onPress={onPress}
+      className="h-auto min-w-0 rounded-full bg-accent-soft px-1.5 py-px text-[11px] font-medium text-accent-soft-foreground hover:opacity-80"
     >
       有新版本 v{data.latest}
-    </button>
+    </Button>
   )
 }
 
@@ -501,7 +502,7 @@ function ReleaseList({ releases }: { releases: Release[] }) {
 
 function UpgradeSteps({ su }: { su?: SelfUpdateStatus }) {
   return (
-    <section className="mt-5 flex flex-col gap-2 rounded-xl bg-default/60 p-3 text-sm text-foreground">
+    <Surface<'section'> variant="secondary" render={(props) => <section {...props} />} className="mt-5 flex flex-col gap-2 rounded-xl p-3 text-sm text-foreground">
       <p className="font-medium">{su?.supported ? '手动升级' : '升级方法'}</p>
       {su && !su.supported && <p className="text-muted">一键更新不可用：{su.reason}</p>}
       <p>
@@ -520,7 +521,7 @@ function UpgradeSteps({ su }: { su?: SelfUpdateStatus }) {
         配置、账号凭证和 <Code>data/</Code> 原样保留。详见
         <Link href={UPGRADE_DOC_URL} target="_blank" rel="noopener noreferrer" className={'text-xs ' + TEXT_LINK}>部署文档</Link>。
       </p>
-    </section>
+    </Surface>
   )
 }
 
@@ -533,7 +534,7 @@ function ExternalButton({ href, variant, children }: { href: string; variant: 's
 }
 
 function Code({ children }: { children: ReactNode }) {
-  return <code className="wrap-break-word rounded bg-default px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
+  return <Typography.Code className="wrap-break-word rounded px-1 text-[0.85em]">{children}</Typography.Code>
 }
 
 function Inline({ text }: { text: string }) {

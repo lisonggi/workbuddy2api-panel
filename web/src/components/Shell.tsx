@@ -113,7 +113,14 @@ function Sidebar({ onNavigate, onShow }: { onNavigate?: () => void; onShow: (m: 
         <div className="font-semibold">WorkBuddy2API</div>
         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
           {data
-            ? <button type="button" title="版本信息" onClick={() => onShow('about')} className="hover:text-foreground">v{data.version}</button>
+            ? (
+              <Tooltip delay={300}>
+                <Button size="sm" variant="ghost" onPress={() => onShow('about')} className="-ms-1 h-auto min-w-0 px-1 py-0 text-xs font-normal text-muted hover:text-foreground">
+                  v{data.version}
+                </Button>
+                <Tooltip.Content>版本信息</Tooltip.Content>
+              </Tooltip>
+            )
             : '控制台'}
           <UpdateBadge onPress={() => onShow('update')} />
         </div>

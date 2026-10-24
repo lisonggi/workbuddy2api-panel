@@ -3,7 +3,7 @@
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
 import type { ReactNode } from 'react'
-import { Button } from '@heroui/react'
+import { Button, Tooltip } from '@heroui/react'
 import { isFrozen, type Health } from '../../lib/accounts'
 import type { Account } from '../../lib/types'
 import type { AccountAction } from './useAccountActions'
@@ -46,8 +46,12 @@ export function AccountButtons({ a, health, busy, run, nowrap, compact, extra }:
       {!a.enterprise && btn('tasks', '任务')}
       {isFrozen(health) ? btn('revive', '解冻', { variant: 'primary' })
         : a.paused ? btn('resume', '恢复选号', { variant: 'primary' })
-        // Button 不收 title，悬停说明挂在外层
-        : <span className="contents" title={a.enterprise ? '退出选号，但照常保活 / 刷新额度' : '退出选号，但照常签到 / 活跃上报 / 保活 / 刷新余额'}>{btn('pause', '暂停选号')}</span>}
+        : (
+          <Tooltip delay={300}>
+            {btn('pause', '暂停选号')}
+            <Tooltip.Content>{a.enterprise ? '退出选号，但照常保活 / 刷新额度' : '退出选号，但照常签到 / 活跃上报 / 保活 / 刷新余额'}</Tooltip.Content>
+          </Tooltip>
+        )}
       {!a.disabled && btn('disable', '禁用')}
       {extra}
       {btn('remove', '移除', { className: 'text-danger' })}

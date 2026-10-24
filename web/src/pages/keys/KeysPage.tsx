@@ -7,7 +7,7 @@
 // 网关把密钥存在 data/api_keys.json（0600，含原文），面板只认管理员密钥，所以这里能随时复制原文。
 import { useState } from 'react'
 import { ArrowsRotateRight, Copy, Ellipsis, Eye, EyeSlash, Pencil, Plus, TrashBin } from '@gravity-ui/icons'
-import { Alert, Button, Chip, Dropdown, Label, Meter, toast } from '@heroui/react'
+import { Alert, Button, Chip, Dropdown, Label, Meter, Surface, toast, Typography } from '@heroui/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { post } from '../../lib/api'
@@ -129,7 +129,7 @@ function KeyRow({ k, onEdit, onShowGuide }: { k: ApiKey; onEdit: () => void; onS
 
   const expMs = timeMs(k.expires_at)
   return (
-    <li className="flex flex-col gap-3 rounded-2xl bg-surface-secondary p-3">
+    <Surface<'li'> variant="secondary" render={(props) => <li {...props} />} className="flex flex-col gap-3 rounded-2xl p-3">
       <div className="flex flex-wrap items-start gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex flex-wrap items-center gap-2">
@@ -169,7 +169,7 @@ function KeyRow({ k, onEdit, onShowGuide }: { k: ApiKey; onEdit: () => void; onS
       </div>
 
       <div className="flex min-w-0 items-center gap-1">
-        <code className="min-w-0 truncate rounded-lg bg-surface px-2 py-1 font-mono text-sm select-all">{reveal ? k.secret : maskSecret(k.secret)}</code>
+        <Typography.Code className="min-w-0 truncate rounded-lg bg-surface px-2 py-1 select-all">{reveal ? k.secret : maskSecret(k.secret)}</Typography.Code>
         <Button isIconOnly size="sm" variant="ghost" aria-label={reveal ? '隐藏密钥' : '显示密钥'} onPress={() => setReveal((v) => !v)}>
           {reveal ? <EyeSlash /> : <Eye />}
         </Button>
@@ -195,7 +195,7 @@ function KeyRow({ k, onEdit, onShowGuide }: { k: ApiKey; onEdit: () => void; onS
         </div>
       </div>
       {confirmEl}
-    </li>
+    </Surface>
   )
 }
 

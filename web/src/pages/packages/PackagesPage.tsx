@@ -20,6 +20,7 @@ import {
 import { useConfig, usePackages } from '../../lib/queries'
 import type { CreditPackage, PackageAccount } from '../../lib/types'
 import { BusyButton, Empty, Loaded } from '../../components/Feedback'
+import { Hint } from '../../components/Hint'
 import { Panel } from '../../components/Panel'
 
 export function PackagesPage() {
@@ -147,9 +148,10 @@ function ExpiryDistribution({ list, now }: { list: PackageAccount[]; now: number
 /** 细条：各段按占比铺满（颜色 + 不透明度由调用方给），段间留 2px 缝 */
 function MiniBar({ parts, label }: { parts: { key: string; width: number; color: string; opacity?: number; title: string }[]; label: string }) {
   return (
-    <div role="img" aria-label={label} className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-surface-secondary">
+    // 每段可以悬停或聚焦看明细，所以整条用 group 而不是 img（img 的子元素不能交互）
+    <div role="group" aria-label={label} className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-surface-secondary">
       {parts.map((p) => (
-        <span key={p.key} title={p.title} className="h-full min-w-0.5" style={{ flex: `${p.width} 1 0`, background: p.color, opacity: p.opacity }} />
+        <Hint key={p.key} tip={p.title} className="h-full min-w-0.5" style={{ flex: `${p.width} 1 0`, background: p.color, opacity: p.opacity }} />
       ))}
     </div>
   )

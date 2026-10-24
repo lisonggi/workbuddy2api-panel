@@ -6,7 +6,7 @@
 // 规则存 config.json 的 model_routes，保存即热生效；匹配口径与网关一致（lib/routes.ts）。
 import { useMemo, useState } from 'react'
 import { ArrowDown, ArrowUp, Plus, TrashBin } from '@gravity-ui/icons'
-import { Button, ComboBox, Input, Label, ListBox, TextField, toast } from '@heroui/react'
+import { Button, ComboBox, Input, Label, ListBox, Surface, TextField, toast } from '@heroui/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBlocker } from '@tanstack/react-router'
 import { post } from '../../lib/api'
@@ -90,7 +90,7 @@ function RoutesForm({ saved }: { saved: ModelRoute[] }) {
       ) : (
         <ol className="flex flex-col gap-2">
           {rows.map((r, i) => (
-            <li key={i} className="flex flex-col gap-1 rounded-xl bg-surface-secondary p-2">
+            <Surface<'li'> key={i} variant="secondary" render={(props) => <li {...props} />} className="flex flex-col gap-1 rounded-xl p-2">
               <div className="flex flex-wrap items-end gap-2 sm:flex-nowrap">
                 <span className="w-6 shrink-0 pb-2 text-center text-sm text-muted tabular-nums">{i + 1}</span>
                 <TextField value={r.match} onChange={(v) => setRow(i, { match: v })} autoComplete="off" className="min-w-40 flex-1">
@@ -122,7 +122,7 @@ function RoutesForm({ saved }: { saved: ModelRoute[] }) {
                 </div>
               </div>
               <ShadowNote by={shadow[i]} />
-            </li>
+            </Surface>
           ))}
         </ol>
       )}

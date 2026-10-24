@@ -13,6 +13,7 @@ import { qk, useTasks } from '../../lib/queries'
 import { AUTO_TASKS } from '../../lib/tasks'
 import type { AcceptAllResp, AutoAllItem, AutoResult, Task } from '../../lib/types'
 import { BusyButton, Empty, Loaded } from '../../components/Feedback'
+import { Hint } from '../../components/Hint'
 import { useConfirm } from '../../components/useConfirm'
 
 export function TasksModal({ uid, name, onClose }: { uid: string | null; name: string; onClose: () => void }) {
@@ -189,7 +190,7 @@ function TasksBody({ uid, wide, onClose }: { uid: string; wide: boolean; onClose
                             <div className="flex max-w-md flex-col gap-0.5">
                               <span className="font-medium">{t.title || t.task_code}</span>
                               <span className="font-mono text-xs text-muted">{t.task_code}{t.tag ? ' · ' + t.tag : ''}</span>
-                              {guide(t) && <span className="line-clamp-3 whitespace-pre-line text-xs text-muted" title={guide(t)}>{guide(t)}</span>}
+                              {guide(t) && <Hint tip={guide(t)} className="line-clamp-3 whitespace-pre-line text-xs text-muted">{guide(t)}</Hint>}
                             </div>
                           </Table.Cell>
                           <Table.Cell className="whitespace-nowrap tabular-nums">{progress(t)}</Table.Cell>

@@ -7,6 +7,7 @@ import { Chip, ProgressBar } from '@heroui/react'
 import { activeRateLimits, creditPercent, isUnlimited, rateLimitInfo, type Health } from '../../lib/accounts'
 import { dur, formatLatency, formatRate, formatTokenCount, fmtTok, timeMs, until } from '../../lib/format'
 import type { Account } from '../../lib/types'
+import { Hint } from '../../components/Hint'
 
 export function AccountName({ a }: { a: Account }) {
   return (
@@ -70,10 +71,12 @@ export function RateLimitList({ a, now }: { a: Account; now: number }) {
         const info = rateLimitInfo(row, now)
         return (
           // 模型名不截断：放不下时说明文字换到下一行
-          <li key={row.model} title={info.model + '\n' + info.detail} className="flex flex-wrap items-baseline gap-x-1.5">
-            <span className={`size-1.5 shrink-0 translate-y-[-1px] rounded-full ${info.unavailable ? 'bg-muted' : 'bg-warning'}`} />
-            <span className="break-all font-mono">{info.model}</span>
-            <span className={`whitespace-nowrap ${info.unavailable ? 'text-muted' : 'text-warning'}`}>{info.short}</span>
+          <li key={row.model}>
+            <Hint tip={info.model + '\n' + info.detail} className="flex flex-wrap items-baseline gap-x-1.5">
+              <span className={`size-1.5 shrink-0 translate-y-[-1px] rounded-full ${info.unavailable ? 'bg-muted' : 'bg-warning'}`} />
+              <span className="break-all font-mono">{info.model}</span>
+              <span className={`whitespace-nowrap ${info.unavailable ? 'text-muted' : 'text-warning'}`}>{info.short}</span>
+            </Hint>
           </li>
         )
       })}
@@ -95,7 +98,7 @@ export function CreditsCell({ a, poolMax, now }: { a: Account; poolMax: number; 
   // 企业版的总额是分配给这个号的额度（企业池总额成员号查不到），悬停说明一下
   const tip = unlimited ? '企业版不限量' : a.enterprise ? '企业版：剩余额度 / 分配额度（按周期重置）' : undefined
   return (
-    <div className="flex min-w-28 flex-col gap-1" title={tip}>
+    <Hint tip={tip} className="flex min-w-28 flex-col gap-1">
       <span className="font-mono text-sm tabular-nums">
         {unlimited ? '不限' : a.credits}
         {!unlimited && !!a.credits_total && <span className="text-xs text-muted">/{a.credits_total}</span>}
@@ -104,7 +107,7 @@ export function CreditsCell({ a, poolMax, now }: { a: Account; poolMax: number; 
         <ProgressBar.Track><ProgressBar.Fill /></ProgressBar.Track>
       </ProgressBar>
       <EarliestExpiry a={a} now={now} />
-    </div>
+    </Hint>
   )
 }
 
