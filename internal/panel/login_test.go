@@ -252,6 +252,33 @@ func TestLoginStartUpstreamFailures(t *testing.T) {
 	}
 }
 
+// 发起登录因账号授权被拒（席位已满等，随 HTTP 错误返回）：照官方给上游的提示，前面加中文原因；
+// 其他 HTTP 错误带上信封里的业务码，仍是旧形状。
+func TestLoginStartLicenseError(t *testing.T) {
+	cases := []struct {
+		name string
+		h    autoHandler
+		want string
+	}{
+		{"席位已满", autoFail(403, `{"code":12005,"msg":"seat limit reached"}`), "登录被拒：席位已满（code=12005）：seat limit reached"},
+		{"授权已过期无提示", autoFail(403, `{"code":11212}`), "登录被拒：授权已过期（code=11212）"},
+		{"试用已过期", autoFail(400, `{"code":11216,"msg":"trial expired"}`), "登录被拒：试用已过期（code=11216）：trial expired"},
+		{"其他业务码", autoFail(403, `{"code":10001,"msg":"no"}`), "auth state (upstream 403): http_error: upstream 403 code=10001 msg=no"},
+		{"不是 JSON", autoFail(403, `forbidden`), "auth state (upstream 403): http_error: upstream 403"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, up, _ := newLoginPanel(t)
+			up.on(http.MethodPost, loginCNHost, loginStatePath, "", tc.h)
+			rec := postJSON(t, p, "/panel/api/login/start", `{}`)
+			autoWantCode(t, rec, http.StatusBadGateway)
+			if got := autoErrText(t, rec); got != tc.want {
+				t.Fatalf("error=%q，想要 %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // 轮询：缺 state 400、未知 state 404、等待中与空 accessToken 都是 done=false。
 func TestLoginPollPending(t *testing.T) {
 	t.Run("缺 state", func(t *testing.T) {

@@ -49,6 +49,11 @@ const (
 	loginCodePending = 11217
 	// loginCodeAccountNotReady account 的「账号还没准备好」业务码，等一会儿再试。
 	loginCodeAccountNotReady = 12151
+	// 发起授权被拒的三个授权业务码（官方 LICENSE_ERROR_CODES，随 HTTP 错误状态返回）：
+	// 席位已满、授权已过期、试用已过期。官方只在发起授权这一步认，直接弹上游的 msg。
+	loginCodeLicenseSeatLimit = 12005
+	loginCodeLicenseExpired   = 11212
+	loginCodeTrialExpired     = 11216
 	// loginAccountRetries 取账号遇到 12151 时的最多重试次数（首次之外再试这么多次）。
 	loginAccountRetries = 5
 	// loginPlatformCN / loginPlatformGlobal auth/state 的 platform 参数。
@@ -110,8 +115,9 @@ func (acct LoginAccount) ApplyTo(a *auth.Auth, tok LoginToken) {
 }
 
 // LoginError 登录端点的上游错误：Status 是 HTTP 状态码（网络错误时调用方拿到的是普通
-// error，没有状态码），Code 是业务码（HTTP 错误、解析错误时为空）。错误文本保留旧形状
-// （http_error: upstream <状态码> / code=<n> msg=<msg>），调用方照旧拼提示。
+// error，没有状态码），Code 是业务码（HTTP 错误时取响应体的信封，没有信封或解析错误时为空）。
+// 错误文本保留旧形状（http_error: upstream <状态码>[ code=<n> msg=<msg>] / code=<n> msg=<msg>），
+// 调用方照旧拼提示。
 type LoginError struct {
 	Status int
 	Code   int
@@ -124,9 +130,29 @@ func (e *LoginError) Error() string {
 		return e.text
 	}
 	if e.Status >= 300 {
+		if e.Code != 0 {
+			return fmt.Sprintf("http_error: upstream %d code=%d msg=%s", e.Status, e.Code, e.Msg)
+		}
 		return fmt.Sprintf("http_error: upstream %d", e.Status)
 	}
 	return fmt.Sprintf("code=%d msg=%s", e.Code, e.Msg)
+}
+
+// LicenseReason 发起授权因账号授权被拒时的中文原因（席位已满 / 授权已过期 / 试用已过期），
+// 其他错误返回空串。对应官方 toSignLicenseError：只认 HTTP 错误响应里的这三个业务码。
+func (e *LoginError) LicenseReason() string {
+	if e.Status < 300 {
+		return ""
+	}
+	switch e.Code {
+	case loginCodeLicenseSeatLimit:
+		return "席位已满"
+	case loginCodeLicenseExpired:
+		return "授权已过期"
+	case loginCodeTrialExpired:
+		return "试用已过期"
+	}
+	return ""
 }
 
 // loginKind 登录请求的种类，决定带哪些头。
@@ -330,13 +356,15 @@ func (c *Client) loginCallOnce(req *http.Request, rt http.RoundTripper) (code in
 		return 0, "", nil, resp.StatusCode, fmt.Errorf("read body: %w", err)
 	}
 	status = resp.StatusCode
-	if status >= 300 {
-		return 0, "", nil, status, &LoginError{Status: status}
-	}
 	var env struct {
 		Code int             `json:"code"`
 		Msg  string          `json:"msg"`
 		Data json.RawMessage `json:"data"`
+	}
+	if status >= 300 {
+		// 错误响应也可能带信封（授权被拒的 12005 等），解得出就把业务码和提示带上
+		_ = json.Unmarshal(raw, &env)
+		return 0, "", nil, status, &LoginError{Status: status, Code: env.Code, Msg: env.Msg}
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return 0, "", nil, status, &LoginError{Status: status, text: fmt.Sprintf("parse failed: %v", err)}

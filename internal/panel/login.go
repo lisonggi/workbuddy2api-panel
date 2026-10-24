@@ -48,6 +48,7 @@ func validUID(uid string) bool {
 
 // loginStartError 发起授权的错误文案：保留旧形状「auth state (upstream <状态码>): <原因>」，
 // 传输层错误的状态码按 0 记；缺 state/authUrl 原样返回（旧路径也是这个文案）。
+// 账号授权被拒（席位已满等）照官方直接给上游的提示，前面加中文原因和业务码。
 func loginStartError(err error) string {
 	if errors.Is(err, upstream.ErrLoginAuthStateIncomplete) {
 		return err.Error()
@@ -56,6 +57,12 @@ func loginStartError(err error) string {
 	var le *upstream.LoginError
 	if errors.As(err, &le) {
 		status = le.Status
+		if reason := le.LicenseReason(); reason != "" {
+			if le.Msg == "" {
+				return fmt.Sprintf("登录被拒：%s（code=%d）", reason, le.Code)
+			}
+			return fmt.Sprintf("登录被拒：%s（code=%d）：%s", reason, le.Code, le.Msg)
+		}
 	}
 	return fmt.Sprintf("auth state (upstream %d): %v", status, err)
 }

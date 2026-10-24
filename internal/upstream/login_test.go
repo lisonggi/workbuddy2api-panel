@@ -472,6 +472,42 @@ func TestLoginAuthStateErrors(t *testing.T) {
 	})
 }
 
+// TestLoginAuthStateLicenseError 授权被拒的三个业务码随 HTTP 错误返回时，LoginError 带上业务码
+// 和提示，LicenseReason 给中文原因；200 里的同一个码、其他码都不算授权被拒。
+func TestLoginAuthStateLicenseError(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		body       string
+		wantCode   int
+		wantReason string
+	}{
+		{"席位已满", 403, `{"code":12005,"msg":"seat"}`, 12005, "席位已满"},
+		{"授权已过期", 403, `{"code":11212,"msg":"expired"}`, 11212, "授权已过期"},
+		{"试用已过期", 400, `{"code":11216,"msg":"trial"}`, 11216, "试用已过期"},
+		{"其他业务码", 403, `{"code":10001,"msg":"no"}`, 10001, ""},
+		{"不是 JSON", 403, `forbidden`, 0, ""},
+		{"200 里的授权码", 200, `{"code":12005,"msg":"seat"}`, 12005, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newUpFake(t)
+			f.on(http.MethodPost, loginTestStatePathCN, tc.status, tc.body)
+			_, err := loginTestClient(f).LoginAuthState("cn")
+			var le *LoginError
+			if !errors.As(err, &le) || le.Status != tc.status || le.Code != tc.wantCode || le.LicenseReason() != tc.wantReason {
+				t.Fatalf("err=%v le=%+v", err, le)
+			}
+		})
+	}
+	t.Run("错误文本带业务码", func(t *testing.T) {
+		e := &LoginError{Status: 403, Code: 12005, Msg: "seat"}
+		if got := e.Error(); got != "http_error: upstream 403 code=12005 msg=seat" {
+			t.Fatalf("Error()=%q", got)
+		}
+	})
+}
+
 // loginCountRoute 前 n 次回 body，之后回 next。
 func loginCountRoute(n int, body, next string) upRoute {
 	i := 0

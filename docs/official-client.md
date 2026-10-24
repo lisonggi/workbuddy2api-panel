@@ -97,6 +97,10 @@ npm 上更新的 CLI 只作对照，取值以安装包内置的版本为准：�
 
 授权页地址照 `openAuthUrl` 追加参数：两个域都加 `version=<客户端版本>`；国内版另加 `traceparent`（打开授权页这一步自己的子 span）、`loginSessionId`、`login_owner_id`。
 
+账号授权被拒：发起授权回 HTTP 错误、响应体的业务码是 `12005`（席位已满）、`11212`（授权已过期）或 `11216`（试用已过期）时，官方直接弹出上游的 `msg`（`LICENSE_ERROR_CODES`、`toSignLicenseError`），只认发起授权这一步。网关从 1.5.1 起照做，面板显示「登录被拒：席位已满（code=12005）：<上游提示>」；以前 HTTP 错误的响应体不读，只显示 `http_error: upstream <状态码>`。其他登录请求回 HTTP 错误时，错误文本也带上响应体里的业务码和提示。
+
+轮询令牌：官方除了 `11217` 继续等，其他结果（别的业务码、HTTP 错误、网络错误）都当登录失败，不再轮询。网关的面板遇到这些照旧显示「等待授权完成」，前端每 3 秒继续查，直到 15 分钟后登录会话过期，和官方不同。
+
 `X-Device-Id-List`：官方拿得到设备的 qimei36 时才发（发起授权和对话请求都是）。qimei36 由腾讯闭源的设备标识 SDK 算出（`@tencent/qimei-node`，Windows 上是 `qimei.dll`，主进程起一个 `qimei-helper.js` 去取）。下载的两个 macOS 安装包里 `qimei-node` 只有 `package.json`、没有原生库，也没有打进 `qimei-helper.js`，所以 macOS 版官方客户端拿不到 qimei36，这个头一直不发，上报事件里也没有 `qimei36`。网关按 macOS 版对齐（见[设备与平台](#设备与平台)），同样不发。
 
 2026-10-20 生产实测：两个域按上表发起授权、轮询（未登录时 `code=11217`）、取账号都正常；按上面的规则修饰过的授权页两个域都返回 200；国际版的账号列表是 `data.accounts[]`，里面有本号的 uid。同日用国内版走完了扫码登录：扫码确认后轮询拿到令牌（有效期约 28 天）和账号，按面板的方式落盘、读回，再拉模型目录、查积分包都成功。1.1.2 以前是旧版 CodeBuddy CLI 的形状（UA `CLI/2.63.2 CodeBuddy/2.63.2`、带 `Origin` 和 `Referer`、`platform=CLI`）。
@@ -320,7 +324,7 @@ HTTPDNS 用腾讯云的服务，照官方的做法：
    - 上报事件的公共字段在 `internal/upstream/desktop.go` 的 `eventFingerprint`：后台服务里搜 `OSEventProcessor`、`ProductInfoEventProcessor`、`UserinfoEventProcessor`，网页上报的公共参数在官网前端里搜 `UserCenter`；
    - 任务中心各事件的业务字段在 `internal/upstream/desktop.go` 和 `internal/panel/autotask.go`：界面的事件码在 `renderer/assets/adapter-telemetry-service-*.js`（形如 ``e.TaskCreated=`agent_task_created` ``），按枚举名搜调用处；对话链在内置 CLI 里搜 `reportChatRequestSendTelemetry`、`reportMessageSendTelemetry`；换主题的事件搜 `buildSkinApplyPayload`，主题列表接口是 `operation-platform/appearance/resources`，版本档搜 `getEditionDisplayType`；界面事件补的字段搜 `AdapterTelemetryService`、`injectBuddyTelemetryContext`；灵感案例站点搜 `getDiscoverBaseUrl`（`internal/upstream/playbook.go`），首页模板搜 `scenes-v2.json`、`reportTemplateUsed`（`internal/upstream/scenes.go`）；
    - 各类请求的 `Accept-Encoding` 在 `internal/upstream/encoding.go`：内置 CLI 里搜 `advertiseZstdAcceptEncoding`，Node fetch 的默认头在 `node_modules/undici/lib/web/fetch/index.js`；
-   - 登录的 `platform`、路径在 `internal/upstream/login.go`，积分包代码在 `internal/upstream/resources.go`；
+   - 登录的 `platform`、路径、授权被拒的业务码在 `internal/upstream/login.go`（后台服务里搜 `LICENSE_ERROR_CODES`、`toSignLicenseError`），积分包代码在 `internal/upstream/resources.go`；
    - 业务码表在 `internal/upstream/bizcode.go`：内置 CLI 里搜 `CraftRateTPSLimit`（错误码枚举）、`isTransientRateLimitBusinessCode`、`isQuotaExhaustedError`、`classifyErrorDetail`、`computeRequestRetryDelayMs`；上下文超限的词表在 `internal/upstream/client.go` 的 `promptTooLongMarkers`，搜 `isInputLengthError`。
 5. 官网网页的接口变化要另看 `www.workbuddy.cn` 成长中心页的前端代码，对应 `internal/upstream/web.go` 和用它的几个文件。
 
