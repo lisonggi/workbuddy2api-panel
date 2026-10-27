@@ -132,6 +132,37 @@ var autoActions = []autoAction{
 		Desc:     "真实轻量云专家召唤+使用链（chat 链带 has_expert，已验证：两账号点亮）",
 		run:      runExpertLighthouse,
 	},
+	// 「体验某位专家」类任务（2026-10 官方新上），照 expert_5 的判据推断，还没在真实账号上点亮过。
+	{
+		TaskCode: "WorkBuddy_Valorant",
+		Desc:     "按名字在专家列表里找到「无畏契约拼豆专家」→ 召唤 + 真实对话一次（照 expert_5 推断，未实测）",
+		Attempt:  true,
+		run:      runExpertTask(expertTaskTarget{Name: "无畏契约拼豆专家"}),
+	},
+	{
+		TaskCode: "expert_use_maidehao",
+		Desc:     "召唤「中国电商运营专家」+ 真实对话一次（照 expert_5 推断，未实测）",
+		Attempt:  true,
+		run:      runExpertTask(expertTaskTarget{ID: "ex_GDl31WahyIH0", Name: "中国电商运营专家"}),
+	},
+	{
+		TaskCode: "expert_use_douyinyin",
+		Desc:     "召唤「抖音策略师」+ 真实对话一次（照 expert_5 推断，未实测）",
+		Attempt:  true,
+		run:      runExpertTask(expertTaskTarget{ID: "ex_FbY5nlWTqDod", Name: "抖音策略师"}),
+	},
+	{
+		TaskCode: "expert_use_shangjia_xuanchuan",
+		Desc:     "召唤「商家宣传页与海报设计师」+ 真实对话一次（照 expert_5 推断，未实测）",
+		Attempt:  true,
+		run:      runExpertTask(expertTaskTarget{ID: "ex_Weo3x2EZuSDm", Name: "商家宣传页与海报设计师"}),
+	},
+	{
+		TaskCode: "expert_use_bowangwang",
+		Desc:     "召唤「直播电商教练」+ 真实对话一次（照 expert_5 推断，未实测）",
+		Attempt:  true,
+		run:      runExpertTask(expertTaskTarget{ID: "ex_WZY136wV5aMt", Name: "直播电商教练"}),
+	},
 	{
 		TaskCode: "black_cat",
 		Desc:     "夜猫子：23:00–08:00 窗口内 glm-5.2 对话补足（窗口外提示稍后再试）",
@@ -673,6 +704,15 @@ func (p *Panel) accountTaskAuto(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "skipped": true, "message": "该任务已领取过奖励"})
 		return
 	}
+	// 先接受：上游不给 not_accepted 的任务记进度。任务中心队列和「一键完成可自动任务」都先批量
+	// 接受，单个任务这里此前漏了。小程序任务的动作自己按小程序口径接受。失败不阻塞，动作照跑。
+	if !isMP && !before.Locked && before.AcceptStatus != "accepted" && before.AcceptStatus != "completed" {
+		if err := p.cfg.Upstream.AcceptTasks(a, []string{act.TaskCode}); err != nil {
+			log.Printf("panel: accept %s uid=%s: %v（继续执行动作）", act.TaskCode, uid, err)
+		} else {
+			time.Sleep(reportGap)
+		}
+	}
 	msg, err := act.run(p, a)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "执行失败: "+err.Error())
@@ -1125,24 +1165,7 @@ func runExpertBatch(p *Panel, a *auth.Auth, expertType string, count int) (strin
 		if ok >= count {
 			break
 		}
-		// 召唤链（web_element_click + summon_click + summoned）。
-		summonEvents := upstream.DesktopExpertSummonSequence(e)
-		if err := p.cfg.Upstream.ReportDesktopEvent(a, summonEvents...); err != nil {
-			fail++
-			continue
-		}
-		summonedAt := time.Now()
-		// 真实 chat（带 X-Expert-Id）→ 服务端 requestId。
-		conv, req, cerr := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID, e.ExpertType == "team")
-		if cerr != nil {
-			fail++
-			continue
-		}
-		// 使用事件（JOIN 服务端 requestId）+ 带专家的 chat 链。
-		msgID := upstream.NewRequestID()
-		events := append(upstream.DesktopExpertChatSequence(e, conv, req, msgID),
-			upstream.DesktopExpertActualUseEvent(e, conv, req, msgID, summonedAt))
-		if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
+		if err := p.summonAndUseExpert(a, e); err != nil {
 			fail++
 			continue
 		}
@@ -1153,6 +1176,85 @@ func runExpertBatch(p *Panel, a *auth.Auth, expertType string, count int) (strin
 	}
 	_ = fail
 	return fmt.Sprintf("已对 %d 位真实专家完成召唤+使用链（类型 %s）", ok, expertType), nil
+}
+
+// summonAndUseExpert 召唤一位专家并真实使用一次：召唤链（web_element_click + summon_click +
+// summoned）→ 带 X-Expert-Id 的真实 chat 拿服务端 requestId → 带专家的 chat 链 + 使用事件
+// （JOIN 服务端 requestId）。expert_5、Expert_team_use_3 和「体验某位专家」类任务共用。
+func (p *Panel) summonAndUseExpert(a *auth.Auth, e upstream.MarketExpert) error {
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopExpertSummonSequence(e)...); err != nil {
+		return fmt.Errorf("召唤链: %w", err)
+	}
+	summonedAt := time.Now()
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID, e.ExpertType == "team")
+	if err != nil {
+		return fmt.Errorf("真实对话: %w", err)
+	}
+	msgID := upstream.NewRequestID()
+	events := append(upstream.DesktopExpertChatSequence(e, conv, req, msgID),
+		upstream.DesktopExpertActualUseEvent(e, conv, req, msgID, summonedAt))
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
+		return fmt.Errorf("使用事件: %w", err)
+	}
+	return nil
+}
+
+// expertTaskTarget 「体验某位专家」类任务指定的专家。
+type expertTaskTarget struct {
+	ID   string // 任务跳转链接 deeplink 里的 expertId；空表示跳转链接只到专家页，按名字找
+	Name string // 任务标题「」里的专家名
+}
+
+// expertTaskSearchPages 在专家列表里找指定专家时最多看几页。
+const expertTaskSearchPages = 5
+
+// runExpertTask 完成「体验某位专家」类任务（2026-10 官方新上，任务说明都是「在专家页搜索并
+// 召唤「某专家」，完成一次对话」）：找到这位专家后走 expert_5 那条召唤 + 使用链。
+//
+// 专家在列表里找：跳转链接带 id 的按 id 找，拿服务端的版本号和分类，找不到就用 id 和任务里的
+// 名字照样做；只到专家页的（WorkBuddy_Valorant）按名字找，找不到就报错，不召唤别的专家。
+// 判据是照 expert_5 推断的，2026-10-27 还没在真实账号上点亮过，动作表里标成尝试型。
+func runExpertTask(target expertTaskTarget) func(p *Panel, a *auth.Auth) (string, error) {
+	return func(p *Panel, a *auth.Auth) (string, error) {
+		e, err := p.findTaskExpert(a, target)
+		if err != nil {
+			return "", err
+		}
+		if err := p.summonAndUseExpert(a, e); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已召唤「%s」并完成一次真实对话", target.Name), nil
+	}
+}
+
+// findTaskExpert 在专家列表（单专家，按推荐排序）里逐页找任务指定的专家，最多看
+// expertTaskSearchPages 页，某页不满一页就是最后一页。
+func (p *Panel) findTaskExpert(a *auth.Auth, target expertTaskTarget) (upstream.MarketExpert, error) {
+	var listErr error
+	for page := 1; page <= expertTaskSearchPages; page++ {
+		experts, err := p.cfg.Upstream.MarketExpertListPage(a, "agent", page)
+		if err != nil {
+			listErr = err
+			break
+		}
+		for _, e := range experts {
+			if target.ID != "" && e.ExpertID == target.ID ||
+				target.ID == "" && (strings.TrimSpace(e.DisplayNameZH) == target.Name || strings.TrimSpace(e.ProfessionZH) == target.Name) {
+				return e, nil
+			}
+		}
+		if len(experts) < upstream.MarketExpertPageSize {
+			break
+		}
+	}
+	if target.ID != "" {
+		// id 来自任务本身，列表里没翻到也照样能召唤；版本号缺省 1.0.0、分类缺省 all（同列表缺字段时）。
+		return upstream.MarketExpert{ExpertID: target.ID, ExpertType: "agent", DisplayNameZH: target.Name, ProfessionZH: target.Name}, nil
+	}
+	if listErr != nil {
+		return upstream.MarketExpert{}, fmt.Errorf("拉取专家列表: %w", listErr)
+	}
+	return upstream.MarketExpert{}, fmt.Errorf("专家列表前 %d 页里没有「%s」（活动可能已结束），未召唤其他专家", expertTaskSearchPages, target.Name)
 }
 
 // ---------------------------------------------------------------------------

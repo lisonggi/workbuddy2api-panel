@@ -638,6 +638,22 @@ func TestMarketExpertList(t *testing.T) {
 		}
 	})
 
+	t.Run("翻页只改 page", func(t *testing.T) {
+		f := newUpFake(t)
+		f.on(http.MethodPost, path, 200, `{"code":0,"data":{"experts":[]}}`)
+		if _, err := upClient(f).MarketExpertListPage(upAuth(), "agent", 3); err != nil {
+			t.Fatalf("MarketExpertListPage: %v", err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(f.seen()[0].body, &body); err != nil {
+			t.Fatalf("请求体: %v", err)
+		}
+		if body["page"] != float64(3) || body["page_size"] != float64(20) || body["expert_type"] != "agent" ||
+			body["sort_by"] != "reco_rank" || body["sort_order"] != "desc" {
+			t.Errorf("请求体 = %v", body)
+		}
+	})
+
 	t.Run("空 expert_type 不传", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200, `{"code":0,"data":{"experts":[]}}`)

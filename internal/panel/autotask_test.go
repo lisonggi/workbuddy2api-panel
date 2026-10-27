@@ -17,6 +17,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -802,6 +805,77 @@ func TestAccountTaskAutoUnlock(t *testing.T) {
 		t.Fatalf("第一次调用结束后锁应已释放，第二次不应 409: %s", second.Body)
 	}
 	autoWantCode(t, second, http.StatusOK)
+}
+
+// 单个任务一键完成前先接受没接受的任务（上游不给 not_accepted 的任务记进度）；接受失败照样执行
+// 动作；已接受、已完成、锁定的不再接受。
+func TestAccountTaskAutoAccept(t *testing.T) {
+	autoFastWaits(t)
+
+	t.Run("没接受的先接受再执行", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		accepted := false
+		up.onDefaultTasks(func(autoReq) (int, string) {
+			status := "not_accepted"
+			if accepted {
+				status = "accepted"
+			}
+			return 200, autoTasksJSON(autoTaskJSON("RichMeow_Chat", 1, 0, status))
+		})
+		up.onAccept(func(autoReq) (int, string) { accepted = true; return 200, autoEnvelope("{}") })
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		rec := postJSON(t, p, "/panel/api/accounts/u1/tasks/auto", `{"task_code":"RichMeow_Chat"}`)
+		autoWantCode(t, rec, http.StatusOK)
+		acceptAt, reportAt := -1, -1
+		for i, r := range up.requests() {
+			if r.Path == autoAcceptPath && acceptAt < 0 {
+				acceptAt = i
+			}
+			if r.Host == autoChatHost && r.Path == autoReportPath && reportAt < 0 {
+				reportAt = i
+			}
+		}
+		if acceptAt < 0 || reportAt < 0 || acceptAt > reportAt {
+			t.Fatalf("应先接受再上报: accept=%d report=%d", acceptAt, reportAt)
+		}
+		accepts := up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "web")
+		var body struct {
+			TaskCodes []string `json:"task_codes"`
+		}
+		if err := json.Unmarshal(accepts[0].Body, &body); err != nil || len(accepts) != 1 ||
+			len(body.TaskCodes) != 1 || body.TaskCodes[0] != "RichMeow_Chat" {
+			t.Fatalf("应只接受这一个任务一次: %d 次 %s", len(accepts), accepts[0].Body)
+		}
+	})
+
+	t.Run("接受失败照样执行动作", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onDefaultTasks(autoOK(autoTasksJSON(autoTaskJSON("RichMeow_Chat", 1, 0, "not_accepted"))))
+		up.onAccept(autoFail(400, `{"code":400,"msg":"accept rejected"}`))
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		rec := postJSON(t, p, "/panel/api/accounts/u1/tasks/auto", `{"task_code":"RichMeow_Chat"}`)
+		autoWantCode(t, rec, http.StatusOK)
+		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")); got != 1 {
+			t.Fatalf("接受失败后动作应照常上报一次，实际 %d", got)
+		}
+	})
+
+	for _, task := range []string{
+		autoTaskJSON("RichMeow_Chat", 1, 0, "accepted"),
+		autoTaskJSON("RichMeow_Chat", 1, 0, "completed"),
+		`{"task_code":"RichMeow_Chat","target":1,"current":0,"accept_status":"not_accepted","locked":true}`,
+	} {
+		t.Run("不再接受 "+task, func(t *testing.T) {
+			p, up := newAutoPanel(t)
+			up.onDefaultTasks(autoOK(autoTasksJSON(task)))
+			up.onDesktopReport(autoOK(autoEnvelope("{}")))
+			rec := postJSON(t, p, "/panel/api/accounts/u1/tasks/auto", `{"task_code":"RichMeow_Chat"}`)
+			autoWantCode(t, rec, http.StatusOK)
+			if got := len(up.requestsTo(http.MethodPost, autoWebHost, autoAcceptPath, "web")); got != 0 {
+				t.Fatalf("不应再接受，实际 %d 次", got)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2045,6 +2119,186 @@ func TestRunExpertLighthouse(t *testing.T) {
 	})
 }
 
+// autoExpertPage 一页满员的专家列表（MarketExpertPageSize 个），专家 id 按页码编号，名字都不是任务要找的。
+func autoExpertPage(page int) string {
+	items := make([]string, 0, upstream.MarketExpertPageSize)
+	for i := range upstream.MarketExpertPageSize {
+		id := fmt.Sprintf("ex_p%d_%d", page, i)
+		items = append(items, autoExpertJSON(id, "agent", "专家"+id, "职业"+id))
+	}
+	return autoExpertsJSON(items...)
+}
+
+// 「体验某位专家」类任务：带 id 的按 id 找，列表里没有也用任务里的 id 照样召唤；只有名字的按名字
+// 翻页找（满页才翻下一页，最多 expertTaskSearchPages 页），找不到不召唤别的专家。
+func TestRunExpertTask(t *testing.T) {
+	autoFastWaits(t)
+	const id = "ex_task1"
+	byID := runExpertTask(expertTaskTarget{ID: id, Name: "任务里的专家"})
+	byName := runExpertTask(expertTaskTarget{Name: "无畏契约拼豆专家"})
+
+	t.Run("带 id 时用列表里这位专家的信息", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		e := `{"expert_id":"` + id + `","expert_type":"agent","display_name_zh":"列表里的名字","profession_zh":"列表里的职业","version":"2.1.0","categories":["ecommerce"]}`
+		up.onMarket(autoOK(autoExpertsJSON(autoExpertJSON("ex_other", "agent", "别的专家", "别的职业"), e)))
+		up.onChat(autoOK(autoChatSSE))
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		msg, err := byID(p, autoAuth(t, p))
+		if err != nil || msg != "已召唤「任务里的专家」并完成一次真实对话" {
+			t.Fatalf("msg=%q err=%v", msg, err)
+		}
+		autoWantSequence(t, up.requests(),
+			"POST "+autoChatHost+autoMarketPath,
+			"POST "+autoChatHost+autoReportPath,
+			"POST "+autoChatHost+autoChatPath,
+			"POST "+autoChatHost+autoReportPath,
+		)
+		market := autoBodyMap(t, up.requests()[0].Body)
+		if market["expert_type"] != "agent" || market["page"] != float64(1) {
+			t.Fatalf("应拉单专家列表第一页: %v", market)
+		}
+		chats := up.requestsTo(http.MethodPost, autoChatHost, autoChatPath, "")
+		if got := chats[0].Header.Get("X-Expert-Id"); got != id {
+			t.Fatalf("对话应带这位专家的 X-Expert-Id，got %q", got)
+		}
+		reports := up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")
+		summon := autoEventByCode(t, autoEvents(t, reports[0].Body), "expert_summon_click")
+		if summon["id"] != id || summon["name"] != "列表里的名字" || summon["version"] != "2.1.0" || summon["type"] != "ecommerce" {
+			t.Fatalf("召唤事件应用列表里的专家信息: %v", summon)
+		}
+		use := autoEventByCode(t, autoEvents(t, reports[1].Body), "expert_actual_use")
+		if use["id"] != id || use["requestId"] != autoChatSvcToken || use["mode"] != "LOCAL" {
+			t.Fatalf("使用事件应 JOIN 服务端 requestId: %v", use)
+		}
+	})
+
+	t.Run("带 id 时列表里没有也照样召唤", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onMarket(autoOK(autoExpertsJSON(autoExpertJSON("ex_other", "agent", "别的专家", "别的职业"))))
+		up.onChat(autoOK(autoChatSSE))
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		if _, err := byID(p, autoAuth(t, p)); err != nil {
+			t.Fatalf("不应报错: %v", err)
+		}
+		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoMarketPath, "")); got != 1 {
+			t.Fatalf("不满一页就是最后一页，应只拉 1 页，实际 %d", got)
+		}
+		reports := up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")
+		summon := autoEventByCode(t, autoEvents(t, reports[0].Body), "expert_summon_click")
+		if summon["id"] != id || summon["name"] != "任务里的专家" || summon["version"] != "1.0.0" || summon["type"] != "all" {
+			t.Fatalf("应用任务里的 id 和名字，版本号、分类取缺省值: %v", summon)
+		}
+	})
+
+	t.Run("带 id 时列表失败也照样召唤", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onMarket(autoFail(400, `{"code":400}`))
+		up.onChat(autoOK(autoChatSSE))
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		if _, err := byID(p, autoAuth(t, p)); err != nil {
+			t.Fatalf("列表失败不应阻塞: %v", err)
+		}
+		if got := up.requestsTo(http.MethodPost, autoChatHost, autoChatPath, "")[0].Header.Get("X-Expert-Id"); got != id {
+			t.Fatalf("应召唤任务里的专家，got %q", got)
+		}
+	})
+
+	t.Run("只有名字时翻页按名字找", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onMarket(func(r autoReq) (int, string) {
+			if autoBodyMap(t, r.Body)["page"] == float64(1) {
+				return 200, autoExpertPage(1)
+			}
+			// 名字两边带空格也认。
+			return 200, autoExpertsJSON(autoExpertJSON("ex_valorant", "agent", " 无畏契约拼豆专家 ", "拼豆专家"))
+		})
+		up.onChat(autoOK(autoChatSSE))
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		msg, err := byName(p, autoAuth(t, p))
+		if err != nil || !strings.Contains(msg, "「无畏契约拼豆专家」") {
+			t.Fatalf("msg=%q err=%v", msg, err)
+		}
+		market := up.requestsTo(http.MethodPost, autoChatHost, autoMarketPath, "")
+		if len(market) != 2 || autoBodyMap(t, market[1].Body)["page"] != float64(2) {
+			t.Fatalf("第一页没有应翻到第二页，实际拉了 %d 页", len(market))
+		}
+		if got := up.requestsTo(http.MethodPost, autoChatHost, autoChatPath, "")[0].Header.Get("X-Expert-Id"); got != "ex_valorant" {
+			t.Fatalf("应召唤按名字找到的专家，got %q", got)
+		}
+	})
+
+	t.Run("只有名字时按职业名也认", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onMarket(autoOK(autoExpertsJSON(autoExpertJSON("ex_valorant", "agent", "小拼", "无畏契约拼豆专家"))))
+		up.onChat(autoOK(autoChatSSE))
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		if _, err := byName(p, autoAuth(t, p)); err != nil {
+			t.Fatalf("不应报错: %v", err)
+		}
+	})
+
+	t.Run("只有名字时找不到就不召唤", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onMarket(func(r autoReq) (int, string) {
+			page, _ := autoBodyMap(t, r.Body)["page"].(float64)
+			return 200, autoExpertPage(int(page))
+		})
+		_, err := byName(p, autoAuth(t, p))
+		if err == nil || !strings.Contains(err.Error(), "前 5 页里没有「无畏契约拼豆专家」") {
+			t.Fatalf("应返回找不到: %v", err)
+		}
+		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoMarketPath, "")); got != expertTaskSearchPages {
+			t.Fatalf("应翻满 %d 页，实际 %d", expertTaskSearchPages, got)
+		}
+		if n := len(up.requests()); n != expertTaskSearchPages {
+			t.Fatalf("找不到时只应拉列表，实际发了 %d 个请求", n)
+		}
+	})
+
+	t.Run("只有名字时列表失败报错", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onMarket(autoFail(400, `{"code":400}`))
+		if _, err := byName(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "拉取专家列表") {
+			t.Fatalf("应返回拉取失败: %v", err)
+		}
+		if n := len(up.requests()); n != 1 {
+			t.Fatalf("列表失败后不应再发请求，实际 %d 个", n)
+		}
+	})
+
+	// 召唤链、真实对话、使用事件三步各自失败时报对应的错。
+	for _, tc := range []struct {
+		name, want string
+		chatFail   bool
+		failReport int // 第几次上报失败，0 表示上报都成功
+	}{
+		{name: "召唤链上报失败", want: "召唤链", failReport: 1},
+		{name: "对话失败", want: "真实对话", chatFail: true},
+		{name: "使用事件上报失败", want: "使用事件", failReport: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, up := newAutoPanel(t)
+			up.onMarket(autoOK(autoExpertsJSON()))
+			if tc.chatFail {
+				up.onChat(autoFail(400, `{"code":400}`))
+			} else {
+				up.onChat(autoOK(autoChatSSE))
+			}
+			n := 0
+			up.onDesktopReport(func(autoReq) (int, string) {
+				n++
+				if n == tc.failReport {
+					return 400, `{"code":400}`
+				}
+				return 200, autoEnvelope("{}")
+			})
+			if _, err := byID(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("应返回%s错误: %v", tc.want, err)
+			}
+		})
+	}
+}
+
 // black_cat：窗口外不发请求；窗口内 need<=0 提示达标；need=1 走一次真实对话
 // （上游夜聊间隔固定 4s，只测一次成功）；对话失败返回进度提示。
 func TestRunBlackCat(t *testing.T) {
@@ -3022,5 +3276,41 @@ func TestAutoActionHelpers(t *testing.T) {
 	}
 	if got := acceptStatusOr(&upstream.Task{AcceptStatus: "accepted"}); got != "accepted" {
 		t.Fatalf("accept_status 应原样返回: %q", got)
+	}
+}
+
+// 面板给不给「一键完成」按钮看前端 web/src/lib/tasks.ts 的 AUTO_TASKS，能不能做看后端 autoActions：
+// 两边的任务码要一致，否则面板有按钮、后端回 501，或者后端能做、面板却不给按钮。
+func TestAutoActionsMatchFrontend(t *testing.T) {
+	raw, err := os.ReadFile(filepath.FromSlash("../../web/src/lib/tasks.ts"))
+	if err != nil {
+		t.Fatalf("读前端任务表: %v", err)
+	}
+	src := string(raw)
+	start := strings.Index(src, "export const AUTO_TASKS")
+	if start < 0 {
+		t.Fatal("web/src/lib/tasks.ts 里找不到 AUTO_TASKS")
+	}
+	end := strings.Index(src[start:], "\n}")
+	if end < 0 {
+		t.Fatal("AUTO_TASKS 没有结尾的 }")
+	}
+	var frontCodes []string
+	front := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\s*'([^']+)':`).FindAllStringSubmatch(src[start:start+end], -1) {
+		frontCodes = append(frontCodes, m[1])
+		front[m[1]] = true
+	}
+	back := map[string]bool{}
+	for _, act := range autoActions {
+		back[act.TaskCode] = true
+		if !front[act.TaskCode] {
+			t.Errorf("后端能自动完成 %s，前端 AUTO_TASKS 没有，面板不会给按钮", act.TaskCode)
+		}
+	}
+	for _, code := range frontCodes {
+		if !back[code] {
+			t.Errorf("前端 AUTO_TASKS 有 %s，后端 autoActions 没有，点了会回 501", code)
+		}
 	}
 }
