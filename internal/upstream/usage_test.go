@@ -209,6 +209,35 @@ func TestUsageCacheMissTokens(t *testing.T) {
 	}
 }
 
+// TestUsageCacheTokens 统计层的缓存观测：命中为 0 也算有观测（整段未命中要计入命中率）；命中为 0
+// 且没有显式 miss 时按 prompt_tokens 全量算未命中；一个缓存字段都没有时 ok=false。
+func TestUsageCacheTokens(t *testing.T) {
+	cases := []struct {
+		name      string
+		usage     map[string]any
+		hit, miss float64
+		ok        bool
+	}{
+		{"nil", nil, 0, 0, false},
+		{"没有缓存字段", map[string]any{"prompt_tokens": 100.0}, 0, 0, false},
+		{"命中与显式 miss", map[string]any{"prompt_tokens": 100.0, "prompt_cache_hit_tokens": 90.0, "prompt_cache_miss_tokens": 10.0}, 90, 10, true},
+		{"命中推导 miss", map[string]any{"prompt_tokens": 100.0, "prompt_tokens_details": map[string]any{"cached_tokens": 60.0}}, 60, 40, true},
+		{"命中为 0、无 miss，按 prompt 全量", map[string]any{"prompt_tokens": 288109.0, "prompt_cache_hit_tokens": 0.0}, 0, 288109, true},
+		{"只有 miss 字段", map[string]any{"prompt_tokens": 50.0, "prompt_cache_miss_tokens": 50.0}, 0, 50, true},
+		{"别名都是 0", map[string]any{"cache_read_input_tokens": 0.0, "cached_tokens": 0.0}, 0, 0, true},
+		{"Responses 形态的 0", map[string]any{"input_tokens_details": map[string]any{"cached_tokens": 0.0}}, 0, 0, true},
+		{"details 里不是数值", map[string]any{"prompt_tokens_details": map[string]any{"cached_tokens": "x"}}, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hit, miss, ok := UsageCacheTokens(tc.usage)
+			if hit != tc.hit || miss != tc.miss || ok != tc.ok {
+				t.Errorf("got %v/%v/%v，应为 %v/%v/%v", hit, miss, ok, tc.hit, tc.miss, tc.ok)
+			}
+		})
+	}
+}
+
 // TestUsageNumber 顶层数值字段解析：float64/int/int64/json.Number；非法与缺失 false。
 func TestUsageNumber(t *testing.T) {
 	cases := []struct {

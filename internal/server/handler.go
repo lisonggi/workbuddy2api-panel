@@ -706,8 +706,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// ExtractKey 与粘性开关解耦（issue #35 侧）：关闭粘性时会话头族的聚合主键仍按
 	// 会话级（RequestIDForKey(sessKey)），不悄悄退化成轮级——提取本身与粘性无关。
 	sessKey := session.ExtractKey(body)
-	// 出站会话 id 的派生源在提示词改写之前取：降级开关切换会换系统提示词，不能让会话 id 跟着变。
-	convSeed := session.ConversationSeed(body)
+	// 认对话用的摘要在提示词改写之前取：降级开关切换会换系统提示词，不能让出站会话 id 跟着变。
+	conv := session.ParseConversation(body)
 	stickyUID := ""
 	if h.cfg.Session != nil && sessKey != "" {
 		// 按模型解析：绑定号在**当前模型**被 6004 限额时视为不可用 → 重新分配，
@@ -870,21 +870,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 循环外**生成一次，循环内每次出站原样复用 → 换号/重试/降级全部同 ID，后台不再
 	// 碎片化（此前网关一个都不发，上游按 HTTP 请求逐条记账，同一对话几十上百个
 	// RequestID）。
-	//   - conversationID：body 提取（透传客户端原值，缺省空串——不伪造）；
+	//   - conversationID：客户端给了就原样透传；没给时选好号以后按账号定（循环内，
+	//     session.AccountConversationID：第一轮记下的 id 整段对话沿用，见 session/convids.go）；
 	//   - conversationRequestID：入站 X-Conversation-Request-ID 透传优先，否则按对话轮：
 	//     客户端给了会话 id 时由会话 id + 轮级键派生，没给时开轮新生成、轮内凭工具调用 id
 	//     找回（session/turns.go）；建不出轮级键时退化成会话级或本请求级随机——
 	//     轮转内捕获一次即共享；
 	//   - messageID 在 ChatHeaders 内每条消息生成（消息级独立，无需外部可见）。
-	//   - conversationSeed：客户端没给 conversation_id 时出站 X-Conversation-ID 的派生源。
-	//     不直接用会话键：会话键只由 system + 首条 user 决定，开头相同的两段不相干对话
-	//     会撞成同一个值；派生源再加上第一条助手回复（见 session.ConversationSeed），
-	//     ChatHeaders 拼上账号 uid 算出 id。对话第一个请求没有回复，用轮次 id。
 	convID := session.ResolveConversationID(body)
 	chatMeta := upstream.ChatMeta{ConversationID: convID}
-	if convID == "" {
-		chatMeta.ConversationSeed = convSeed
-	}
 	// rememberTurn 开轮请求成功转出回复后，记下回复里的工具调用 id，轮内后续请求凭它找回本轮 ID。
 	rememberTurn := false
 	if v := r.Header.Get("X-Conversation-Request-ID"); v != "" {
@@ -907,6 +901,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		chatMeta.ConversationRequestID = session.TurnRequestID("")
 	}
 	chatMeta.TraceID = r.Header.Get("X-Trace-ID")
+	// noteCache 把这一跳的前缀缓存观测交给未命中告警，按对话对照上一轮（见 cacheMissSignal）。
+	noteCache := func(acct *auth.Auth) {
+		if !st.hasCache {
+			return
+		}
+		cacheMissWarn.note(cacheObservation{
+			key: sessKey, model: bareModel, uid: acct.UID, acct: logfmt.Label(acct.UID, acct.Nickname),
+			convID: chatMeta.ConversationID, msgs: conv.Messages,
+			prompt: st.promptTokens, hit: st.cacheHit, miss: st.cacheMiss,
+		})
+	}
 
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
@@ -919,6 +924,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				unbindSticky()
 				acct = nil
 			}
+		}
+		if acct == nil {
+			// 粘性号用不了时先回到这段对话用过的其他号：上面留着这段对话的前缀缓存。
+			acct = h.pickWarm(sessKey, bareModel, realm, tried)
 		}
 		if acct == nil {
 			// 模型感知 + realm 感知选号：模型非空时启用 6004 模型级冷却豁免
@@ -979,6 +988,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 刷新成功但落盘失败：下次启动会用旧 token，必须暴露
 				log.Printf("ERR: [server] chat refresh acct=%s: save auth failed: %v", logfmt.Label(acct.UID, acct.Nickname), err)
 			}
+		}
+
+		// 出站会话 id 按这次选中的号定：客户端没给时取这段对话在这个号上的 id，换号重试就换成新号上的。
+		if convID == "" {
+			chatMeta.ConversationID = session.AccountConversationID(acct.UID, conv)
 		}
 
 		// 客户端 IP 按请求传递（PassthroughIP 开启时注入；消除共享字段竞态）。
@@ -1210,10 +1224,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				st.cacheHit, st.cacheMiss, st.hasCache = hit, miss, true
 			}
 			recordAttempt(acct.UID, stats.Usage(), credit, hasCredit, attemptStarted, stats.TTFB())
-			// WARN 信号放 recordAttempt 之后：st.promptTokens 此时才是本次的观测值。
-			if st.hasCache {
-				cacheMissWarn.noteCacheTokens(bareModel, st.promptTokens, st.cacheHit, st.cacheMiss)
-			}
+			// 未命中告警放 recordAttempt 之后：st.promptTokens 此时才是本次的观测值。
+			noteCache(acct)
 			if n := repair.Converted(); n > 0 {
 				// 修复命中：上游本来会把工具调用吐成正文标记，这里已还原成 tool_calls。
 				// 打一行便于运维确认「这次不再空转」以及统计发生率。
@@ -1270,15 +1282,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		credit, total, hasCredit := usageCreditTotal(resp)
 		if usage, ok := resp["usage"].(map[string]any); ok {
-			if hit, okH := upstream.UsageCacheHitTokens(usage); okH {
-				miss, _ := upstream.UsageCacheMissTokens(usage)
+			if hit, miss, okC := upstream.UsageCacheTokens(usage); okC {
 				st.cacheHit, st.cacheMiss, st.hasCache = int64(hit), int64(miss), true
 			}
 		}
 		recordAttempt(acct.UID, usageDeltaFromResponse(resp), credit, hasCredit, attemptStarted, 0)
-		if st.hasCache {
-			cacheMissWarn.noteCacheTokens(bareModel, st.promptTokens, st.cacheHit, st.cacheMiss)
-		}
+		noteCache(acct)
 		writeJSON(w, http.StatusOK, resp)
 		st.status = http.StatusOK
 		st.outcome = reqlog.OutcomeSuccess
@@ -1386,6 +1395,24 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	writeOpenAIErrorHint(w, status, code, msg, hint)
 	st.status = status
 	st.outcome = reqlog.OutcomeHTTPError
+}
+
+// pickWarm 换号时先回到这段对话最近成功用过、这次还没试过的号（见 session.Router.WarmUIDs），
+// 校验同粘性号（PickByUIDForModel：该模型可用、在途未满、积分保底）。粘性关闭、没有会话键或
+// 这些号都用不了时返回 nil。
+func (h *Handler) pickWarm(sessKey, model, realm string, tried map[string]bool) *auth.Auth {
+	if h.cfg.Session == nil || sessKey == "" {
+		return nil
+	}
+	for _, uid := range h.cfg.Session.WarmUIDs(sessKey) {
+		if tried[uid] {
+			continue
+		}
+		if a := h.cfg.Pool.PickByUIDForModel(uid, model); a != nil && (realm == "" || a.Realm() == realm) {
+			return a
+		}
+	}
+	return nil
 }
 
 // tokensPerSecond 计算吐字速率（token/s），返回 (速率, 是否有意义)。

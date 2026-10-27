@@ -182,8 +182,7 @@ func billingAcceptLanguage(a *auth.Auth) string {
 // 复用同值；TraceID 透传入站值（空 = 回落 conversationRequestID）。
 // messageID（消息级，每条独立）由 ChatHeaders 内部生成，无需外部可见。
 type ChatMeta struct {
-	ConversationID        string // X-Conversation-ID：客户端给的会话 id；空则由 ChatHeaders 按 ConversationSeed 或轮次 id 补
-	ConversationSeed      string // 客户端没给会话 id 时的派生源（session.ConversationSeed）；空 = 对话第一个请求
+	ConversationID        string // X-Conversation-ID：入站对话由 handler 按账号定好（session.AccountConversationID）；空则新生成
 	ConversationRequestID string // X-Conversation-Request-ID：聚合主键，必发
 	TraceID               string // X-Trace-ID：入站透传值，空则回落 conversationRequestID
 	ExpertID              string // X-Expert-Id：专家对话的专家 id；空 = 普通对话，不发
@@ -247,16 +246,10 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	// 不带 X-Device-Token：官方只在签到和登录前的 auth/state 上带。
 	// X-Conversation-ID 官方每条都发（值是整段对话不变的会话 id）。国际版不带一律 400
 	// code=11128 "request illegal"（10-19 生产实测），国内版不带也能用，同样补上对齐官方。
-	// 客户端没给会话 id 时：历史里已有助手回复就按派生源 + 账号算出固定值（同一段对话在同一个号上
-	// 不变，上游据此命中前缀缓存，见 session.ConversationSeed）；对话第一个请求还没有回复可区分，
-	// 新生成一个，形状同官方新会话的 id（带连字符的 UUID v7）。
+	// 入站对话的 id 由 handler 按账号定好（同一段对话在同一个号上不变，上游据此命中前缀缓存，
+	// 见 session/convids.go）；调用方没给就新生成一个，形状同官方新会话的 id（带连字符的 UUID v7）。
 	if meta.ConversationID == "" {
-		switch {
-		case meta.ConversationSeed != "":
-			meta.ConversationID = session.AccountConversationID(a.UID, meta.ConversationSeed)
-		default:
-			meta.ConversationID = session.NewUUIDv7()
-		}
+		meta.ConversationID = session.NewUUIDv7()
 	}
 	// 会话头族（对话/请求/消息/链路），见 injectConversationHeaders。
 	c.injectConversationHeaders(req, meta)

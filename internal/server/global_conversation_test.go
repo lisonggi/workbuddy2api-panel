@@ -67,15 +67,21 @@ func newGlobalChatHandler(t *testing.T, fake *globalChatUpstream) (*Handler, *au
 	return NewHandler(Config{Pool: p, Upstream: up, GlobalEnabled: true, PromptMode: "passthrough"}), gl
 }
 
-// TestChatGlobalSendsConversationID 国际版：客户端没给 conversation_id 时也要带 X-Conversation-ID（值是本轮的
-// 轮次 id）。开头相同的两段对话各是各的，不会撞成同一个会话；客户端给了就原样透传。
+// TestChatGlobalSendsConversationID 国际版：客户端没给 conversation_id 时也要带 X-Conversation-ID（官方新会话
+// 的形状）。第一轮记下的 id 之后各轮接着用；开头逐字相同的两段对话第一轮在同一个号上共用一个 id，第二轮
+// 看到回复不同就分开（见 session/convids.go）。客户端给了就原样透传。
 func TestChatGlobalSendsConversationID(t *testing.T) {
 	fake := &globalChatUpstream{}
 	h, _ := newGlobalChatHandler(t, fake)
+	// 开头带上测试名：会话 id 记录是进程内共用的，免得和别的测试撞上。
+	head := `{"model":"global:m-g","messages":[{"role":"user","content":"你好 ` + t.Name() + `"}`
 	for _, body := range []string{
-		`{"model":"global:m-g","messages":[{"role":"user","content":"你好"}]}`,
-		`{"model":"global:m-g","messages":[{"role":"user","content":"你好"}]}`,
-		`{"model":"global:m-g","messages":[{"role":"user","content":"你好"}],"metadata":{"conversation_id":"conv-client"}}`,
+		head + `]}`,
+		head + `]}`,
+		head + `],"metadata":{"conversation_id":"conv-client"}}`,
+		head + `,{"role":"assistant","content":"回复A"},{"role":"user","content":"继续"}]}`,
+		head + `,{"role":"assistant","content":"回复B"},{"role":"user","content":"继续"}]}`,
+		head + `,{"role":"assistant","content":"回复A"},{"role":"user","content":"继续"},{"role":"assistant","content":"好"},{"role":"user","content":"再继续"}]}`,
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
@@ -85,19 +91,24 @@ func TestChatGlobalSendsConversationID(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.convIDs) != 3 {
-		t.Fatalf("want 3 chat calls, got %d", len(fake.convIDs))
+	if len(fake.convIDs) != 6 {
+		t.Fatalf("want 6 chat calls, got %d", len(fake.convIDs))
 	}
-	for i := 0; i < 2; i++ {
-		if !upstreamtest.UUIDv7.MatchString(fake.convIDs[i]) || !upstreamtest.UUIDv7Hex.MatchString(fake.turnIDs[i]) {
-			t.Fatalf("第 %d 次：X-Conversation-ID = %q、轮次 id = %q，应是官方新会话的形状", i+1, fake.convIDs[i], fake.turnIDs[i])
-		}
+	first := fake.convIDs[0]
+	if !upstreamtest.UUIDv7.MatchString(first) || !upstreamtest.UUIDv7Hex.MatchString(fake.turnIDs[0]) {
+		t.Fatalf("X-Conversation-ID = %q、轮次 id = %q，应是官方新会话的形状", first, fake.turnIDs[0])
 	}
-	if fake.convIDs[0] == fake.convIDs[1] {
-		t.Fatalf("开头相同的两段对话不应共用会话 id：%q", fake.convIDs[0])
+	if fake.convIDs[1] != first {
+		t.Fatalf("开头相同的第一轮在同一个号上应共用会话 id：%q / %q", first, fake.convIDs[1])
 	}
 	if fake.convIDs[2] != "conv-client" {
 		t.Fatalf("客户端的 conversation_id 应原样透传: got %q", fake.convIDs[2])
+	}
+	if fake.convIDs[3] != first || fake.convIDs[5] != first {
+		t.Fatalf("第二轮起应沿用第一轮的会话 id：%q，got %q / %q", first, fake.convIDs[3], fake.convIDs[5])
+	}
+	if b := fake.convIDs[4]; b == first || !upstreamtest.UUIDv7.MatchString(b) {
+		t.Fatalf("回复不同的另一段对话第二轮应换成自己的会话 id：%q", b)
 	}
 }
 

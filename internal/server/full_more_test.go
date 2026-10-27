@@ -646,13 +646,6 @@ func TestFull8LoggingEdges(t *testing.T) {
 		t.Fatalf("日志行 = %q", out)
 	}
 
-	sig := &cacheMissSignal{everHit: map[string]bool{}, last: map[string]time.Time{}}
-	sig.noteCacheTokens("", 5000, 0, 5000)
-	sig.everHit["m"] = true
-	sig.noteCacheTokens("m", 5000, 0, 0)
-	if _, ok := sig.last["m"]; !ok {
-		t.Fatal("miss<=0 时应按 prompt 全量记冷却")
-	}
 }
 
 func TestFull8StatsReaderEdges(t *testing.T) {
@@ -664,7 +657,7 @@ func TestFull8StatsReaderEdges(t *testing.T) {
 	if n, err := r.Read(one); n != 1 || err != nil {
 		t.Fatalf("pend 读 = (%d,%v)", n, err)
 	}
-	if s := (&chatStatsReader{hasCacheHit: true, cacheHit: 10}); true {
+	if s := (&chatStatsReader{hasCache: true, cacheHit: 10}); true {
 		hit, miss, ok := s.CacheTokens()
 		if !ok || hit != 10 || miss != 0 {
 			t.Fatalf("CacheTokens = (%d,%d,%v)", hit, miss, ok)

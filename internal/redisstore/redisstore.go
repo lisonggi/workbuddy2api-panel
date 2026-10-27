@@ -42,6 +42,11 @@ type Store interface {
 	SaveState(data []byte)
 	// LoadState 读池状态快照；仅在启动时调用（同步）。
 	LoadState() ([]byte, bool)
+	// SaveSessions 异步写会话记录快照（出站会话 id 与每段对话用过的号，见 session.Persist），
+	// 与本地 sessions.json 并存，仅作恢复备份。
+	SaveSessions(data []byte)
+	// LoadSessions 读会话记录快照；仅在启动时调用（同步）。
+	LoadSessions() ([]byte, bool)
 	// Close 关停 Store：Upstash 等待已提交的异步写全部执行完再关底层连接
 	// （停机语义：最后一笔 Redis 镜像必须写完），之后新提交的写直接丢弃；幂等。
 	// Noop 为空操作。进程退出前在 pool.Close() 之后调用。
@@ -51,6 +56,7 @@ type Store interface {
 const (
 	bindPrefix  = "wb2api:bind:"
 	stateKey    = "wb2api:state"
+	sessionsKey = "wb2api:sessions"
 	readTimeout = 3 * time.Second
 )
 
@@ -227,21 +233,31 @@ func (u *Upstash) DelBind(key string) {
 }
 
 // SaveState 异步写池状态 JSON 快照。
-func (u *Upstash) SaveState(data []byte) {
+func (u *Upstash) SaveState(data []byte) { u.saveSnapshot("SaveState", stateKey, data) }
+
+// LoadState 同步读池状态快照。
+func (u *Upstash) LoadState() ([]byte, bool) { return u.loadSnapshot(stateKey) }
+
+// SaveSessions 异步写会话记录快照。
+func (u *Upstash) SaveSessions(data []byte) { u.saveSnapshot("SaveSessions", sessionsKey, data) }
+
+// LoadSessions 同步读会话记录快照。
+func (u *Upstash) LoadSessions() ([]byte, bool) { return u.loadSnapshot(sessionsKey) }
+
+func (u *Upstash) saveSnapshot(op, key string, data []byte) {
 	u.goWrite(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := u.client.Set(ctx, stateKey, data, keyTTL).Err(); err != nil {
-			log.Printf("[redisstore] debug: SaveState: %v", err)
+		if err := u.client.Set(ctx, key, data, keyTTL).Err(); err != nil {
+			log.Printf("[redisstore] debug: %s: %v", op, err)
 		}
 	})
 }
 
-// LoadState 同步读池状态快照。
-func (u *Upstash) LoadState() ([]byte, bool) {
+func (u *Upstash) loadSnapshot(key string) ([]byte, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
 	defer cancel()
-	v, err := u.client.Get(ctx, stateKey).Bytes()
+	v, err := u.client.Get(ctx, key).Bytes()
 	if err != nil {
 		return nil, false
 	}
@@ -273,4 +289,6 @@ func (Noop) DelBind(string)                        {}
 func (Noop) LoadBinds() map[string]string          { return nil }
 func (Noop) SaveState([]byte)                      {}
 func (Noop) LoadState() ([]byte, bool)             { return nil, false }
+func (Noop) SaveSessions([]byte)                   {}
+func (Noop) LoadSessions() ([]byte, bool)          { return nil, false }
 func (Noop) Close() error                          { return nil }

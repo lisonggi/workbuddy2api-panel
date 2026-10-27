@@ -32,7 +32,7 @@
 | `listen` | `:7863` | HTTP 监听地址 |
 | `api_key` | 空 | 管理员密钥：能登面板、调全部接口，不受客户端密钥的上限约束；空 = 不鉴权（但建过[客户端密钥](api.md#客户端密钥)后 `/v1/*` 仍必须带密钥） |
 | `auth_dir` | `./auths` | 账号凭证目录 |
-| `state_file` | `./data/state.json` | 账号池状态文件；用量统计、请求归档、模型探测结果、客户端密钥（`api_keys.json`）都放在同一目录 |
+| `state_file` | `./data/state.json` | 账号池状态文件；用量统计、请求归档、模型探测结果、客户端密钥（`api_keys.json`）、会话记录（`sessions.json`）都放在同一目录 |
 | `server.read_timeout` | `300s` | 读取一个入站请求（含上传请求体）的总时长上限。大上下文请求经反代转发超时会报 400 `read body: i/o timeout`，可调大；`0` = 不限制 |
 | `panel.package_detail_limit` | `5` | 积分构成页单个账号默认展开的最早到期积分包数，其余折叠 |
 | `panel.update_check` | `true` | 每 6 小时从 GitHub 读取一次更新日志，有新版本时面板提醒，并可[一键更新](panel.md#一键更新)；`false` = 不联网检查，也不出现一键更新按钮。见[更新提醒](panel.md#更新提醒) |
@@ -140,9 +140,9 @@
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `session_sticky.enabled` | `true` | 同一会话尽量固定用同一个账号 |
-| `session_sticky.ttl` | `30m` | 会话绑定有效期，每次使用滚动续期 |
+| `session_sticky.ttl` | `30m` | 会话绑定有效期，每次使用滚动续期。过期后再来的请求先回到这段对话用过的号，见[会话粘性](gateway.md#会话粘性) |
 | `session_sticky.gc_interval` | `5m` | 过期绑定清理周期 |
-| `upstash.url` / `upstash.token` | 空 | Upstash Redis（或任意 `rediss://` 地址）。空 = 纯内存模式，功能不受影响；配置后池状态与会话绑定异步镜像到 Redis |
+| `upstash.url` / `upstash.token` | 空 | Upstash Redis（或任意 `rediss://` 地址）。空 = 不镜像，功能不受影响；配置后池状态、会话绑定与会话记录异步镜像到 Redis |
 
 ## 上游超时
 

@@ -98,6 +98,27 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 }
 
+// 会话记录快照：SaveSessions 后 LoadSessions 读回同样字节，和池状态快照各用各的键。
+func TestSessionsRoundTrip(t *testing.T) {
+	u, mr := newUpstash(t)
+	if _, ok := u.LoadSessions(); ok {
+		t.Fatal("没有快照时应 ok=false")
+	}
+	data := []byte(`{"version":1,"conversations":[]}`)
+	u.SaveSessions(data)
+	u.wg.Wait()
+	got, ok := u.LoadSessions()
+	if !ok || string(got) != string(data) {
+		t.Fatalf("LoadSessions = %q, %v", got, ok)
+	}
+	if ttl := mr.TTL(sessionsKey); ttl != keyTTL {
+		t.Fatalf("会话记录键 TTL = %v", ttl)
+	}
+	if _, ok := u.LoadState(); ok {
+		t.Fatal("会话记录不应写到池状态的键上")
+	}
+}
+
 // Close：等已提交的写跑完、幂等、关停后提交的写直接丢弃、零值 Upstash 可用。
 func TestCloseSemantics(t *testing.T) {
 	t.Run("零值 Upstash 不崩溃", func(t *testing.T) {
@@ -150,9 +171,13 @@ func TestRedisDownIsSilent(t *testing.T) {
 	mr.Close()
 	u.SetBind("k", "u", time.Minute)
 	u.SaveState([]byte(`{}`))
+	u.SaveSessions([]byte(`{}`))
 	u.wg.Wait()
 	if _, ok := u.LoadState(); ok {
 		t.Fatal("Redis 不可用时 LoadState 应 ok=false")
+	}
+	if _, ok := u.LoadSessions(); ok {
+		t.Fatal("Redis 不可用时 LoadSessions 应 ok=false")
 	}
 	if binds := u.LoadBinds(); len(binds) != 0 {
 		t.Fatalf("Redis 不可用时 LoadBinds 应为空: %v", binds)
@@ -168,6 +193,10 @@ func TestNoopAllMethods(t *testing.T) {
 	n.SetBind("k", "u", time.Minute)
 	n.DelBind("k")
 	n.SaveState([]byte("{}"))
+	n.SaveSessions([]byte("{}"))
+	if data, ok := n.LoadSessions(); ok || data != nil {
+		t.Fatalf("Noop.LoadSessions = %q, %v", data, ok)
+	}
 	if binds := n.LoadBinds(); binds != nil {
 		t.Fatalf("Noop.LoadBinds 应为 nil: %v", binds)
 	}

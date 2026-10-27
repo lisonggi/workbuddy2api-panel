@@ -177,6 +177,13 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 		sessRouter.StartGC()
 		defer sessRouter.StopGC()
 	}
+	// 会话记录（出站会话 id、每段对话用过的号）：与 state 文件同目录，配置了 Redis 时再镜像一份，
+	// 重启后同一段对话照旧回到原来的号、用原来的会话 id（issue #2）。defer 排在 store.Close 之后
+	// 注册、先于它执行：最后一份快照提交到 Redis 后才排空关连接。
+	sessPersist := session.NewPersist(stateSibling(cfg.StateFile, "sessions.json"), sessRouter, store)
+	sessPersist.Load()
+	sessPersist.Start()
+	defer sessPersist.Stop()
 	sessCount := func() int {
 		if sessRouter != nil {
 			return sessRouter.Count()
@@ -439,6 +446,7 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 		<-ctx.Done()
 		server.SetDraining()
 		p.Flush() // 信号触发：先落盘再做优雅停机
+		sessPersist.Flush()
 		if restarting.Load() {
 			log.Printf("准备重启：/readyz 已转 503，停止接新连接，最多等 %s 让在途请求结束", grace)
 		} else {

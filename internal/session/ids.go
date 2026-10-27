@@ -107,26 +107,35 @@ func RequestIDForKey(key string) string {
 	return derivedIDs.get("sess\x00"+key, false)
 }
 
-// ConversationSeed 客户端没给会话 id 时出站 X-Conversation-ID 的派生源：第一条 system/developer
-// 的文本 + 第一条 user 消息的签名 + 第一条助手回复的摘要（角色、文本、各工具调用的 id 与函数名）。
-// 历史里还没有助手回复（对话的第一个请求）时返回 ""，调用方改用本轮新生成的轮次 id。
+// Conversation 客户端没给会话 id 时，网关按内容认出同一段对话用的摘要（见 convids.go）。
+type Conversation struct {
+	// Opener 对话的开头：第一条 system/developer 的文本 + 第一条 user 消息的签名。没有 user 消息时为 ""。
+	Opener string
+	// Seed 开头再加第一条助手回复的摘要（角色、文本、各工具调用的 id 与函数名）。历史里还没有
+	// 助手回复（对话的第一轮）时为 ""。
+	Seed string
+	// Messages 请求里的消息条数，未命中告警据此看出客户端是不是压缩或改写了历史。
+	Messages int
+}
+
+// ParseConversation 从请求体取 Conversation，取不到的字段留空。
 //
-// 为什么要等到第一条助手回复：只看 system + 首条 user 的话，开头逐字相同的两段不相干对话
-// （同一个应用的系统提示词、首句都是「你好」）会算出同一个 id，上游看到的是一个会话里分叉出
-// 两条历史。第一条回复几乎总不一样（工具调用 id 每次随机），之后这段对话的 id 就不再变，
-// 上游能按会话把请求路由到同一份前缀缓存（10-19 生产实测 glm-5.2：会话 id 稳定时跨轮全部
-// 命中，每轮换新只有约三成）。工具调用只取 id 与函数名、不取参数原文：参数是客户端回传的
-// JSON 字符串，个别客户端每轮重新序列化，入键会让 id 漂移。
-func ConversationSeed(body []byte) string {
+// 为什么还要第一条助手回复：只看开头的话，开头逐字相同的两段不相干对话（同一个应用的系统
+// 提示词、首句都是「你好」）会认成同一段，上游看到的是一个会话里分叉出两条历史。第一条回复
+// 几乎总不一样（工具调用 id 每次随机），有了它就能把这样的两段对话分开。工具调用只取 id 与
+// 函数名、不取参数原文：参数是客户端回传的 JSON 字符串，个别客户端每轮重新序列化，入键会让
+// 摘要漂移。
+func ParseConversation(body []byte) Conversation {
 	if len(body) == 0 {
-		return ""
+		return Conversation{}
 	}
 	var obj struct {
 		Messages []turnMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return ""
+		return Conversation{}
 	}
+	c := Conversation{Messages: len(obj.Messages)}
 	system, firstUser, reply := "", "", ""
 	for _, m := range obj.Messages {
 		switch m.Role {
@@ -147,11 +156,16 @@ func ConversationSeed(body []byte) string {
 			break
 		}
 	}
-	if firstUser == "" || reply == "" {
-		return ""
+	if firstUser == "" {
+		return c
 	}
-	sum := sha256.Sum256([]byte(system + "\x00" + firstUser + "\x00" + reply))
-	return hex.EncodeToString(sum[:16])
+	sum := sha256.Sum256([]byte(system + "\x00" + firstUser))
+	c.Opener = hex.EncodeToString(sum[:16])
+	if reply != "" {
+		sum = sha256.Sum256([]byte(system + "\x00" + firstUser + "\x00" + reply))
+		c.Seed = hex.EncodeToString(sum[:16])
+	}
+	return c
 }
 
 // assistantDigest 助手消息的摘要：文本 + 每个工具调用的 id 与函数名。文本和工具调用都没有时返回 ""。
@@ -173,15 +187,6 @@ func assistantDigest(m turnMessage) string {
 		return ""
 	}
 	return b.String()
-}
-
-// AccountConversationID 由 ConversationSeed 与账号 uid 得出出站 X-Conversation-ID：第一次见到
-// 这对值时生成的 UUID v7（带连字符，同官方新会话的 id），记在 derivedIDs 里，此后同一段对话
-// 在同一个号上不变。uid 入键：会话换到别的号就换一个 id，不会出现同一个会话 id 横跨多个账号。
-// 记录在最后一次使用后保留 2 小时；网关重启或隔了更久再接着聊会换一个新 id（用户 10-20 定，
-// 换来的是 id 里的时刻和官方一样是真实的）。
-func AccountConversationID(uid, seed string) string {
-	return derivedIDs.get("conv\x00"+uid+"\x00"+seed, true)
 }
 
 // turnMessage ParseTurn 只需要的消息字段。tool_calls 逐条留原文，各家客户端的字段类型
@@ -413,6 +418,7 @@ func TurnRequestID(turnKey string) string {
 
 const (
 	// derivedIDTTL 派生 id 的记录在最后一次被取用后保留多久，同轮次记录（defaultTurnLinkTTL）。
+	// 只放轮次 id 一类，不存盘；出站会话 id 另有记录，见 convids.go。
 	derivedIDTTL = 2 * time.Hour
 	// derivedIDMax 记录条数上限（每条约百来字节），超了先清过期的，再随机清掉一成。
 	derivedIDMax = 50000

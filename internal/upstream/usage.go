@@ -132,6 +132,43 @@ func UsageCacheMissTokens(usage map[string]any) (float64, bool) {
 	return 0, false
 }
 
+// UsageCacheTokens 统计层用的前缀缓存观测：命中同 UsageCacheHitTokens（多别名取最优），未命中同
+// UsageCacheMissTokens。和 UsageCacheHitTokens 不同，命中为 0 也算有观测：usage 里只要出现任意一个
+// 缓存字段（含 prompt_cache_miss_tokens），整段未命中的请求也要计入命中率、交给未命中告警判断。
+// 一个缓存字段都没有时 ok=false。
+func UsageCacheTokens(usage map[string]any) (hit, miss float64, ok bool) {
+	if !hasUsageCacheField(usage) {
+		return 0, 0, false
+	}
+	hit, _ = UsageCacheHitTokens(usage)
+	miss, _ = UsageCacheMissTokens(usage)
+	if _, explicit := usageNumber(usage, "prompt_cache_miss_tokens"); !explicit && hit == 0 {
+		// 命中为 0 时 UsageCacheMissTokens 推导不出（它只认正的命中），按 prompt_tokens 全量算未命中。
+		miss, _ = usageNumber(usage, "prompt_tokens")
+	}
+	return hit, miss, true
+}
+
+// hasUsageCacheField usage 里有没有任意一个缓存命中 / 未命中字段（值为 0 也算）。
+func hasUsageCacheField(usage map[string]any) bool {
+	if usage == nil {
+		return false
+	}
+	for _, key := range []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cached_tokens"} {
+		if _, ok := usageNumber(usage, key); ok {
+			return true
+		}
+	}
+	for _, section := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		if details, ok := usage[section].(map[string]any); ok {
+			if _, ok := usageNumber(details, "cached_tokens"); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // usageNumber 从 usage 顶层取数值字段（JSON 数字可能是 float64 / json.Number 形态）。
 func usageNumber(usage map[string]any, key string) (float64, bool) {
 	v, ok := usage[key]
