@@ -30,6 +30,16 @@ npm 上更新的 CLI 只作对照，取值以安装包内置的版本为准：�
 
 结论：网关的登录不用改，版本号等桌面端出新版再一起换。比对时发现的两处网关缺口（授权被拒的提示、毫秒的到期时间）在 1.5.1 补上了，见[登录](#登录)与[刷新令牌](#刷新令牌)。
 
+### 与 npm 2.177.0 的对照
+
+2026-10-27 从 npm 下载 `@tencent-ai/codebuddy-code` 2.177.0（台湾时间 10-27 00:31 发布）只解包阅读，和 2.175.0 比对。包里的更新日志把下面这条记在 2.176.0 名下，桌面端用的 `dist/codebuddy-lite-wb.mjs` 里也有：
+
+- 专家请求头改由提示带的 W3C `baggage` 展开：宿主给这一轮提示的 `baggage` 里有 `x-expert-id`、`x-expert-team-task`、`x-moderation-type` 时，内置 CLI 把它们展开成 `X-Expert-Id`、`X-Expert-Team-Task`、`X-Moderation-Type`（`resolveExpertHeaders`），加在内置模型请求和平台接口上。值为空或不是合法的请求头值时不发，没有默认值。前两个网关本来就在发，见[几类请求](#几类请求)里的专家对话；`X-Moderation-Type` 网关不发。
+- 未确认：桌面端在哪些场景往 `baggage` 里放 `x-moderation-type`、放什么值。两个安装包还是 5.8.3 和 5.8.4（内置 2.161.0），新版 CLI 还没进安装包，后台服务那边也没有代码可以对照。网关不自己推导这个值，等桌面端出了带新版 CLI 的安装包，在后台服务里搜 `x-moderation-type` 和 `baggage` 再定。
+- 同时新增的 `x-source-channel-id`、`x-source-model-type`、`x-source-client-type`、`x-source-enterprise-id`，只在请求经 https 发往 `tencentmaas.com`、`tencentmaas.cn`、`tencentcloudmaas.com`、`tencentcloudmaas.tech` 及其子域时补上（`isMaasSourceHeaderUrl`、`applyMaasSourceHeaders`）。网关的对话主入口和备用入口都不是这些域名，不用加。
+
+其余变化是独立 CLI 自己的版本号、`product.json` 的 `commit` 与 `date`，以及自动模式审批的提示词，都和网关无关。结论：网关这次不用改。
+
 ## 几类请求
 
 | | 对话 | 积分、签到、上报、外观、专家列表、登录 | 刷新令牌 | 成长中心、积分补偿、新手礼包、试用、账号资料 |
