@@ -619,7 +619,7 @@ func TestFetchModelsOverlaysV3ConfigCapabilities(t *testing.T) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/v3/config"):
 			sawV3 = true
-			if want := "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"; r.Header.Get("User-Agent") != want {
+			if want := "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0"; r.Header.Get("User-Agent") != want {
 				t.Errorf("v3/config UA=%q want %s", r.Header.Get("User-Agent"), want)
 			}
 			if r.Header.Get("X-Product") != "SaaS" || !r.Close {

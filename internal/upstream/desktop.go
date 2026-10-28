@@ -3,7 +3,7 @@
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
 // desktop.go 桌面客户端行为指纹上报（事件链业务字段按 WorkBuddy Desktop 5.8.3 安装包核对，
-// 公共字段与请求头照 5.8.3 安装包，见 eventFingerprint）。
+// 公共字段与请求头照 5.8.3 安装包，2026-10-28 对过 5.9.3 没变，见 eventFingerprint）。
 //
 // 来源：2026-09-12 Sunny 抓包实测（data/desktop-task-protocol.md）。桌面端点亮
 // 「需电脑端」类任务的关键不是独立端点，而是同一 POST /v2/report 通道上
@@ -61,11 +61,11 @@ const (
 // 不受 user_agent 覆盖影响（同以前）。
 func (c *Client) desktopUA(a *auth.Auth) string { return c.defaultDaemonUA(a) }
 
-// 国内版桌面端 5.8.3 安装包 product.json 的 commit 与 date（毫秒）。任务中心只对国内版个人号
-// 开放，这里只需要国内版的值。配了 client_version 时版本号跟着变，这两项不变。
+// 国内版桌面端 5.9.3（macOS arm64）安装包 cli/product.json 的 commit 与 date（毫秒）。任务中心只对
+// 国内版个人号开放，这里只需要国内版的值。配了 client_version 时版本号跟着变，这两项不变。
 const (
-	desktopCommit      = "64d249bed3dec40edd720537d96f27e70a3f6a4f"
-	desktopReleaseDate = int64(1791972709257) // 2026-10-14T10:11:49.257Z
+	desktopCommit      = "d46924219e79332f49c37ccebf27292f87001b19"
+	desktopReleaseDate = int64(1793093023713) // 2026-10-27T09:23:43.713Z
 )
 
 // desktopBase 桌面端 /v2/report 与 user-asset 走 chatBase（国内版 www.workbuddy.cn）。
@@ -138,7 +138,7 @@ func rendererEvent(ev DesktopEvent) DesktopEvent {
 }
 
 // eventFingerprint 官方上报服务给每个事件补的公共字段（5.8.3 后台服务与内置 CLI 的事件处理器，
-// 两边相同）：
+// 两边相同；5.9.3 的一样）：
 //   - ProductInfo：product、releaseDate（product.json 的 date 转毫秒）、commit；
 //   - Userinfo：userId、username 与 userNickname（官方都取昵称）、企业号的 enterpriseId 与
 //     enterprise（部门全名）；
@@ -147,7 +147,8 @@ func rendererEvent(ev DesktopEvent) DesktopEvent {
 //     sessionId。
 //
 // 官方有、网关没有值的不带：downloadChannel（安装包没配）、qimei36（macOS 版拿不到）、
-// clientIp（只有国际版查，任务中心不对国际版开放）、buddyId / buddyName、expKeys。
+// clientIp（只有国际版查，任务中心不对国际版开放）、buddyId / buddyName、expKeys，以及 5.9.3
+// 新加的 oneId（账号绑了 BuddyOne 才有）。
 func (c *Client) eventFingerprint(a *auth.Auth, sessionID string) map[string]any {
 	ver := c.clientVersion(a)
 	fp := map[string]any{
@@ -604,6 +605,46 @@ type MarketExpert struct {
 	ProfessionZH  string `json:"profession_zh"`
 	Version       string `json:"version"`
 	Categories    []any  `json:"categories"`
+	// 云端 / 付费判定字段（决定专家对话带不带 X-Moderation-Type，见 Protected）：
+	// is_cloud===1 为云端专家；付费看 pay_detail 的 pay_mode，缺省回落 need_pay===1。
+	IsCloud   int              `json:"is_cloud"`
+	NeedPay   int              `json:"need_pay"`
+	PayDetail *expertPayDetail `json:"pay_detail"`
+}
+
+// expertPayDetail 专家付费信息（pay_detail），官方 resolveExpertPayMode 读其 pay_mode / payMode。
+type expertPayDetail struct {
+	PayMode      *float64 `json:"pay_mode"`
+	PayModeCamel *float64 `json:"payMode"`
+}
+
+// Protected 该专家的对话要不要带 X-Moderation-Type: ["protected"]——对齐官方后台的
+// shouldProtectSession：云端专家（is_cloud===1）或付费专家（pay_detail 的 pay_mode，回落
+// need_pay===1）为真。官方还判「启用的技能里有云端技能」，网关的专家对话不加载技能，这条恒假，
+// 故只看专家本身的云端 / 付费属性。依据见 docs/official-client.md「几类请求」里的对话。
+func (e MarketExpert) Protected() bool {
+	if e.IsCloud == 1 {
+		return true
+	}
+	pm, ok := e.payMode()
+	return ok && pm > 0
+}
+
+// payMode 对齐官方 resolveExpertPayModeWithFallback：pay_detail 的 pay_mode / payMode（取到即用），
+// 缺省回落 need_pay===1 → 1。
+func (e MarketExpert) payMode() (float64, bool) {
+	if e.PayDetail != nil {
+		if e.PayDetail.PayMode != nil {
+			return *e.PayDetail.PayMode, true
+		}
+		if e.PayDetail.PayModeCamel != nil {
+			return *e.PayDetail.PayModeCamel, true
+		}
+	}
+	if e.NeedPay == 1 {
+		return 1, true
+	}
+	return 0, false
 }
 
 // MarketExpertList 拉取专家市场真实专家列表（expertType: "agent" 单专家 / "team" 专家团）。
@@ -696,9 +737,10 @@ func jsLength(s string) int { return len(utf16.Encode([]rune(s))) }
 // （客户端 resolveRealRequestId 同款语义，Sunny row 2113 实证）。
 //
 // 依据：官方专家对话就是一次普通的内置 CLI 对话，只多带 X-Expert-Id: <专家 id>；
-// team 为 true（专家团，市场列表的 expert_type=team）时另带 X-Expert-Team-Task: true。
+// team 为 true（专家团，市场列表的 expert_type=team）时另带 X-Expert-Team-Task: true；
+// protected 为真（云端 / 付费专家，见 MarketExpert.Protected）时另带 X-Moderation-Type: ["protected"]。
 // 会话 id、轮次 id 同官方新会话（NewConversationID、NewRequestID）。
-func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string, team bool) (conversationID, requestID string, err error) {
+func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string, team, protected bool) (conversationID, requestID string, err error) {
 	conversationID = NewConversationID()
 	body := map[string]any{
 		"model": "fast-model",
@@ -720,6 +762,7 @@ func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string, team bool)
 		ConversationRequestID: NewRequestID(),
 		ExpertID:              expertID,
 		ExpertTeamTask:        team,
+		Protected:             protected,
 	})
 	if err != nil && status == 0 {
 		// 传输错误原样返回。

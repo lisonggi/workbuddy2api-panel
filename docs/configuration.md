@@ -103,13 +103,14 @@
 | `upstream.header_timeout_seconds` | 同 `timeout_seconds` | 聊天请求等到首字节的上限 |
 | `upstream.idle_timeout_seconds` | `300` | 聊天流中途无数据的上限 |
 | `upstream.user_agent` | 空 | 出站 User-Agent 整体覆盖（任务中心的桌面端上报、外观设置、专家列表除外）。空 = 按请求的来源取官方的 UA：对话、刷新令牌、模型目录由桌面端内置的 CLI 发，形如 `WorkBuddy/<client_version> <应用名>/<client_version> CLI/<cli_version>`；积分、签到、登录、上报由桌面端后台服务发，前两段对调；成长中心、积分补偿、新手礼包、试用只在官网网页上调，用 Mac 上 Chrome 的 UA。应用名国内版是 `WorkBuddy`，国际版是 `workbuddy-ai` |
-| `upstream.client_version` | 空（国内版 `5.8.3`，国际版 `5.8.4`） | UA 与 `X-IDE-Version` 里的桌面端版本；填了就两个域都用这个值 |
-| `upstream.cli_version` | 空（= `2.161.0`） | UA 里 `CLI/` 段的版本（两个域的桌面端内置的都是这一版） |
+| `upstream.client_version` | 空（国内版 `5.9.3`，国际版 `5.8.4`） | UA 与 `X-IDE-Version` 里的桌面端版本；填了就两个域都用这个值 |
+| `upstream.cli_version` | 空（国内版 `2.165.0`，国际版 `2.161.0`） | UA 里 `CLI/` 段的版本，是各域桌面端内置 CLI 的版本；填了就两个域都用这个值 |
 | `upstream.client_name` | 空（= `WorkBuddy`） | 对话请求的归属头。空或 `WorkBuddy` 时按官方桌面端发送 `X-Agent-Purpose`、`X-IDE-Name`、`X-IDE-Type`、`X-IDE-Version`；配 `SaaS` 是旧行为，对话不带这几个头，积分、签到这类请求不带 UA。`X-Product` 不受这项影响，和官方一样固定为 `SaaS` |
-| `upstream.device_token` | 空 | 设备风控头 `X-Device-Token` 的全局兜底值；单个凭证文件里的 `device_token` 优先。和官方一样只在签到和登录的发起授权上带 |
+| `upstream.device_token` | 空 | 设备风控头 `X-Device-Token` 的全局兜底值；单个凭证文件里的 `device_token` 优先。签到、登录的发起授权，以及对话都带（对话只在填了才带——网关在 Linux 做不出真令牌，没填就不发），见[官方客户端对照](official-client.md#几类请求) |
 | `upstream.device_token_file` | 空 | 从文件读取 device token（5 分钟缓存），优先级低于前两者 |
 | `upstream.passthrough_ip` | `false` | 是否把客户端 IP 透传给上游 |
-| `upstream.model_optimization` | `false` | 是否允许上游用对话做模型优化。关闭时每条对话都带 `X-Private-Data: true`，和官方桌面端没动过「模型优化」开关时一样；打开等于在桌面端打开这个开关，个人号发 `false`，企业号仍发 `true`（新版官方 CLI 对企业号一律不允许）。面板「上游与高级 → 出站请求」可改，保存即生效 |
+| `upstream.model_optimization` | `false` | 是否允许上游用对话做模型优化。关闭时每条对话都带 `X-Private-Data: true`（不允许），等于在桌面端手动关掉「模型优化」：国际版 5.8.4 没动过这个开关时也是这样，国内版 5.9.3 起没动过时个人号发 `false`（允许）。打开时个人号发 `false`，企业号（有企业 id，或账号类型是 `ultimate`、`exclusive`）仍发 `true`，和国内版 5.9.3 没动过开关时一样。面板「上游与高级 → 出站请求」可改，保存即生效 |
+| `upstream.tls_fingerprint` | `true` | 出站 TLS 握手是否伪装成官方桌面端的 ClientHello（用 uTLS 复刻，降低被按握手指纹识别的概率，见[官方客户端对照](official-client.md#没对齐或没实测的)）。默认开；关掉回落 Go 标准库握手。改 config 后重载生效，对新建连接起用 |
 
 ### 提示词与脱敏
 
@@ -193,6 +194,7 @@
 | `WB2A_DEVICE_TOKEN` / `WB2A_DEVICE_TOKEN_FILE` | `upstream.device_token` / `upstream.device_token_file` |
 | `WB2A_PASSTHROUGH_IP` | `upstream.passthrough_ip`（布尔） |
 | `WB2A_MODEL_OPTIMIZATION` | `upstream.model_optimization`（布尔） |
+| `WB2A_TLS_FINGERPRINT` | `upstream.tls_fingerprint`（布尔） |
 | `WB2A_SANITIZE_FINGERPRINTS` | `features.sanitize_blacklist_fingerprints`（布尔） |
 | `WB2A_PROMPT_MODE` / `WB2A_PROMPT_FILE` | `prompt.mode` / `prompt.file` |
 | `WB2A_PREFER_EXPIRING` / `WB2A_EXPIRING_SOON` | `pool.prefer_expiring`（布尔） / `pool.expiring_soon` |

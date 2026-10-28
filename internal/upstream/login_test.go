@@ -47,13 +47,13 @@ func loginTestHost(global bool) string {
 }
 
 func loginTestUA(global bool) string {
-	v := defaultClientVersionCN
+	v, cli := defaultClientVersionCN, defaultCliVersionCN
 	app := "WorkBuddy"
 	if global {
-		v = defaultClientVersionGlobal
+		v, cli = defaultClientVersionGlobal, defaultCliVersionGlobal
 		app = "workbuddy-ai"
 	}
-	return app + "/" + v + " WorkBuddy/" + v + " CLI/" + defaultCliVersion
+	return app + "/" + v + " WorkBuddy/" + v + " CLI/" + cli
 }
 
 // loginWantHeaderAbsent 表里标「不带」的头必须为空。

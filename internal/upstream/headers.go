@@ -14,20 +14,36 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/session"
 )
 
-// 官方取值依据：WorkBuddy 桌面端安装包（国内版 WorkBuddy-darwin-arm64-5.8.3、国际版 5.8.4，
-// 都内置 CLI @tencent-ai/codebuddy-code 2.161.0）。对话、刷新令牌、模型目录由内置 CLI 发；积分、
-// 签到、成长任务、旅行、上报由桌面端后台服务发。两者用同一套请求框架，UA 段序不同。
+// 官方取值依据：WorkBuddy 桌面端安装包（国内版 WorkBuddy-darwin-arm64-5.9.3，内置 CLI
+// @tencent-ai/codebuddy-code 2.165.0；国际版 5.8.4，内置 2.161.0）。对话、刷新令牌、模型目录由内置
+// CLI 发；积分、签到、成长任务、旅行、上报由桌面端后台服务发。两者用同一套请求框架，UA 段序不同。
 const (
 	// defaultClientVersionCN / defaultClientVersionGlobal 两域桌面端版本（UA 与 X-IDE-Version）。
 	// config upstream.client_version 可覆盖（两域共用一个值，空 = 内置默认）。
-	defaultClientVersionCN     = "5.8.3"
+	defaultClientVersionCN     = "5.9.3"
 	defaultClientVersionGlobal = "5.8.4"
-	// defaultCliVersion 桌面端内置 CLI 的版本（UA 的 `CLI/<ver>` 段），两域相同。
-	// config upstream.cli_version 可覆盖（空 = 内置默认）。
-	defaultCliVersion = "2.161.0"
+	// defaultCliVersionCN / defaultCliVersionGlobal 两域桌面端内置 CLI 的版本（UA 的 `CLI/<ver>` 段）。
+	// config upstream.cli_version 可覆盖（两域共用一个值，空 = 内置默认）。
+	defaultCliVersionCN     = "2.165.0"
+	defaultCliVersionGlobal = "2.161.0"
 	// deploymentType 两域 product.json 的 deploymentType。官方请求框架的 ProductEndpointHttpInterceptor
 	// 把它作为 X-Product 加到经过框架的每个请求上（对话、刷新令牌、模型目录、积分等都在内）。
 	deploymentType = "SaaS"
+	// X-Stainless-* 的固定取值依据：内置 CLI 的对话经 OpenAI SDK（@openai 的 JS 版）发出，SDK 的
+	// buildHeaders 给每个请求加这组头（见 cli/dist/lazy-lite-wb/3043.*.mjs，2.161.0 与 2.165.0 是同一份），
+	// axiosToFetchAdapter 把 SDK 的头原样交给出站（只删 authorization 与 user-agent）。
+	//   - stainlessPackageVersion：SDK 版本（X-Stainless-Package-Version），两域内置 CLI 同为 6.25.0。
+	//   - stainlessTimeout：X-Stainless-Timeout，SDK 取客户端 timeout（桌面端 resolveRequestTimeoutMs
+	//     默认 1200000ms，未设 CODEBUDDY_FIRST_TOKEN_TIMEOUT_MS）/1000 = 1200。
+	//   - stainlessRetryCount：X-Stainless-Retry-Count 是当前重试计数；桌面端 maxRetries=0，只发一次，恒 0。
+	stainlessPackageVersion = "6.25.0"
+	stainlessTimeout        = "1200"
+	stainlessRetryCount     = "0"
+	// nodeRuntimeVersionCN / nodeRuntimeVersionGlobal 两域桌面端 Electron 内置的 Node 版本
+	// （X-Stainless-Runtime-Version = process.version）。国内版 5.9.3 的 Electron 37.10.3 内置 v22.21.1
+	// （2026-10-28 读 Electron Framework 实测，与 5.8.3 相同）。
+	nodeRuntimeVersionCN     = "v22.21.1"
+	nodeRuntimeVersionGlobal = "v22.21.1"
 )
 
 // clientVersion 生效的桌面端版本：Client.ClientVersion 非空则取之，否则按账号域取内置默认。
@@ -41,12 +57,15 @@ func (c *Client) clientVersion(a *auth.Auth) string {
 	return defaultClientVersionCN
 }
 
-// cliVersion 生效的 CLI 版本：Client.CliVersion 非空则取之，否则内置默认 defaultCliVersion。
-func (c *Client) cliVersion() string {
+// cliVersion 生效的 CLI 版本：Client.CliVersion 非空则取之，否则按账号域取内置默认。
+func (c *Client) cliVersion(a *auth.Auth) string {
 	if c != nil && c.CliVersion != "" {
 		return c.CliVersion
 	}
-	return defaultCliVersion
+	if a != nil && a.IsGlobal() {
+		return defaultCliVersionGlobal
+	}
+	return defaultCliVersionCN
 }
 
 // applicationNameFor 两域桌面端 product.json 的 applicationName：国内版 "WorkBuddy"，国际版
@@ -60,17 +79,17 @@ func applicationNameFor(a *auth.Auth) string {
 
 // defaultCLIUA 内置 CLI 的 UA（UserAgentHttpInterceptor）：
 // `<platform>/<ver> <applicationName>/<ver> CLI/<cli>`，platform 由桌面端固定传 "WorkBuddy"。
-// 国内版 `WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0`，国际版 `WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0`。
+// 国内版 `WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0`，国际版 `WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0`。
 func (c *Client) defaultCLIUA(a *auth.Auth) string {
 	v := c.clientVersion(a)
-	return "WorkBuddy/" + v + " " + applicationNameFor(a) + "/" + v + " CLI/" + c.cliVersion()
+	return "WorkBuddy/" + v + " " + applicationNameFor(a) + "/" + v + " CLI/" + c.cliVersion(a)
 }
 
 // defaultDaemonUA 桌面端后台服务的 UA（WorkbuddyUserAgentHttpInterceptor）：applicationName 段在前，
 // `<applicationName>/<ver> WorkBuddy/<ver> CLI/<cli>`。国内版两段同名，与 CLI 的 UA 一样。
 func (c *Client) defaultDaemonUA(a *auth.Auth) string {
 	v := c.clientVersion(a)
-	return applicationNameFor(a) + "/" + v + " WorkBuddy/" + v + " CLI/" + c.cliVersion()
+	return applicationNameFor(a) + "/" + v + " WorkBuddy/" + v + " CLI/" + c.cliVersion(a)
 }
 
 // userAgent 内置 CLI 发的请求（对话、刷新令牌、模型目录）的 UA。
@@ -110,8 +129,11 @@ func (c *Client) resolveDeviceToken(a *auth.Auth) string {
 	return ""
 }
 
-// injectDeviceToken 在 req 注入 X-Device-Token 头（仅当取到非空 token）。官方只在签到
-// （getCheckinRequestHeaders）和登录前的 auth/state 上带它，对话和其他请求都不带。
+// injectDeviceToken 在 req 注入 X-Device-Token 头（仅当取到非空 token）。用在签到
+// （官方 getCheckinRequestHeaders）、登录前的 auth/state，以及对话上。官方的对话也带：桌面端后台
+// 服务每次提问前现取图灵盾设备令牌加在模型请求上（取不到时改发 X-Device-Token-Error，两样都没有
+// 时都不发）。网关在 Linux 做不出真令牌，对话只在使用者填了 device_token 时照发，没填就不发——对应
+// 官方「两样都没有」的状态，不造 X-Device-Token-Error，见 docs/official-client.md「几类请求」。
 func (c *Client) injectDeviceToken(req *http.Request, a *auth.Auth) {
 	if tok := c.resolveDeviceToken(a); tok != "" {
 		req.Header.Set("X-Device-Token", tok)
@@ -187,25 +209,33 @@ type ChatMeta struct {
 	TraceID               string // X-Trace-ID：入站透传值，空则回落 conversationRequestID
 	ExpertID              string // X-Expert-Id：专家对话的专家 id；空 = 普通对话，不发
 	ExpertTeamTask        bool   // X-Expert-Team-Task：专家团（市场 expert_type=team）为 true，只和 ExpertID 一起发
+	Protected             bool   // X-Moderation-Type: ["protected"]：云端 / 付费专家的对话才发（见 MarketExpert.Protected）
 }
 
-// ChatHeaders 设置 chat 出站请求头。形状对齐桌面端内置 CLI 2.161.0 的对话请求（见文件头），
-// 10-19 生产用国内版、国际版个人号逐项实测均 200：
+// ChatHeaders 设置 chat 出站请求头。形状对齐桌面端内置 CLI 的对话请求（国内版 2.165.0、国际版
+// 2.161.0，见文件头），10-19 生产用国内版、国际版个人号逐项实测均 200（当时两域都是 2.161.0）：
 //   - 官方对话请求不带 Origin / Referer / Accept-Language / X-CodeBuddy-Request / X-Machine-ID /
 //     X-Session-ID，也不带 X-No-*（那几个只在登录前的 auth/state、auth/token 上发）。
 //   - 账号头：Authorization、X-User-Id；企业号加 X-Enterprise-Id 与同值的 X-Tenant-Id，个人号
 //     两个都不发；有部门全名时加 X-Department-Info；X-Domain 取登录域（国际版固定
 //     www.workbuddy.ai），没有就不发。
 //   - X-Agent-Intent=craft、X-Agent-Type=main（主对话）、X-Private-Data（见 privateDataValue）。
+//   - 国内版加 X-Agent-Runtime=local-agent：2.165.0 每条对话都带，取会话的 agentRuntime，桌面端
+//     5.9.3 给本地对话（含专家对话）设的就是 local-agent；国际版 5.8.4 内置的 2.161.0 没有这个头。
 //   - UA、X-IDE-* 取桌面端传给内置 CLI 的值（见 defaultCLIUA、injectAttribution）；X-Product 是
-//     请求框架给每个请求加的 deploymentType；不带 X-Device-Token。
+//     请求框架给每个请求加的 deploymentType。
+//   - Accept 与 8 个 X-Stainless-* 照 OpenAI SDK 的 buildHeaders 发（见 injectSDKHeaders）：官方对话
+//     经 SDK 发出，这组头是 SDK 加的、出站适配器原样保留的。
+//   - X-Device-Token：官方后台服务每次提问前加（图灵盾令牌）；网关在 Linux 做不出真令牌，只在
+//     使用者填了 device_token 时照发（injectDeviceToken），没填不发。
+//   - X-Moderation-Type：官方后台对云端 / 付费专家的对话加（shouldProtectSession）；网关只在
+//     专家对话且该专家云端 / 付费时发（meta.Protected，见 MarketExpert.Protected），普通对话不带。
 //
 // clientIP 为本次请求的客户端 IP（按参数传递，不读共享字段——避免并发串扰）；
 // PassthroughIP=false 或 clientIP 为空时不注入 IP 头。
 // meta 为会话头族元数据，见 injectConversationHeaders。
 func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, meta ChatMeta) {
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Accept-Encoding", acceptEncodingAxios)
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("User-Agent", c.userAgent(a))
@@ -229,10 +259,19 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	}
 	req.Header.Set("X-Agent-Intent", "craft")
 	req.Header.Set("X-Agent-Type", "main")
+	if !a.IsGlobal() {
+		req.Header.Set("X-Agent-Runtime", "local-agent")
+	}
 	req.Header.Set("X-Private-Data", c.privateDataValue(a))
 	req.Header.Set("X-Product", deploymentType)
-	// 用量归属头：默认同官方桌面端（client_name="SaaS" 还原旧行为）。
+	// 用量归属头（X-Agent-Purpose / X-IDE-*）与 OpenAI SDK 的对话头（Accept、X-Stainless-*）：
+	// 默认都伪装官方桌面端；client_name="SaaS" 还原旧行为（见各自函数注释）。
 	c.injectAttribution(req, a)
+	c.injectSDKHeaders(req, a)
+	// X-Device-Token：官方后台服务每次提问前现取图灵盾设备令牌加在模型请求上；网关在 Linux
+	// 做不出真令牌，只在使用者填了 device_token（账号 / config / 文件）时照发，没填就不发——
+	// 对应官方「令牌和错误码都没有时都不发」的状态，不凭空造 X-Device-Token-Error。
+	c.injectDeviceToken(req, a)
 	// X-Expert-Id 是官方专家插件激活时追加的内部请求头，专家团另带 X-Expert-Team-Task: true
 	// （桌面端 applyPreparedExpertSettings：expertType === "team"）；普通对话都不带。
 	if meta.ExpertID != "" {
@@ -241,9 +280,13 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 			req.Header.Set("X-Expert-Team-Task", "true")
 		}
 	}
+	// X-Moderation-Type: ["protected"]：官方后台对云端 / 付费专家的对话加（shouldProtectSession）；
+	// 网关只在专家对话且该专家云端 / 付费时发（meta.Protected，见 MarketExpert.Protected）。普通对话不发。
+	if meta.Protected {
+		req.Header.Set("X-Moderation-Type", `["protected"]`)
+	}
 	// 客户端 IP 透传（仅 PassthroughIP=true 且本次请求带 IP）。
 	c.injectClientIP(req, clientIP)
-	// 不带 X-Device-Token：官方只在签到和登录前的 auth/state 上带。
 	// X-Conversation-ID 官方每条都发（值是整段对话不变的会话 id）。国际版不带一律 400
 	// code=11128 "request illegal"（10-19 生产实测），国内版不带也能用，同样补上对齐官方。
 	// 入站对话的 id 由 handler 定好（同一段对话不变，换号也不变，上游据此命中前缀缓存，
@@ -265,12 +308,14 @@ func chatDomain(a *auth.Auth) string {
 }
 
 // privateDataValue X-Private-Data 取值，告诉上游这段对话能不能拿去做模型优化。默认一律
-// "true"（不允许），和官方桌面端默认相同：桌面端 5.8.3 / 5.8.4 的产品配置都开了
-// DisableYuanbaoChannel，用户没动过「模型优化」开关时内置 CLI 2.161.0 就发 "true"。
-// upstream.model_optimization 打开后等于用户在桌面端打开了开关：个人号 "false"；企业号仍发
-// "true"（npm 上的 CLI 2.169.0 对企业号一律不允许，取更保守的一边）。
+// "true"（不允许）。国际版 5.8.4 内置的 2.161.0 在用户没动过「模型优化」开关时也发 "true"（产品
+// 配置开了 DisableYuanbaoChannel）；国内版 5.9.3 内置的 2.165.0 改了：没动过时按产品开关
+// DefaultModelOptimizationOff（包里是 false）算，个人版发 "false"、企业版发 "true"，所以对国内版来说
+// 网关的默认等于用户在桌面端手动关了这个开关。2026-10-28 用户定：默认仍不允许。
+// upstream.model_optimization 打开后个人版发 "false"；企业版（有企业 id，或账号类型是 ultimate /
+// exclusive，同官方 isEnterpriseEditionAccount）仍发 "true"，和官方没动过开关时一样。
 func (c *Client) privateDataValue(a *auth.Auth) string {
-	if c != nil && c.ModelOptimization.Load() && !a.IsEnterprise() {
+	if c != nil && c.ModelOptimization.Load() && isPersonalEdition(a.EnterpriseID, a.AccountTypeValue()) {
 		return "false"
 	}
 	return "true"
@@ -365,6 +410,79 @@ func (c *Client) injectAttribution(req *http.Request, a *auth.Auth) {
 	req.Header.Set("X-IDE-Name", name)
 	req.Header.Set("X-IDE-Type", name)
 	req.Header.Set("X-IDE-Version", c.clientVersion(a))
+}
+
+// injectSDKHeaders 注入官方对话经 OpenAI SDK 发出时 SDK 自带的头：Accept 与 8 个 X-Stainless-*。
+// 官方内置 CLI 用 OpenAI SDK 的 fetch 适配器发对话，SDK buildHeaders 给每个请求加 Accept:
+// application/json（chat/completions 不是二进制端点，走默认 Accept；这版 SDK 流式也不改 Accept，
+// 由请求体 stream:true 决定流式）与这组 X-Stainless-* 指纹头，适配器只删 authorization 与
+// user-agent，其余原样发出。取值见 stainless* 常量；OS / Arch 由设备指纹（deviceOS / deviceArch）
+// 按 SDK 的 normalizePlatform / normalizeArch 映射而来，与 desktop.go 的设备信息同源，不会自相矛盾；
+// Runtime-Version 取对应域桌面端 Electron 内置的 Node 版本。
+//
+// client_name="SaaS"（旧行为）不伪装桌面端：不发 X-Stainless-*，Accept 保持 1.x 起的两值。
+func (c *Client) injectSDKHeaders(req *http.Request, a *auth.Auth) {
+	if c.attributionClientName() == "SaaS" {
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Stainless-Retry-Count", stainlessRetryCount)
+	req.Header.Set("X-Stainless-Timeout", stainlessTimeout)
+	req.Header.Set("X-Stainless-Lang", "js")
+	req.Header.Set("X-Stainless-Package-Version", stainlessPackageVersion)
+	req.Header.Set("X-Stainless-OS", stainlessOS(deviceOS))
+	req.Header.Set("X-Stainless-Arch", stainlessArch(deviceArch))
+	req.Header.Set("X-Stainless-Runtime", "node")
+	req.Header.Set("X-Stainless-Runtime-Version", nodeRuntimeVersion(a))
+}
+
+// nodeRuntimeVersion 本次对话 X-Stainless-Runtime-Version 的取值：按账号域取桌面端 Electron 的 Node 版本。
+func nodeRuntimeVersion(a *auth.Auth) string {
+	if a != nil && a.IsGlobal() {
+		return nodeRuntimeVersionGlobal
+	}
+	return nodeRuntimeVersionCN
+}
+
+// stainlessOS 复刻 OpenAI SDK 的 normalizePlatform（lazy-lite-wb/3043）：把 Node 的 process.platform
+// 映射成 X-Stainless-OS。设备指纹是 darwin（→ MacOS），这里一并覆盖桌面端可能的取值，换指纹时跟着变。
+func stainlessOS(platform string) string {
+	switch strings.ToLower(platform) {
+	case "darwin":
+		return "MacOS"
+	case "win32":
+		return "Windows"
+	case "linux":
+		return "Linux"
+	case "freebsd":
+		return "FreeBSD"
+	case "openbsd":
+		return "OpenBSD"
+	case "":
+		return "Unknown"
+	default:
+		return "Other:" + strings.ToLower(platform)
+	}
+}
+
+// stainlessArch 复刻 OpenAI SDK 的 normalizeArch（lazy-lite-wb/3043）：把 Node 的 process.arch
+// 映射成 X-Stainless-Arch。设备指纹是 arm64（→ arm64）。
+func stainlessArch(arch string) string {
+	switch arch {
+	case "x32":
+		return "x32"
+	case "x64", "x86_64":
+		return "x64"
+	case "arm":
+		return "arm"
+	case "arm64", "aarch64":
+		return "arm64"
+	case "":
+		return "unknown"
+	default:
+		return "other:" + arch
+	}
 }
 
 // injectClientIP 在 PassthroughIP 开启时把 clientIP 参数透传给上游（三等价头）。

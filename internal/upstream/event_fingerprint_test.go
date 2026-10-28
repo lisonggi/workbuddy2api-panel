@@ -4,7 +4,7 @@
 
 package upstream
 
-// event_fingerprint_test.go 上报事件的公共字段：按 5.8.3 的事件处理器、macOS 版官方客户端
+// event_fingerprint_test.go 上报事件的公共字段：按 5.8.3 的事件处理器（5.9.3 没变）、macOS 版官方客户端
 // （desktop.go 的 eventFingerprint），官网网页按前端代码从 UA 解析系统。不连外网。
 
 import (
@@ -27,9 +27,9 @@ func TestEventFingerprintMacOS(t *testing.T) {
 		"reportDelay": eventReportDelay, "timezone": "Asia/Shanghai",
 		"userId": "u-1", "username": "测试号", "userNickname": "测试号",
 		"product": "SaaS", "releaseDate": desktopReleaseDate, "commit": desktopCommit,
-		"ideName": "WorkBuddy", "ideType": "WorkBuddy", "ideVersion": "5.8.3",
+		"ideName": "WorkBuddy", "ideType": "WorkBuddy", "ideVersion": "5.9.3",
 		"machineId": desktopMachineID(a), "sessionId": "",
-		"extName": "workbuddy-desktop", "extVersion": "5.8.3",
+		"extName": "workbuddy-desktop", "extVersion": "5.9.3",
 		"os": "darwin", "arch": "arm64", "osVersion": "24.6.0",
 		"cpuModel": "Apple M2", "cpuCores": 8, "memorySize": 16,
 	}

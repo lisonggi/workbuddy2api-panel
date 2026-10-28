@@ -162,7 +162,7 @@ export const CONFIG_TABS: ConfigTab[] = [
       {
         title: '出站请求',
         fields: [
-          { name: 'user_agent', path: ['upstream', 'user_agent'], label: '出站 User-Agent', kind: 'text', placeholder: '留空 = 按账号域对齐官方桌面端（国内版 WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0）', hint: '影响官网积分记录「使用端」显示', restart: true, clearable: true },
+          { name: 'user_agent', path: ['upstream', 'user_agent'], label: '出站 User-Agent', kind: 'text', placeholder: '留空 = 按账号域对齐官方桌面端（国内版 WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0）', hint: '影响官网积分记录「使用端」显示', restart: true, clearable: true },
           {
             name: 'prompt_mode', path: ['prompt', 'mode'], label: '系统提示词模式', kind: 'select', restart: true,
             options: [

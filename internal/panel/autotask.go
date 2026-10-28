@@ -964,7 +964,7 @@ func runBlackCat(p *Panel, a *auth.Auth) (string, error) {
 // id）。此前的 skill_request_send/skill_installed/skill_action 全是错误方向。
 // 人杰2 实测 0/1 → 1/1 点亮。
 func runSkillFresh(p *Panel, a *auth.Auth) (string, error) {
-	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, "", false)
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, "", false, false)
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
@@ -1019,7 +1019,7 @@ func runExpertLighthouse(p *Panel, a *auth.Auth) (string, error) {
 		return "", fmt.Errorf("召唤链: %w", err)
 	}
 	summonedAt := time.Now()
-	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, lhID, lh.ExpertType == "team")
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, lhID, lh.ExpertType == "team", lh.Protected())
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
@@ -1182,7 +1182,7 @@ func (p *Panel) summonAndUseExpert(a *auth.Auth, e upstream.MarketExpert) error 
 		return fmt.Errorf("召唤链: %w", err)
 	}
 	summonedAt := time.Now()
-	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID, e.ExpertType == "team")
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID, e.ExpertType == "team", e.Protected())
 	if err != nil {
 		return fmt.Errorf("真实对话: %w", err)
 	}

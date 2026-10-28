@@ -19,8 +19,8 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream/upstreamtest"
 )
 
-// testDesktopUA 任务中心桌面端请求的 UA：国内版桌面端 5.8.3、内置 CLI 2.161.0（跟随网关其余请求）。
-const testDesktopUA = "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"
+// testDesktopUA 任务中心桌面端请求的 UA：国内版桌面端 5.9.3、内置 CLI 2.165.0（跟随网关其余请求）。
+const testDesktopUA = "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0"
 
 // TestReportDesktopEventFingerprint 断言桌面指纹上报：走 chatBase、UA 为桌面形状、
 // 事件数组自动注入 workbuddy-desktop 公共指纹（覆盖同名业务键）。
@@ -754,6 +754,30 @@ func (r *chunkReader) Read(p []byte) (int, error) {
 
 func (r *chunkReader) Close() error { return nil }
 
+// TestMarketExpertProtected 专家对话要不要带 X-Moderation-Type 的判定（对齐官方 shouldProtectSession）：
+// 云端（is_cloud===1）或付费（pay_detail.pay_mode / payMode，回落 need_pay===1）为真。
+func TestMarketExpertProtected(t *testing.T) {
+	pm := func(v float64) *float64 { return &v }
+	for _, tc := range []struct {
+		name string
+		e    MarketExpert
+		want bool
+	}{
+		{"云端 is_cloud=1", MarketExpert{IsCloud: 1}, true},
+		{"付费 pay_detail.pay_mode", MarketExpert{PayDetail: &expertPayDetail{PayMode: pm(2)}}, true},
+		{"付费 pay_detail.payMode", MarketExpert{PayDetail: &expertPayDetail{PayModeCamel: pm(1)}}, true},
+		{"付费回落 need_pay=1", MarketExpert{NeedPay: 1}, true},
+		{"pay_mode=0 不算付费", MarketExpert{PayDetail: &expertPayDetail{PayMode: pm(0)}}, false},
+		{"免费非云端", MarketExpert{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.e.Protected(); got != tc.want {
+				t.Errorf("Protected() = %v，want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDesktopChatWithExpert 真实桌面 chat：请求头/体形状、从 SSE 抓服务端
 // requestId（跳过不合规的 id）、上游失败与找不到 id 的错误。
 func TestDesktopChatWithExpert(t *testing.T) {
@@ -769,7 +793,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 		c.UserAgent = "custom-cli/9.9"
 		a := upAuth()
 		a.Domain = "www.codebuddy.cn"
-		conv, reqID, err := c.DesktopChatWithExpert(a, "ex_1", false)
+		conv, reqID, err := c.DesktopChatWithExpert(a, "ex_1", false, false)
 		if err != nil {
 			t.Fatalf("DesktopChatWithExpert: %v", err)
 		}
@@ -783,7 +807,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 		r := f.seen()[0]
 		for k, want := range map[string]string{
 			"Authorization":       "Bearer at",
-			"Accept":              "application/json, text/event-stream",
+			"Accept":              "application/json",
 			"User-Agent":          "custom-cli/9.9",
 			"X-Domain":            "www.codebuddy.cn",
 			"X-Product":           "SaaS",
@@ -793,9 +817,10 @@ func TestDesktopChatWithExpert(t *testing.T) {
 			"X-Agent-Type":        "main",
 			"X-IDE-Name":          "WorkBuddy",
 			"X-IDE-Type":          "WorkBuddy",
-			"X-IDE-Version":       "5.8.3",
+			"X-IDE-Version":       "5.9.3",
 			"X-Expert-Id":         "ex_1",
 			"X-Expert-Team-Task":  "",
+			"X-Moderation-Type":   "",
 			"x-codebuddy-request": "",
 		} {
 			if got := r.header.Get(k); got != want {
@@ -819,12 +844,23 @@ func TestDesktopChatWithExpert(t *testing.T) {
 	t.Run("专家团另带 X-Expert-Team-Task", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200, "data: {\"id\":\""+validID+"\"}\n\n")
-		if _, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "ex_team", true); err != nil {
+		if _, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "ex_team", true, false); err != nil {
 			t.Fatalf("DesktopChatWithExpert: %v", err)
 		}
 		h := f.seen()[0].header
 		if h.Get("X-Expert-Id") != "ex_team" || h.Get("X-Expert-Team-Task") != "true" {
 			t.Errorf("X-Expert-Id = %q，X-Expert-Team-Task = %q", h.Get("X-Expert-Id"), h.Get("X-Expert-Team-Task"))
+		}
+	})
+
+	t.Run("云端 / 付费专家带 X-Moderation-Type", func(t *testing.T) {
+		f := newUpFake(t)
+		f.on(http.MethodPost, path, 200, "data: {\"id\":\""+validID+"\"}\n\n")
+		if _, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "ex_cloud", false, true); err != nil {
+			t.Fatalf("DesktopChatWithExpert: %v", err)
+		}
+		if got := f.seen()[0].header.Get("X-Moderation-Type"); got != `["protected"]` {
+			t.Errorf("X-Moderation-Type = %q，应为 [\"protected\"]", got)
 		}
 	})
 
@@ -836,7 +872,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 				[]byte("data: {\"id\":\"" + validID + "\"}\n\n"),
 			}}}, nil
 		})
-		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
+		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false, false)
 		if err != nil || reqID != validID {
 			t.Fatalf("reqID=%q err=%v，应为 %q", reqID, err, validID)
 		}
@@ -846,7 +882,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200,
 			"data: {\"id\":\"chatcmpl-not-a-request-id\",\"x\":{\"id\":\"\"}}\n\ndata: {\"id\":\""+validID+"\"}\n\n")
-		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
+		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false, false)
 		if err != nil || reqID != validID {
 			t.Fatalf("reqID=%q err=%v，应为 %q", reqID, err, validID)
 		}
@@ -860,7 +896,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 				[]byte(validID[10:] + "\"}\n\n"),
 			}}}, nil
 		})
-		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
+		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false, false)
 		if err != nil || reqID != validID {
 			t.Fatalf("reqID=%q err=%v，应为 %q", reqID, err, validID)
 		}
@@ -869,7 +905,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 	t.Run("裸 32hex 也接受", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200, "data: {\"id\":\""+bareID+"\"}\n\n")
-		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
+		_, reqID, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false, false)
 		if err != nil || reqID != bareID {
 			t.Fatalf("reqID=%q err=%v", reqID, err)
 		}
@@ -881,7 +917,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 	t.Run("上游 400", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 400, `{"code":400,"msg":"bad chat"}`)
-		_, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
+		_, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false, false)
 		if err == nil || !strings.Contains(err.Error(), "chat http 400") || !strings.Contains(err.Error(), "bad chat") {
 			t.Fatalf("err = %v，应含 chat http 400 与响应体", err)
 		}
@@ -890,7 +926,7 @@ func TestDesktopChatWithExpert(t *testing.T) {
 	t.Run("SSE 没有合规 id", func(t *testing.T) {
 		f := newUpFake(t)
 		f.on(http.MethodPost, path, 200, "data: {\"id\":\"nope\"}\n\n")
-		_, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false)
+		_, _, err := upClient(f).DesktopChatWithExpert(upAuth(), "", false, false)
 		if err == nil || !strings.Contains(err.Error(), "未找到服务端 requestId") {
 			t.Fatalf("err = %v，应提示未找到 requestId", err)
 		}
@@ -986,14 +1022,14 @@ func TestDesktopExpertSequences(t *testing.T) {
 }
 
 // TestDesktopFingerprintFollowsClientVersion 事件指纹的版本跟 UA 用同一个客户端版本，
-// commit / releaseDate 取国内版 5.8.3 安装包的值。
+// commit / releaseDate 取国内版 5.9.3 安装包的值。
 func TestDesktopFingerprintFollowsClientVersion(t *testing.T) {
 	a := &auth.Auth{UID: "u-1"}
 	fp := (&Client{}).desktopFingerprint(a)
-	if fp["ideVersion"] != "5.8.3" || fp["extVersion"] != "5.8.3" {
-		t.Errorf("默认版本 = %v / %v，应为 5.8.3", fp["ideVersion"], fp["extVersion"])
+	if fp["ideVersion"] != "5.9.3" || fp["extVersion"] != "5.9.3" {
+		t.Errorf("默认版本 = %v / %v，应为 5.9.3", fp["ideVersion"], fp["extVersion"])
 	}
-	if fp["commit"] != desktopCommit || fp["releaseDate"] != desktopReleaseDate {
+	if fp["commit"] != "d46924219e79332f49c37ccebf27292f87001b19" || fp["releaseDate"] != int64(1793093023713) {
 		t.Errorf("commit / releaseDate = %v / %v", fp["commit"], fp["releaseDate"])
 	}
 	fp = (&Client{ClientVersion: "6.0.0"}).desktopFingerprint(a)
