@@ -73,6 +73,12 @@ type Pool struct {
 	// maxInFlightGlobal global 域单账号在途上限分档（WAF 403 修复 P1-1：global 域
 	// WAF 风控更紧，压低并发）；0 = 未设置，回落 maxInFlight（不分档，零回归）。
 	maxInFlightGlobal int
+	// inFlightWait 能接请求的号在途都满时，请求最多等多久空位（SetInFlightWait 注入；默认
+	// defaultInFlightWait 30s，0 = 不等）。见 slotwait.go。
+	inFlightWait time.Duration
+	// slotMu / slotFreed 放出在途名额的通知（见 SlotFreed）；slotFreed 为 nil = 没人在等。
+	slotMu    sync.Mutex
+	slotFreed chan struct{}
 	// waveThreshold / waveWindow / wavePause 风控波熔断参数（SetRestrictionWave 注入；
 	// 默认值见 defaultRestrictionWave*，threshold 0 = 关闭）。waveHits 是各域窗口内
 	// 被 11140 限制的记录，运行态，不持久化（重启后从零记起）。
@@ -115,6 +121,7 @@ func New(stateFp string) *Pool {
 		// config 显式 "0" 关停（SetCostExploreInterval(0)）。
 		costExploreInterval: defaultCostExploreInterval,
 		exploreLast:         map[string]time.Time{},
+		inFlightWait:        defaultInFlightWait,
 		waveThreshold:       defaultRestrictionWaveThreshold,
 		waveWindow:          defaultRestrictionWaveWindow,
 		wavePause:           defaultRestrictionWavePause,
@@ -348,7 +355,8 @@ func (p *Pool) Acquire(uid string) bool {
 	}
 }
 
-// Release 释放一个在途名额。幂等减到 0 为止（防重复释放扣成负数）。
+// Release 释放一个在途名额。幂等减到 0 为止（防重复释放扣成负数）。放出名额后叫醒在等空位的
+// 请求（见 slotwait.go）。
 func (p *Pool) Release(uid string) {
 	p.mu.RLock()
 	e, ok := p.byUID[uid]
@@ -362,6 +370,7 @@ func (p *Pool) Release(uid string) {
 			return
 		}
 		if e.inFlight.CompareAndSwap(cur, cur-1) {
+			p.notifySlotFreed()
 			return
 		}
 	}

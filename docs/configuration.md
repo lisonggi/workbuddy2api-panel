@@ -109,6 +109,7 @@
 |---|---|---|
 | `pool.max_in_flight` | `3` | 国内版单账号最大在途请求数；`0` = 不限 |
 | `pool.max_in_flight_global` | `2` | 国际版单账号在途上限（国际版风控更紧） |
+| `pool.in_flight_wait` | `30s` | 能接请求的号在途都满时，请求最多排队等多久空位，等满才回 503，见[网关与选号](gateway.md#选号策略)；`0` = 不等 |
 | `pool.cross_realm` | `false` | 跨域负载均衡，见[网关与选号](gateway.md#跨域负载均衡) |
 | `pool.credit_floor` | `0` | 积分保底：余额低于该值的账号不再接实测收费的模型；`0` = 关闭 |
 | `pool.prefer_expiring` | `true` | 有积分快过期的账号选号权重 ×3，优先把快过期的积分用掉 |

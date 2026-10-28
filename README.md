@@ -243,6 +243,7 @@ flowchart LR
 - **其他 API 网关**：
   - [QuantumNous/new-api](https://github.com/QuantumNous/new-api)：调用日志单独成页、失败请求直接显示原因的做法。
   - [router-for-me/Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center)：账号卡片网格的排法，以及日志页把服务日志和出错请求分开的做法。
+  - [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api)：号都在途占满时请求排队等空位、最多等 30 秒的做法（`fallback_wait_timeout`）。
 - **上游的每一位贡献者**：
 
   <a href="https://github.com/linguo2625469/workbuddy2api-panel/graphs/contributors"><img src="https://contrib.rocks/image?repo=linguo2625469/workbuddy2api-panel" alt="linguo2625469/workbuddy2api-panel 的贡献者"></a>

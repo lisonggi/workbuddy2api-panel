@@ -117,6 +117,7 @@ func TestNormalizeDefaultsAndClamps(t *testing.T) {
 	c.Upstream.HeaderTimeoutSeconds = 0
 	c.Upstream.IdleTimeoutSeconds = 0
 	c.Pool.CostExploreInterval = ""
+	c.Pool.InFlightWait = ""
 	c.Pool.ExpiringSoon = "-5m"
 	c.Pool.CreditFloor = -3
 	c.Pool.RestrictionWaveThreshold = -1
@@ -146,6 +147,9 @@ func TestNormalizeDefaultsAndClamps(t *testing.T) {
 	}
 	if c.Pool.CostExploreInterval != "30m" || c.CostExploreIntervalDur != 30*time.Minute {
 		t.Fatalf("探索窗口应回落 30m: %q %v", c.Pool.CostExploreInterval, c.CostExploreIntervalDur)
+	}
+	if c.Pool.InFlightWait != "30s" || c.InFlightWaitDur != 30*time.Second {
+		t.Fatalf("排队等空位应回落 30s: %q %v", c.Pool.InFlightWait, c.InFlightWaitDur)
 	}
 	if c.Pool.RestrictionWaveThreshold != 0 || c.RestrictionWaveWindowDur != 15*time.Minute || c.RestrictionWavePauseDur != 30*time.Minute {
 		t.Fatalf("风控波应阈值钳 0、时长回落默认: %d %v %v", c.Pool.RestrictionWaveThreshold, c.RestrictionWaveWindowDur, c.RestrictionWavePauseDur)
@@ -193,6 +197,7 @@ func TestNormalizeDurationErrors(t *testing.T) {
 		{"会话GC非法", func(c *Config) { c.SessionSticky.GCInterval = "bad" }, "session_sticky.gc_interval"},
 		{"快过期窗口非法", func(c *Config) { c.Pool.ExpiringSoon = "bad" }, "pool.expiring_soon"},
 		{"探索窗口非法", func(c *Config) { c.Pool.CostExploreInterval = "bad" }, "pool.cost_explore_interval"},
+		{"排队上限非法", func(c *Config) { c.Pool.InFlightWait = "bad" }, "pool.in_flight_wait"},
 		{"风控波窗口非法", func(c *Config) { c.Pool.RestrictionWaveWindow = "bad" }, "pool.restriction_wave_window"},
 		{"风控波暂停非法", func(c *Config) { c.Pool.RestrictionWavePause = "bad" }, "pool.restriction_wave_pause"},
 	}

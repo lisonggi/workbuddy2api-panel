@@ -193,6 +193,7 @@ type Config struct {
 	Pool struct {
 		MaxInFlight        int    `json:"max_in_flight"`        // 单账号最大在途请求数，0 = 不限
 		MaxInFlightGlobal  int    `json:"max_in_flight_global"` // global 域单账号在途上限（WAF 风控紧域压低并发），0 = 回落默认 2
+		InFlightWait       string `json:"in_flight_wait"`       // 能接的号在途都满时请求最多等多久空位，默认 "30s"，"0" = 不等直接 503
 		BreakerThreshold   int    `json:"breaker_threshold"`    // 连续失败次数触发熔断，默认 3
 		BreakerCooldown    string `json:"breaker_cooldown"`     // 基础熔断时长，默认 "30m"
 		BreakerCooldownMax string `json:"breaker_cooldown_max"` // 指数退避封顶，默认 "6h"
@@ -256,6 +257,8 @@ type Config struct {
 	ExpiringSoonDur        time.Duration `json:"-"`
 	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
+	// InFlightWaitDur 解析后的排队等空位上限；0 = 不等。
+	InFlightWaitDur time.Duration `json:"-"`
 	// RestrictionWaveWindowDur / RestrictionWavePauseDur 解析后的风控波窗口与暂停时长。
 	RestrictionWaveWindowDur time.Duration `json:"-"`
 	RestrictionWavePauseDur  time.Duration `json:"-"`
@@ -312,6 +315,8 @@ func Default() *Config {
 	// P1-1）；0/负数 normalize 回落默认（与 max_in_flight 的 0=不限语义不同，分档键
 	// 的 0 没有合理语义，回退分档默认最稳）。
 	c.Pool.MaxInFlightGlobal = 2
+	// 号都在途占满时排队等空位，默认 30s（参考 sub2api 的 fallback_wait_timeout）；"0" 不等。
+	c.Pool.InFlightWait = "30s"
 	c.Pool.BreakerThreshold = 3
 	c.Pool.BreakerCooldown = "30m"
 	c.Pool.BreakerCooldownMax = "6h"
@@ -571,6 +576,16 @@ func (c *Config) normalize() error {
 	}
 	if c.CostExploreIntervalDur < 0 {
 		c.CostExploreIntervalDur = 0
+	}
+	// 排队等空位：空值回落默认 30s，"0" 是合法值（不等，选不到号直接 503），负值钳 0。
+	if c.Pool.InFlightWait == "" {
+		c.Pool.InFlightWait = "30s"
+	}
+	if c.InFlightWaitDur, err = time.ParseDuration(c.Pool.InFlightWait); err != nil {
+		return fmt.Errorf("pool.in_flight_wait: %w", err)
+	}
+	if c.InFlightWaitDur < 0 {
+		c.InFlightWaitDur = 0
 	}
 	// 风控波：阈值 0 是合法值（关闭），负值钳 0；时长 0 没有合理语义，空值或非正值回落默认。
 	if c.Pool.RestrictionWaveThreshold < 0 {

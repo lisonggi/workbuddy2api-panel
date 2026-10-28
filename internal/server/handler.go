@@ -913,7 +913,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// slot 这个请求排队等在途名额的状态（见 waitSlot）。
+	var slot slotWait
 	for i := 0; i < h.cfg.MaxRotate; i++ {
+		// 在选号之前取：选号和开始等之间放出的名额也能叫醒这个请求。
+		slotFreed := h.cfg.Pool.SlotFreed()
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
 		var acct *auth.Auth
 		if stickyUID != "" {
@@ -934,8 +938,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// （healthyForModel），realm 谓词过滤跨域账号。
 			acct = h.cfg.Pool.PickExcludingForRealm(tried, bareModel, realm)
 		}
+		if acct == nil && h.waitSlot(r.Context(), slotFreed, &slot, tried, bareModel, realm) {
+			// 能接这个请求的号在途都满了，等到有号放出名额（或到了重看的时刻）：再选一次，不算换号。
+			i--
+			continue
+		}
 		if acct == nil {
 			st.status = http.StatusServiceUnavailable
+			if slot.timedOut {
+				log.Printf("WARN: [server] in-flight full: model=%s 能接的号在途都满，等了 %.1fs 仍没有空位，回 503",
+					st.model, time.Since(slot.since).Seconds())
+			}
 			// 记下"是不是模型级阻塞"。选号返回 nil 有两种完全不同的成因：
 			//   (a) 池子真的没有可用号（账号级冷却/在途占满/积分保底）；
 			//   (b) 号都在，但每个号都对这个模型处于模型级冷却（11102/6004）。
@@ -952,6 +965,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			st.model = acct.Realm() + ":" + bareModel
 		}
 		tried[acct.UID] = true
+		woke := slot.woke
+		slot.woke = false
 
 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
 		if !acquireInFlight(h.cfg.Pool, acct.UID) {
@@ -960,6 +975,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if stickyUID != "" && acct.UID == stickyUID {
 				unbindSticky()
 			}
+			if woke {
+				// 排队醒来的几个请求抢同一个名额、没抢到：不算这个号失败，也不算换号，接着排队。
+				delete(tried, acct.UID)
+				i--
+				continue
+			}
 			if !rotateBackoff(i, r.Context()) {
 				// 客户端已断连：换号重试无意义，终止轮转走末端错误透传。
 				break
@@ -967,6 +988,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue // 最后一个名额被并发抢走 → 换号
 		}
 		heldUID = acct.UID
+		if !slot.since.IsZero() && !slot.logged {
+			slot.logged = true
+			log.Printf("INFO: [server] in-flight full: model=%s 等了 %.1fs 等到空位 acct=%s",
+				st.model, time.Since(slot.since).Seconds(), logfmt.Label(acct.UID, acct.Nickname))
+		}
 
 		// token 临近过期 → 先 refresh（失败冷却换号）
 		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
@@ -1324,6 +1350,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// gateway_hint（末端透传）：上游错误按 Kind + 原文 + 请求形态判定；本地调度类
 	// 错误（无上游原文）固定 no_healthy_account hint。
 	hint := upstream.NoHealthyAccountHint()
+	if slot.timedOut && lastErr == nil {
+		// 号都在、只是在途都满了：说清楚是忙，不是号坏了（见 waitSlot）。
+		msg = fmt.Sprintf("all accounts are busy: every account that can serve this request is at its in-flight limit, no free slot after waiting %s, please retry later", h.cfg.Pool.InFlightWait())
+		hint = "in_flight_full: raise pool.max_in_flight / pool.max_in_flight_global, add accounts, or retry later"
+	}
 	// upstreamMsgPassed 记录 error.message 是否已被上游原文占据：模型级阻塞分支
 	// 据此决定要不要覆盖 msg（上游原文优先，含 requestId）。
 	upstreamMsgPassed := false
@@ -1395,6 +1426,55 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	writeOpenAIErrorHint(w, status, code, msg, hint)
 	st.status = status
 	st.outcome = reqlog.OutcomeHTTPError
+}
+
+// slotPoll 等空位时多久重看一次：冷却到期、恢复选号、调大在途上限都不会叫醒在等的请求，靠它兜底。
+// 变量供测试缩短。
+var slotPoll = time.Second
+
+// slotWaitStarted 开始等空位时调用；供测试确认请求已经在等，生产为空操作。
+var slotWaitStarted = func() {}
+
+// slotWait 一个请求排队等在途名额的状态（见 waitSlot）。
+type slotWait struct {
+	since    time.Time // 第一次开始等的时刻，一个请求合计最多等 pool.in_flight_wait；零值 = 没等过
+	woke     bool      // 这次选号是刚等完醒来的
+	timedOut bool      // 等到上限仍没有空位，末端错误据此说明是号都在忙
+	logged   bool      // 「等到空位」的日志已经记过
+}
+
+// waitSlot 选不到号时，看是不是只因为能接这个请求的号在途都满了（号都在、只是忙）：是就等到
+// 有号放出名额（freed 要在选号前取），或者到了 slotPoll 重看一次，返回 true 让调用方再选一次号。
+// 不等（设成 0）、等满上限、客户端断开，或者号用不了不是因为在途满（冷却、禁用、模型级冷却、
+// 积分保底）时返回 false。粘性号满了照旧换号，只有所有能接的号都满了才等。
+func (h *Handler) waitSlot(ctx context.Context, freed <-chan struct{}, sw *slotWait, tried map[string]bool, model, realm string) bool {
+	wait := h.cfg.Pool.InFlightWait()
+	if wait <= 0 || !h.cfg.Pool.ServableIgnoringInFlight(tried, model, realm) {
+		return false
+	}
+	if sw.since.IsZero() {
+		sw.since = time.Now()
+	}
+	left := wait - time.Since(sw.since)
+	if left <= 0 {
+		sw.timedOut = true
+		return false
+	}
+	t := time.NewTimer(min(left, slotPoll))
+	defer t.Stop()
+	slotWaitStarted()
+	select {
+	case <-freed:
+	case <-t.C:
+		if time.Since(sw.since) >= wait {
+			sw.timedOut = true
+			return false
+		}
+	case <-ctx.Done():
+		return false
+	}
+	sw.woke = true
+	return true
 }
 
 // pickWarm 换号时先回到这段对话最近成功用过、这次还没试过的号（见 session.Router.WarmUIDs），

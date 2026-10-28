@@ -391,15 +391,19 @@ func TestWriteDefaultErrors(t *testing.T) {
 	})
 }
 
-// normalize：负的探索窗口钳 0（空值回落默认的分支在解析之前就报错，走不到）。
+// normalize：负的探索窗口、负的排队上限钳 0（空值回落默认的分支在解析之前就报错，走不到）。
 func TestNormalizeDegradeAndExploreDefaults(t *testing.T) {
 	c := Default()
 	c.Pool.CostExploreInterval = "-5m"
+	c.Pool.InFlightWait = "-5s"
 	if err := c.normalize(); err != nil {
 		t.Fatal(err)
 	}
-	if c.CostExploreIntervalDur != 0 {
-		t.Fatalf("负值应钳 0，got %v", c.CostExploreIntervalDur)
+	if c.CostExploreIntervalDur != 0 || c.InFlightWaitDur != 0 {
+		t.Fatalf("负值应钳 0，got %v %v", c.CostExploreIntervalDur, c.InFlightWaitDur)
+	}
+	if d := Default(); d.normalize() != nil || d.InFlightWaitDur != 30*time.Second {
+		t.Fatalf("排队等空位默认应是 30s，got %v", d.InFlightWaitDur)
 	}
 	if c.DegradeCooldownDur != 10*time.Minute || c.DegradeCooldownMaxD != 2*time.Hour {
 		t.Fatalf("默认降权时长不对: %v %v", c.DegradeCooldownDur, c.DegradeCooldownMaxD)

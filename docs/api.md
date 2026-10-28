@@ -104,7 +104,7 @@ curl -s http://127.0.0.1:7863/healthz
 {"healthy": 2, "total": 3, "service": "workbuddy2api", "realm_servable": {"cn": true, "global": false}}
 ```
 
-- 200 和 503 的结构相同，只是状态码与计数不同。账号全部在途占满时也返回 503，与对话接口能否受理保持一致。
+- 200 和 503 的结构相同，只是状态码与计数不同。账号全部在途占满时也返回 503，表示此刻没有号能马上接新请求；对话请求这时会先排队等空位（`pool.in_flight_wait`，默认 30 秒），见[网关与选号](gateway.md#选号策略)。
 - `realm_servable` 分别给出国内版、国际版此刻能否受理请求，双域部署可以单独告警。
 - 响应带 `X-Service: workbuddy2api` 头。`service` 字段和这个头用于区分本网关与同端口上的其他服务，避免探活误判。
 - 需要强校验时用 `/status` + `api_key`：只有持有正确密钥的本网关会返回 200。
