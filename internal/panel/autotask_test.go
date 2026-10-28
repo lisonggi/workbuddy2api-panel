@@ -2129,8 +2129,8 @@ func autoExpertPage(page int) string {
 	return autoExpertsJSON(items...)
 }
 
-// 「体验某位专家」类任务：带 id 的按 id 找，列表里没有也用任务里的 id 照样召唤；只有名字的按名字
-// 翻页找（满页才翻下一页，最多 expertTaskSearchPages 页），找不到不召唤别的专家。
+// 「体验某位专家」类任务：带 id 的按 id 翻页找（满页才翻下一页，最多 expertTaskSearchPages 页），
+// 列表里没有也用任务里的 id 照样召唤；只有名字的在专家页搜，搜不到不召唤别的专家。
 func TestRunExpertTask(t *testing.T) {
 	autoFastWaits(t)
 	const id = "ex_task1"
@@ -2190,6 +2190,32 @@ func TestRunExpertTask(t *testing.T) {
 		}
 	})
 
+	t.Run("带 id 时满页才往下翻", func(t *testing.T) {
+		p, up := newAutoPanel(t)
+		up.onMarket(func(r autoReq) (int, string) {
+			if autoBodyMap(t, r.Body)["page"] == float64(1) {
+				return 200, autoExpertPage(1)
+			}
+			return 200, autoExpertsJSON(autoExpertJSON(id, "agent", "第二页的名字", "职业"))
+		})
+		up.onChat(autoOK(autoChatSSE))
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
+		if _, err := byID(p, autoAuth(t, p)); err != nil {
+			t.Fatalf("不应报错: %v", err)
+		}
+		market := up.requestsTo(http.MethodPost, autoChatHost, autoMarketPath, "")
+		if len(market) != 2 || autoBodyMap(t, market[1].Body)["page"] != float64(2) {
+			t.Fatalf("第一页满了没有应翻到第二页，实际拉了 %d 页", len(market))
+		}
+		if _, ok := autoBodyMap(t, market[0].Body)["keyword"]; ok {
+			t.Fatal("带 id 时不搜索")
+		}
+		reports := up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")
+		if summon := autoEventByCode(t, autoEvents(t, reports[0].Body), "expert_summon_click"); summon["name"] != "第二页的名字" {
+			t.Fatalf("应用第二页里这位专家的信息: %v", summon)
+		}
+	})
+
 	t.Run("带 id 时列表失败也照样召唤", func(t *testing.T) {
 		p, up := newAutoPanel(t)
 		up.onMarket(autoFail(400, `{"code":400}`))
@@ -2203,68 +2229,116 @@ func TestRunExpertTask(t *testing.T) {
 		}
 	})
 
-	t.Run("只有名字时翻页按名字找", func(t *testing.T) {
+	t.Run("只有名字时在专家页搜", func(t *testing.T) {
 		p, up := newAutoPanel(t)
-		up.onMarket(func(r autoReq) (int, string) {
-			if autoBodyMap(t, r.Body)["page"] == float64(1) {
-				return 200, autoExpertPage(1)
-			}
-			// 名字两边带空格也认。
-			return 200, autoExpertsJSON(autoExpertJSON("ex_valorant", "agent", " 无畏契约拼豆专家 ", "拼豆专家"))
-		})
+		// 名字两边带空格也认；响应用 items（官方先取 items）。
+		up.onMarket(autoOK(autoEnvelope(`{"items":[` + autoExpertJSON("ex_other", "agent", "无畏契约攻略", "攻略") + `,` +
+			autoExpertJSON("ex_valorant", "agent", " 无畏契约拼豆专家 ", "拼豆专家") + `]}`)))
 		up.onChat(autoOK(autoChatSSE))
 		up.onDesktopReport(autoOK(autoEnvelope("{}")))
 		msg, err := byName(p, autoAuth(t, p))
 		if err != nil || !strings.Contains(msg, "「无畏契约拼豆专家」") {
 			t.Fatalf("msg=%q err=%v", msg, err)
 		}
-		market := up.requestsTo(http.MethodPost, autoChatHost, autoMarketPath, "")
-		if len(market) != 2 || autoBodyMap(t, market[1].Body)["page"] != float64(2) {
-			t.Fatalf("第一页没有应翻到第二页，实际拉了 %d 页", len(market))
+		autoWantSequence(t, up.requests(),
+			"POST "+autoChatHost+autoMarketPath,
+			"POST "+autoChatHost+autoReportPath,
+			"POST "+autoChatHost+autoReportPath,
+			"POST "+autoChatHost+autoChatPath,
+			"POST "+autoChatHost+autoReportPath,
+		)
+		search := up.requests()[0]
+		body := autoBodyMap(t, search.Body)
+		if body["keyword"] != "无畏契约拼豆专家" || body["expert_type"] != "agent" || body["page"] != float64(1) {
+			t.Fatalf("应在单专家页签按名字搜第一页: %v", body)
+		}
+		if got := search.Header.Get("X-Language"); got != "zh-CN" {
+			t.Fatalf("搜索应带 X-Language: zh-CN，got %q", got)
+		}
+		reports := up.requestsTo(http.MethodPost, autoChatHost, autoReportPath, "")
+		ev := autoEventByCode(t, autoEvents(t, reports[0].Body), "expert_search")
+		if ev["query"] != "无畏契约拼豆专家" || ev["count"] != float64(2) || ev["scope"] != "center" ||
+			ev["source"] != "builtin" || ev["type"] != "expert" || ev["mode"] != "LOCAL" {
+			t.Fatalf("expert_search 事件 = %v", ev)
 		}
 		if got := up.requestsTo(http.MethodPost, autoChatHost, autoChatPath, "")[0].Header.Get("X-Expert-Id"); got != "ex_valorant" {
-			t.Fatalf("应召唤按名字找到的专家，got %q", got)
+			t.Fatalf("应召唤按名字搜到的专家，got %q", got)
 		}
 	})
 
-	t.Run("只有名字时按职业名也认", func(t *testing.T) {
+	t.Run("单专家页签没搜到再不分类型搜", func(t *testing.T) {
 		p, up := newAutoPanel(t)
-		up.onMarket(autoOK(autoExpertsJSON(autoExpertJSON("ex_valorant", "agent", "小拼", "无畏契约拼豆专家"))))
+		up.onMarket(func(r autoReq) (int, string) {
+			if _, ok := autoBodyMap(t, r.Body)["expert_type"]; ok {
+				return 200, autoExpertsJSON(autoExpertJSON("ex_other", "agent", "别的专家", "别的职业"))
+			}
+			// 按职业名也认。
+			return 200, autoExpertsJSON(autoExpertJSON("ex_valorant", "team", "小拼", "无畏契约拼豆专家"))
+		})
 		up.onChat(autoOK(autoChatSSE))
 		up.onDesktopReport(autoOK(autoEnvelope("{}")))
 		if _, err := byName(p, autoAuth(t, p)); err != nil {
 			t.Fatalf("不应报错: %v", err)
 		}
+		market := up.requestsTo(http.MethodPost, autoChatHost, autoMarketPath, "")
+		if len(market) != 2 || autoBodyMap(t, market[1].Body)["keyword"] != "无畏契约拼豆专家" {
+			t.Fatalf("应再搜一次，实际拉了 %d 次", len(market))
+		}
+		chat := up.requestsTo(http.MethodPost, autoChatHost, autoChatPath, "")[0]
+		if chat.Header.Get("X-Expert-Id") != "ex_valorant" || chat.Header.Get("X-Expert-Team-Task") != "true" {
+			t.Fatalf("应召唤第二次搜到的专家团: %v", chat.Header)
+		}
 	})
 
-	t.Run("只有名字时找不到就不召唤", func(t *testing.T) {
+	t.Run("只有名字时搜不到就不召唤", func(t *testing.T) {
 		p, up := newAutoPanel(t)
-		up.onMarket(func(r autoReq) (int, string) {
-			page, _ := autoBodyMap(t, r.Body)["page"].(float64)
-			return 200, autoExpertPage(int(page))
-		})
+		up.onMarket(autoOK(autoExpertsJSON(autoExpertJSON("ex_other", "agent", "别的专家", "别的职业"))))
+		up.onDesktopReport(autoOK(autoEnvelope("{}")))
 		_, err := byName(p, autoAuth(t, p))
-		if err == nil || !strings.Contains(err.Error(), "前 5 页里没有「无畏契约拼豆专家」") {
+		if err == nil || !strings.Contains(err.Error(), "在专家页搜「无畏契约拼豆专家」没有找到") {
 			t.Fatalf("应返回找不到: %v", err)
 		}
-		if got := len(up.requestsTo(http.MethodPost, autoChatHost, autoMarketPath, "")); got != expertTaskSearchPages {
-			t.Fatalf("应翻满 %d 页，实际 %d", expertTaskSearchPages, got)
-		}
-		if n := len(up.requests()); n != expertTaskSearchPages {
-			t.Fatalf("找不到时只应拉列表，实际发了 %d 个请求", n)
-		}
+		autoWantSequence(t, up.requests(),
+			"POST "+autoChatHost+autoMarketPath,
+			"POST "+autoChatHost+autoReportPath,
+			"POST "+autoChatHost+autoMarketPath,
+		)
 	})
 
-	t.Run("只有名字时列表失败报错", func(t *testing.T) {
-		p, up := newAutoPanel(t)
-		up.onMarket(autoFail(400, `{"code":400}`))
-		if _, err := byName(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), "拉取专家列表") {
-			t.Fatalf("应返回拉取失败: %v", err)
-		}
-		if n := len(up.requests()); n != 1 {
-			t.Fatalf("列表失败后不应再发请求，实际 %d 个", n)
-		}
-	})
+	// 搜索、搜索事件、第二次搜索各自失败时报错，不再往下做。
+	for _, tc := range []struct {
+		name, want string
+		failSearch int // 第几次搜索失败
+		failReport bool
+		requests   int
+	}{
+		{name: "搜索失败", want: "搜索专家", failSearch: 1, requests: 1},
+		{name: "搜索事件上报失败", want: "搜索事件", failReport: true, requests: 2},
+		{name: "第二次搜索失败", want: "搜索专家", failSearch: 2, requests: 3},
+	} {
+		t.Run("只有名字时"+tc.name+"报错", func(t *testing.T) {
+			p, up := newAutoPanel(t)
+			n := 0
+			up.onMarket(func(autoReq) (int, string) {
+				n++
+				if n == tc.failSearch {
+					return 400, `{"code":400}`
+				}
+				return 200, autoExpertsJSON()
+			})
+			if tc.failReport {
+				up.onDesktopReport(autoFail(400, `{"code":400}`))
+			} else {
+				up.onDesktopReport(autoOK(autoEnvelope("{}")))
+			}
+			if _, err := byName(p, autoAuth(t, p)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("应返回%s错误: %v", tc.want, err)
+			}
+			if got := len(up.requests()); got != tc.requests {
+				t.Fatalf("应发 %d 个请求就停，实际 %d 个", tc.requests, got)
+			}
+		})
+	}
 
 	// 召唤链、真实对话、使用事件三步各自失败时报对应的错。
 	for _, tc := range []struct {

@@ -132,35 +132,31 @@ var autoActions = []autoAction{
 		Desc:     "真实轻量云专家召唤+使用链（chat 链带 has_expert，已验证：两账号点亮）",
 		run:      runExpertLighthouse,
 	},
-	// 「体验某位专家」类任务（2026-10 官方新上），照 expert_5 的判据推断，还没在真实账号上点亮过。
+	// 「体验某位专家」类任务（2026-10 官方新上），照 expert_5 的判据做；四个 expert_use_* 2026-10-28 生产实测点亮。
 	{
 		TaskCode: "WorkBuddy_Valorant",
-		Desc:     "按名字在专家列表里找到「无畏契约拼豆专家」→ 召唤 + 真实对话一次（照 expert_5 推断，未实测）",
+		Desc:     "在专家页搜「无畏契约拼豆专家」→ 召唤 + 真实对话一次（照 expert_5 推断，搜索这条路未实测）",
 		Attempt:  true,
 		run:      runExpertTask(expertTaskTarget{Name: "无畏契约拼豆专家"}),
 	},
 	{
 		TaskCode: "expert_use_maidehao",
-		Desc:     "召唤「中国电商运营专家」+ 真实对话一次（照 expert_5 推断，未实测）",
-		Attempt:  true,
+		Desc:     "召唤「中国电商运营专家」+ 真实对话一次（生产实测点亮）",
 		run:      runExpertTask(expertTaskTarget{ID: "ex_GDl31WahyIH0", Name: "中国电商运营专家"}),
 	},
 	{
 		TaskCode: "expert_use_douyinyin",
-		Desc:     "召唤「抖音策略师」+ 真实对话一次（照 expert_5 推断，未实测）",
-		Attempt:  true,
+		Desc:     "召唤「抖音策略师」+ 真实对话一次（生产实测点亮）",
 		run:      runExpertTask(expertTaskTarget{ID: "ex_FbY5nlWTqDod", Name: "抖音策略师"}),
 	},
 	{
 		TaskCode: "expert_use_shangjia_xuanchuan",
-		Desc:     "召唤「商家宣传页与海报设计师」+ 真实对话一次（照 expert_5 推断，未实测）",
-		Attempt:  true,
+		Desc:     "召唤「商家宣传页与海报设计师」+ 真实对话一次（生产实测点亮）",
 		run:      runExpertTask(expertTaskTarget{ID: "ex_Weo3x2EZuSDm", Name: "商家宣传页与海报设计师"}),
 	},
 	{
 		TaskCode: "expert_use_bowangwang",
-		Desc:     "召唤「直播电商教练」+ 真实对话一次（照 expert_5 推断，未实测）",
-		Attempt:  true,
+		Desc:     "召唤「直播电商教练」+ 真实对话一次（生产实测点亮）",
 		run:      runExpertTask(expertTaskTarget{ID: "ex_WZY136wV5aMt", Name: "直播电商教练"}),
 	},
 	{
@@ -1205,15 +1201,15 @@ type expertTaskTarget struct {
 	Name string // 任务标题「」里的专家名
 }
 
-// expertTaskSearchPages 在专家列表里找指定专家时最多看几页。
+// expertTaskSearchPages 跳转链接带 id 时，在专家列表里找这位专家最多看几页。
 const expertTaskSearchPages = 5
 
 // runExpertTask 完成「体验某位专家」类任务（2026-10 官方新上，任务说明都是「在专家页搜索并
 // 召唤「某专家」，完成一次对话」）：找到这位专家后走 expert_5 那条召唤 + 使用链。
 //
-// 专家在列表里找：跳转链接带 id 的按 id 找，拿服务端的版本号和分类，找不到就用 id 和任务里的
-// 名字照样做；只到专家页的（WorkBuddy_Valorant）按名字找，找不到就报错，不召唤别的专家。
-// 判据是照 expert_5 推断的，2026-10-27 还没在真实账号上点亮过，动作表里标成尝试型。
+// 跳转链接带 id 的在列表里按 id 找，拿服务端的版本号和分类，找不到就用 id 和任务里的名字照样
+// 做（2026-10-28 生产实测四个 expert_use_* 都点亮）；只到专家页的（WorkBuddy_Valorant）照任务
+// 说明在专家页搜名字（见 searchTaskExpert），找不到就报错，不召唤别的专家。
 func runExpertTask(target expertTaskTarget) func(p *Panel, a *auth.Auth) (string, error) {
 	return func(p *Panel, a *auth.Auth) (string, error) {
 		e, err := p.findTaskExpert(a, target)
@@ -1227,19 +1223,19 @@ func runExpertTask(target expertTaskTarget) func(p *Panel, a *auth.Auth) (string
 	}
 }
 
-// findTaskExpert 在专家列表（单专家，按推荐排序）里逐页找任务指定的专家，最多看
-// expertTaskSearchPages 页，某页不满一页就是最后一页。
+// findTaskExpert 找任务指定的专家。带 id 的在专家列表（单专家，按推荐排序）里逐页找，最多看
+// expertTaskSearchPages 页，某页不满一页就是最后一页；只有名字的在专家页搜。
 func (p *Panel) findTaskExpert(a *auth.Auth, target expertTaskTarget) (upstream.MarketExpert, error) {
-	var listErr error
+	if target.ID == "" {
+		return p.searchTaskExpert(a, target.Name)
+	}
 	for page := 1; page <= expertTaskSearchPages; page++ {
 		experts, err := p.cfg.Upstream.MarketExpertListPage(a, "agent", page)
 		if err != nil {
-			listErr = err
 			break
 		}
 		for _, e := range experts {
-			if target.ID != "" && e.ExpertID == target.ID ||
-				target.ID == "" && (strings.TrimSpace(e.DisplayNameZH) == target.Name || strings.TrimSpace(e.ProfessionZH) == target.Name) {
+			if e.ExpertID == target.ID {
 				return e, nil
 			}
 		}
@@ -1247,14 +1243,46 @@ func (p *Panel) findTaskExpert(a *auth.Auth, target expertTaskTarget) (upstream.
 			break
 		}
 	}
-	if target.ID != "" {
-		// id 来自任务本身，列表里没翻到也照样能召唤；版本号缺省 1.0.0、分类缺省 all（同列表缺字段时）。
-		return upstream.MarketExpert{ExpertID: target.ID, ExpertType: "agent", DisplayNameZH: target.Name, ProfessionZH: target.Name}, nil
+	// id 来自任务本身，列表里没翻到也照样能召唤；版本号缺省 1.0.0、分类缺省 all（同列表缺字段时）。
+	return upstream.MarketExpert{ExpertID: target.ID, ExpertType: "agent", DisplayNameZH: target.Name, ProfessionZH: target.Name}, nil
+}
+
+// searchTaskExpert 照任务说明「在专家页搜索」：在专家页的单专家页签搜这个名字，报 expert_search，
+// 隔一会儿再召唤；没搜到再不分单专家和专家团搜一次（官方对话框里选专家时的搜法）。名字或职业名
+// 和任务里的一致才算，两次都没有就报错，不召唤别的专家。
+//
+// 2026-10-28 生产上按推荐排序翻了 5 页没找到「无畏契约拼豆专家」，网关当时也只认响应里的
+// experts、不认 items，两个原因哪个起作用没确认；搜索这条路还没在真实账号上跑过。
+func (p *Panel) searchTaskExpert(a *auth.Auth, name string) (upstream.MarketExpert, error) {
+	experts, err := p.cfg.Upstream.MarketExpertSearch(a, "agent", name)
+	if err != nil {
+		return upstream.MarketExpert{}, fmt.Errorf("搜索专家: %w", err)
 	}
-	if listErr != nil {
-		return upstream.MarketExpert{}, fmt.Errorf("拉取专家列表: %w", listErr)
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopExpertSearchEvent(name, len(experts))); err != nil {
+		return upstream.MarketExpert{}, fmt.Errorf("搜索事件: %w", err)
 	}
-	return upstream.MarketExpert{}, fmt.Errorf("专家列表前 %d 页里没有「%s」（活动可能已结束），未召唤其他专家", expertTaskSearchPages, target.Name)
+	e, ok := expertNamed(experts, name)
+	if !ok {
+		all, err := p.cfg.Upstream.MarketExpertSearch(a, "", name)
+		if err != nil {
+			return upstream.MarketExpert{}, fmt.Errorf("搜索专家: %w", err)
+		}
+		if e, ok = expertNamed(all, name); !ok {
+			return upstream.MarketExpert{}, fmt.Errorf("在专家页搜「%s」没有找到（活动可能已结束），未召唤其他专家", name)
+		}
+	}
+	time.Sleep(expertSummonGap)
+	return e, nil
+}
+
+// expertNamed 按名字认专家：显示名或职业名去掉两边空白后和 name 相同。
+func expertNamed(experts []upstream.MarketExpert, name string) (upstream.MarketExpert, bool) {
+	for _, e := range experts {
+		if strings.TrimSpace(e.DisplayNameZH) == name || strings.TrimSpace(e.ProfessionZH) == name {
+			return e, true
+		}
+	}
+	return upstream.MarketExpert{}, false
 }
 
 // ---------------------------------------------------------------------------

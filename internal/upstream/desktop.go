@@ -618,9 +618,23 @@ const MarketExpertPageSize = 20
 // MarketExpertListPage 拉取专家市场列表的第 page 页，除了 page 都同第一页；官方专家页往下翻时
 // 发什么请求没有抓包（未确认）。
 func (c *Client) MarketExpertListPage(a *auth.Auth, expertType string, page int) ([]MarketExpert, error) {
+	return c.marketExpertList(a, expertType, "", page)
+}
+
+// MarketExpertSearch 在专家市场按关键词搜，取第一页。依据桌面端 5.9.3 安装包：专家页搜索框发的
+// 还是列表请求，请求体多一个 keyword，请求头多一个 X-Language（界面语言，没设过就是 zh-CN）。
+// expertType 同列表：专家页按所在页签带 agent 或 team，对话框里选专家时的搜索不带。
+func (c *Client) MarketExpertSearch(a *auth.Auth, expertType, keyword string) ([]MarketExpert, error) {
+	return c.marketExpertList(a, expertType, keyword, 1)
+}
+
+func (c *Client) marketExpertList(a *auth.Auth, expertType, keyword string, page int) ([]MarketExpert, error) {
 	body := map[string]any{"page": page, "page_size": MarketExpertPageSize, "sort_by": "reco_rank", "sort_order": "desc"}
 	if expertType != "" {
 		body["expert_type"] = expertType
+	}
+	if keyword != "" {
+		body["keyword"] = keyword
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -631,7 +645,13 @@ func (c *Client) MarketExpertListPage(a *auth.Auth, expertType string, page int)
 		return nil, err
 	}
 	c.frameworkHeaders(req, a, c.desktopUA(a))
+	if keyword != "" {
+		// 5.9.3 的专家页拉列表每次都带，对话框里的搜索只在有关键词时带；5.8.3 的没核对，网关只在搜索时带。
+		req.Header.Set("X-Language", "zh-CN")
+	}
+	// 官方先取 items，没有再取 experts（5.9.3 的 data.items ?? data.experts）。
 	var out struct {
+		Items   []MarketExpert `json:"items"`
 		Experts []MarketExpert `json:"experts"`
 	}
 	data, err := c.doJSON(req)
@@ -641,7 +661,20 @@ func (c *Client) MarketExpertListPage(a *auth.Auth, expertType string, page int)
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("expert list parse: %w", err)
 	}
+	if out.Items != nil {
+		return out.Items, nil
+	}
 	return out.Experts, nil
+}
+
+// DesktopExpertSearchEvent 专家页（单专家页签）搜索框的 expert_search 事件：桌面端 5.9.3 渲染层
+// 在搜索词停了 500 毫秒、结果出来后报一次，query 是搜索词，count 是搜到几位专家，scope 固定
+// center（专家中心），source 是 builtin（官方专家），type 是页签。
+func DesktopExpertSearchEvent(query string, count int) DesktopEvent {
+	return rendererEvent(DesktopEvent{
+		"eventCode": "expert_search", "query": query, "count": count,
+		"scope": "center", "source": "builtin", "type": "expert",
+	})
 }
 
 // NewConversationID 任务中心和各类上报用的会话 id，同官方新会话（带连字符的 UUID v7）。

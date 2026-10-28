@@ -330,7 +330,13 @@ HTTPDNS 用腾讯云的服务，照官方的做法：
   - `skill_info` 的 `fileCount` 按 5.8.3 安装包内置的 48 个技能加上这个技能算（49），`skillId`、`skillVersion` 取自抓包。
 
   小程序口径的事件和官网资料库的 `library_doc_intro_click` 不在桌面端安装包里，没有核对。
-- 2026-10 新上的「体验某位专家」任务（`WorkBuddy_Valorant` 和四个 `expert_use_*`）：任务说明是「在专家页搜索并召唤某位专家，完成一次对话」，网关照 `expert_5` 那套去做（召唤链、带 `X-Expert-Id` 的真实对话、`expert_actual_use`），判据是推断的，到 10-27 还没在真实账号上点亮过。四个 `expert_use_*` 的跳转链接里带专家 id，网关直接用；`WorkBuddy_Valorant` 只跳到专家页，网关按名字在专家列表里找。官方专家页的搜索框发什么请求、报什么事件没有抓包，网关没有模拟搜索这一步，召唤事件的 `pageURL`、`position` 同 `expert_5`；专家列表往下翻页只改 `page`，也没有抓包（未确认）。
+- 2026-10 新上的「体验某位专家」任务（`WorkBuddy_Valorant` 和四个 `expert_use_*`）：任务说明是「在专家页搜索并召唤某位专家，完成一次对话」，网关照 `expert_5` 那套去做（召唤链、带 `X-Expert-Id` 的真实对话、`expert_actual_use`），判据是推断的。2026-10-28 在一个国内版个人号上实测：四个 `expert_use_*` 都点亮了，进度 1/1，奖励自动领到；它们的跳转链接里带专家 id，网关直接用，召唤事件的 `pageURL`、`position` 同 `expert_5`。`WorkBuddy_Valorant` 只跳到专家页，1.6.0 按名字在 `agent` 类、按推荐排序的专家列表前 5 页里找，没找到「无畏契约拼豆专家」，没做成。之后照桌面端 5.9.3 安装包（2026-10-28 下载，只解包阅读）改成先搜索：
+  - 专家页的搜索就是专家列表接口带上关键词：`POST /portal/operation-platform/market/expert/list`，请求体 `{page, page_size: 20, expert_type, keyword, sort_by: "reco_rank", sort_order: "desc"}`，`expert_type` 按当前页签（单专家 `agent`、团队 `team`）；
+  - 多带请求头 `X-Language`（界面语言，默认 `zh-CN`）：5.9.3 的专家页拉列表每次都带，对话框里选专家的搜索只在有关键词时带。网关只在搜索时带；5.8.3 的专家页是不是也每次都带，没核对（未确认）；
+  - 响应先取 `data.items`，没有再取 `data.experts`（`data.items ?? data.experts`）。1.6.0 只读 `experts`，接口要是回的 `items`，就会读成空列表，这可能也是没找到的原因；两个原因是哪个，未确认；
+  - 搜索框停 500 毫秒后报 `expert_search`：`{query, count, scope: "center", source, type}`，`count` 是搜到的条数，`source` 是来源页签（默认 `builtin`，企业专家是 `enterprise`），`type` 是列表页签（单专家 `expert`、团队 `team`）。网关照默认页签报 `builtin` / `expert`；
+  - 网关先在单专家页签搜，没有再不分类型搜一次（对话框里的搜索就不分类型），都搜不到就报错，不召唤别的专家。页签里的分类筛选（`categories`）和付费筛选（`need_pay_assets`）网关不带；
+  - 搜索这一步算不算任务判据、改后能不能点亮，还没在真实账号上验证（未确认）。专家列表往下翻页只改 `page`，也没有抓包（未确认）。
 - 错误码：生产日志（10-19 至 10-23）只见过 `6004`、`14003`、`11101`、`11128`、`11140`、`11158`，其余业务码照官方枚举归类，没有真遇到过；`14002` 的含义没确认，见[错误码](#错误码)。`11140` 只见过 `request illegal` 一种文案（账号级风控，见上），限流那种文案没遇到过；`11158` 是个人免费号调 GPT、Gemini、Grok 时回「该用户类型不能用这个模型」，网关没有专门处理，按其他客户端错误换号重试，不罚号。
 - 小程序的埋点事件（开学季活动）照的是一次 Windows 版 PC 微信的抓包，系统写 `windows`、`machineId` 是抓包里的固定值；小程序 web-view 的 UA 却是 iPhone 微信，开学季接口和埋点请求从 1.1.2 起也用这个 UA（以前没设，发的是 Go 默认的 `Go-http-client/1.1`）。没有小程序的包、也没有 PC 微信的 UA 抓包可对照，系统和 UA 两边都没改成一致，见[官网网页的请求](#官网网页的请求)。
 

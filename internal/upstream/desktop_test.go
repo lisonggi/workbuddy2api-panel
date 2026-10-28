@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -628,12 +629,63 @@ func TestMarketExpertList(t *testing.T) {
 		if got := r.header.Get("X-Request-ID"); !hex32.MatchString(got) {
 			t.Errorf("X-Request-ID = %q，应为 32 位十六进制", got)
 		}
+		if got := r.header.Get("X-Language"); got != "" {
+			t.Errorf("不搜索时不带 X-Language，got %q", got)
+		}
 		var body map[string]any
 		if err := json.Unmarshal(r.body, &body); err != nil {
 			t.Fatalf("请求体: %v", err)
 		}
 		if body["expert_type"] != "agent" || body["page"] != float64(1) || body["page_size"] != float64(20) ||
 			body["sort_by"] != "reco_rank" || body["sort_order"] != "desc" {
+			t.Errorf("请求体 = %v", body)
+		}
+		if _, ok := body["keyword"]; ok {
+			t.Errorf("不搜索时不带 keyword: %v", body)
+		}
+	})
+
+	t.Run("响应先取 items", func(t *testing.T) {
+		for _, tc := range []struct{ name, data, want string }{
+			{"两个都有取 items", `{"items":[{"expert_id":"ex_i"}],"experts":[{"expert_id":"ex_e"}]}`, "ex_i"},
+			{"只有 experts", `{"experts":[{"expert_id":"ex_e"}]}`, "ex_e"},
+			{"items 为空数组不再看 experts", `{"items":[],"experts":[{"expert_id":"ex_e"}]}`, ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := newUpFake(t)
+				f.on(http.MethodPost, path, 200, `{"code":0,"data":`+tc.data+`}`)
+				experts, err := upClient(f).MarketExpertList(upAuth(), "agent")
+				if err != nil {
+					t.Fatalf("MarketExpertList: %v", err)
+				}
+				got := ""
+				if len(experts) > 0 {
+					got = experts[0].ExpertID
+				}
+				if got != tc.want || len(experts) > 1 {
+					t.Errorf("experts = %+v，应为 %q", experts, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("按关键词搜", func(t *testing.T) {
+		f := newUpFake(t)
+		f.on(http.MethodPost, path, 200, `{"code":0,"data":{"items":[{"expert_id":"ex_v","display_name_zh":"无畏契约拼豆专家"}]}}`)
+		experts, err := upClient(f).MarketExpertSearch(upAuth(), "agent", "无畏契约拼豆专家")
+		if err != nil || len(experts) != 1 || experts[0].ExpertID != "ex_v" {
+			t.Fatalf("experts=%+v err=%v", experts, err)
+		}
+		r := f.seen()[0]
+		if got := r.header.Get("X-Language"); got != "zh-CN" {
+			t.Errorf("X-Language = %q，应为 zh-CN", got)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(r.body, &body); err != nil {
+			t.Fatalf("请求体: %v", err)
+		}
+		if body["keyword"] != "无畏契约拼豆专家" || body["expert_type"] != "agent" || body["page"] != float64(1) ||
+			body["page_size"] != float64(20) || body["sort_by"] != "reco_rank" || body["sort_order"] != "desc" {
 			t.Errorf("请求体 = %v", body)
 		}
 	})
@@ -843,6 +895,18 @@ func TestDesktopChatWithExpert(t *testing.T) {
 			t.Fatalf("err = %v，应提示未找到 requestId", err)
 		}
 	})
+}
+
+// 专家页搜索事件：搜索词、结果数、专家中心、官方专家、单专家页签，带渲染层的 mode 和 buddy 字段。
+func TestDesktopExpertSearchEvent(t *testing.T) {
+	ev := DesktopExpertSearchEvent("无畏契约拼豆专家", 3)
+	want := DesktopEvent{
+		"eventCode": "expert_search", "query": "无畏契约拼豆专家", "count": 3, "scope": "center",
+		"source": "builtin", "type": "expert", "mode": "LOCAL", "buddyId": "", "buddyName": "",
+	}
+	if !reflect.DeepEqual(ev, want) {
+		t.Errorf("event = %v，应为 %v", ev, want)
+	}
 }
 
 // TestDesktopExpertSequences 专家事件构造：召唤三连与使用事件（craft/LOCAL），
