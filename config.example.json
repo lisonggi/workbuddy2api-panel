@@ -60,7 +60,8 @@
     "device_token": "",
     "device_token_file": "",
     "passthrough_ip": false,
-    "model_optimization": false
+    "model_optimization": false,
+    "tls_fingerprint": true
   },
   "features": {
     "sanitize_blacklist_fingerprints": true

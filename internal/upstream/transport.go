@@ -79,6 +79,11 @@ func newTransport() *http.Transport {
 	dialer := newDialer()
 	return &http.Transport{
 		DialContext: dialer.DialContext,
+		// DialTLSContext 把 https 握手交给 uTLS 伪装官方客户端的 ClientHello（见 tlsmimic.go）。
+		// 设了它，Transport 就不再自己做 TLS，所以 ALPN、h2 升级、TLSHandshakeTimeout 都由这层管：
+		// uTLS 的 ALPN 只给 http/1.1，自然退回 HTTP/1.1；握手超时在 dialTLSMimic 里自卡。开关关掉时
+		// 这层回落标准库 TLS，等价旧行为。
+		DialTLSContext: dialTLSMimic("", nil),
 		// 空 TLSNextProto（非 nil）真正禁 h2：见函数注释。必须 make 而非 nil——
 		// nil 表示「让标准库注入默认 h2 映射」（kongjianguan 实测：设
 		// ForceAttemptHTTP2=false 后日志仍报 h2 timeout，正是这个陷阱）。

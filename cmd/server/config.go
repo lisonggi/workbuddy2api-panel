@@ -184,6 +184,9 @@ type Config struct {
 		// ModelOptimization 允许上游用对话做模型优化（默认 false）：false 时对话一律带
 		// X-Private-Data: true；true 时照官方客户端默认，个人号 false、企业号 true。面板保存即生效。
 		ModelOptimization bool `json:"model_optimization"`
+		// TLSFingerprint 出站是否把 TLS 握手伪装成官方桌面端客户端的 ClientHello（默认 true）。
+		// 键缺席保留 true，显式 false 才关（关掉回落 Go 标准库 TLS，旧行为）。改这项要重启生效。
+		TLSFingerprint bool `json:"tls_fingerprint"`
 	} `json:"upstream"`
 
 	Features struct {
@@ -327,6 +330,8 @@ func Default() *Config {
 	c.Schedule.BalanceRefreshEnabled = true
 	c.Schedule.BalanceRefreshMinutes = 5
 	c.Upstream.TimeoutSeconds = 120
+	// TLSFingerprint 缺省 true（伪装官方客户端的 TLS 指纹）；键缺席保留 true，显式 false 才关。
+	c.Upstream.TLSFingerprint = true
 	// HeaderTimeoutSeconds/IdleTimeoutSeconds 默认 0（未设置态），回落见 normalize()。
 	c.Upstream.HeaderTimeoutSeconds = 0
 	c.Upstream.IdleTimeoutSeconds = 0
@@ -507,6 +512,11 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_MODEL_OPTIMIZATION"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Upstream.ModelOptimization = b
+		}
+	}
+	if v := os.Getenv("WB2A_TLS_FINGERPRINT"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Upstream.TLSFingerprint = b
 		}
 	}
 	if v := os.Getenv("WB2A_SANITIZE_FINGERPRINTS"); v != "" {

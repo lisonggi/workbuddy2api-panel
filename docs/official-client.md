@@ -314,7 +314,13 @@ HTTPDNS 用腾讯云的服务，照官方的做法：
 - 设备信息是挑的一台常见 Mac 配置，不是哪台真机，见[设备与平台](#设备与平台)。
 - 小程序事件（开学季、小程序任务）里的会话 id、轮次 id 按桌面端的形状生成，小程序没有源码可对照，没确认。
 - 部门全名（`X-Department-Info`、上报的 `enterprise`）：照官方接上了，池里没有带部门的企业号，上游返回的值什么样、刷新时会不会变都没实测。
-- 传输层：网关出站一律 HTTP/1.1（有意禁了 HTTP/2，见 `transport.go`），TLS 握手是 Go 标准库的。桌面端的请求官方也是 HTTP/1.1，但 TLS 握手是 Node（Electron）的；官网网页在浏览器里是 HTTP/2 和 Chrome 的 TLS 握手，HTTP/2 才有的 `priority` 头网关也没有。服务端能从握手特征分出这几种客户端。要对齐得换成能定制握手的库 [uTLS](https://github.com/refraction-networking/utls)：支持 Go 1.22 的最后一版是 v1.6.7（内置的 Chrome 预设停在较早的版本），v1.7.0 起要求 Go 1.24；桌面端那套还要先在 Mac 上抓到官方客户端真实的握手。2026-10-20 定 1.1.2 不做，之后要做单独发一版。
+- 传输层：网关出站一律 HTTP/1.1（有意禁了 HTTP/2，见 `transport.go`）。TLS 握手 2026-10-28 起照官方桌面端伪装（`tlsmimic.go`，默认开，此前是 Go 标准库握手）：
+  - 桌面端请求官方走 HTTP/1.1，TLS 握手由 Electron 37.10.3 里的 Node `v22.21.1`（BoringSSL）发。它的 ClientHello——密码套件顺序、扩展顺序、不带 GREASE、ALPN 只 `http/1.1`——既不同于 Go 标准库，也不同于任何浏览器预设，服务端能据此分出客户端类型，所以只能照抓到的真实握手复刻。
+  - 用 [uTLS](https://github.com/refraction-networking/utls) v1.8.2（BSD，许可相容）：`tlsmimic.go` 里 embed 一份本机实测抓到的官方 ClientHello 原始字节（`clientHelloHex`），每次拨号用 uTLS 的 `Fingerprinter` 现解析出一份独立的 `ClientHelloSpec`（避免扩展对象跨连接共享），再用 `HelloCustom` + `ApplyPreset` 按它握手。SNI、随机数、`key_share` 等每连接的值由 uTLS 现生成，embed 里抓包时的具体值（含当时 SNI）不会泄漏到实际连接；证书校验与 SNI 仍按请求域名，钉 IP 时也如此。
+  - 抓取办法：2026-10-28 用桌面端内置 Node（`ELECTRON_RUN_AS_NODE` 跑 Electron 的 node）向本机回环发一次握手、抓下 ClientHello。JA3 只看 BoringSSL 与 Node 的 TLS 配置，与宿主系统无关，所以在 Linux 本机抓到的即是官方 Mac 桌面端的指纹。目标 `JA3 = 771,4865-4866-4867-49199-49195-49200-49196-49191-52393-52392-49161-49171-49162-49172-156-157-47-53,0-23-65281-10-11-35-16-13-51-45-43-21,29-23-24,0`，`JA3 MD5 = 1a3153f314dc13e133dc71d113a81b16`，`JA4 = t13d1812h1_5d04281c6031_ef7df7f74e48`（JA4 比 JA3 还多算进签名算法扩展的内容）；uTLS 复刻已逐字节核对一致，单元测试 `tlsmimic_test.go` 把 JA3、JA4 都照同一份握手锁死，指纹一漂移就红。桌面端升级后重抓替换 `clientHelloHex` 即可。
+  - 开关：配置 `upstream.tls_fingerprint`（默认开，改后重启生效），关掉回落 Go 标准库握手（旧行为）。
+  - 仍没对齐（有意）：官网网页在浏览器里走 HTTP/2 和 Chrome 的 TLS 握手，HTTP/2 才有的 `priority` 头网关也没有；网关伪装的是桌面端（HTTP/1.1），不是浏览器，所以不去对齐网页那套指纹。
+  - 未实测：本地抓包复刻与单元测试已过，生产上线后的流式对话还没回归（上线后看日志）。
 - 企业号：模型目录、积分、请求头里的企业身份都照官方改了，池里没有企业号，都没有实测；国际版企业号同样。
 - 签到、领奖、接受任务、兑换、补签卡、新手礼包领取、试用：只用必然失败的参数试过，真正成功的那一次要上线后看日志；上报没有实测。
 - 官网网页的 UA 固定为一个 Mac Chrome 152 的值，`Sec-CH-UA` 由版本号推算；小程序 web-view 的 iOS、微信版本号是挑的近期值；网页登录码请求的头取自 Node 内置 fetch 的源码。这几样都没有抓包确认，见[官网网页的请求](#官网网页的请求)。

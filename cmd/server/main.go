@@ -213,6 +213,8 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 	up.CliVersion = cfg.Upstream.CliVersion
 	up.ClientName = cfg.Upstream.ClientName
 	up.DeviceToken = cfg.Upstream.DeviceToken
+	// 出站 TLS 指纹伪装（默认开）：关掉回落标准库 TLS。改这项要重启。
+	upstream.SetTLSMimic(cfg.Upstream.TLSFingerprint)
 	up.DeviceTokenFile = cfg.Upstream.DeviceTokenFile
 	up.PassthroughIP = cfg.Upstream.PassthroughIP
 	up.ModelOptimization.Store(cfg.Upstream.ModelOptimization)
@@ -708,6 +710,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	})
 	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
 	up.ModelOptimization.Store(newCfg.Upstream.ModelOptimization)
+	upstream.SetTLSMimic(newCfg.Upstream.TLSFingerprint) // TLS 指纹伪装开关（atomic，新建连接起用）
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)
