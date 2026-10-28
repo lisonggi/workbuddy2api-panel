@@ -4,17 +4,18 @@
 
 // convids.go 客户端没给会话 id 时，出站 X-Conversation-ID 用哪个值（issue #2）。
 //
-// 官方客户端一段对话从头到尾只用一个会话 id。上游有的模型要同一个号、同一个会话 id 才命中
-// 前缀缓存（10-27 生产实测 glm-5.3-flash：换号或同号换 id 都整段未命中，同号同 id 闲置 20 分钟
-// 仍命中），所以同一段对话发往同一个号时 id 不能变。客户端没给 id，网关就按内容认对话
-// （见 ParseConversation）：
-//   - 第一轮（历史里还没有助手回复）按「账号 + 开头」记一个新生成的 id，标为未认领；开头相同的
-//     请求再来，沿用它。
-//   - 有了第一条助手回复以后按「账号 + 开头 + 第一条回复」记录。第一次见到时认领第一轮记下的
-//     id 接着用；那个 id 已经被开头相同、回复不同的另一段对话认领了，就新生成一个。开头逐字相同
-//     的两段对话最多在第一轮共用一个 id，第二轮起分开（10-20 生产实测同一个 id 发不相干的内容
-//     不会串会话，共用的代价只是上游把它们记成同一个会话）。
-//   - 账号入键：对话换到别的号就换一个 id，同一个会话 id 不会横跨多个账号。
+// 官方客户端一段对话从头到尾只用一个会话 id。上游有的模型按会话 id 命中前缀缓存、不认号
+// （2026-10-28 生产实测 glm-5.3-flash：同一个 id 换到别的号 4/4 命中，换新 id 12 次全未命中；
+// 同 id 闲置 20 分钟仍命中），所以一段对话的 id 不能变，换了号也不变。客户端没给 id，网关就
+// 按内容认对话（见 ParseConversation）：
+//   - 第一轮（历史里还没有助手回复）按开头记一个新生成的 id，标为未认领；开头相同的请求再来，
+//     沿用它。
+//   - 有了第一条助手回复以后按「开头 + 第一条回复」记录。第一次见到时认领第一轮记下的 id 接着用；
+//     那个 id 已经被开头相同、回复不同的另一段对话认领了，就新生成一个。开头逐字相同的两段对话
+//     最多在第一轮共用一个 id，第二轮起分开（10-20 生产实测同一个 id 发不相干的内容不会串会话，
+//     共用的代价只是上游把它们记成同一个会话）。
+//   - 不按号区分：换号重试、换号续聊都用这段对话原来的 id（同客户端自带 id 时原样转发）。1.6.0
+//     按「号 + 内容」记，升级前开始的对话第一次来时把这个号上的旧记录挪过来接着用（legacyKey）。
 //   - 记录在最后一次使用后保留 7 天，存进数据目录（见 persist.go），网关重启后照旧。
 //
 // id 都是生成当时的 UUID v7（带连字符），同官方新会话的 id，里面的时刻是真实的。
@@ -56,11 +57,15 @@ func newConvStore() *convStore {
 
 var convIDs = newConvStore()
 
-// AccountConversationID 客户端没给会话 id 时出站 X-Conversation-ID 的值，规则见文件头。
-// 认不出对话（请求里没有 user 消息）时每次新生成。
-func AccountConversationID(uid string, c Conversation) string { return convIDs.id(uid, c) }
+// OutboundConversationID 客户端没给会话 id 时出站 X-Conversation-ID 的值，规则见文件头。
+// 认不出对话（请求里没有 user 消息）时每次新生成。uid 是这次选中的号，只用来找 1.6.0 按号记下的
+// 旧记录，id 本身不按号区分。
+func OutboundConversationID(uid string, c Conversation) string { return convIDs.id(uid, c) }
 
-func convKey(kind, uid, digest string) [32]byte {
+// convKey 记录的键。现在的记录不带号；legacyKey 是 1.6.0 按号记的。
+func convKey(kind, digest string) [32]byte { return legacyKey(kind, "", digest) }
+
+func legacyKey(kind, uid, digest string) [32]byte {
 	return sha256.Sum256([]byte(kind + "\x00" + uid + "\x00" + digest))
 }
 
@@ -71,7 +76,7 @@ func (s *convStore) id(uid string, c Conversation) string {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	open := convKey("open", uid, c.Opener)
+	open := s.keyLocked("open", uid, c.Opener, now)
 	if c.Seed == "" {
 		if r, ok := s.m[open]; ok && !r.claimed && now.Sub(r.last) < convIDTTL {
 			s.touchLocked(open, r, now)
@@ -81,7 +86,7 @@ func (s *convStore) id(uid string, c Conversation) string {
 		s.putLocked(open, convRecord{id: id, last: now}, now)
 		return id
 	}
-	k := convKey("conv", uid, c.Seed)
+	k := s.keyLocked("conv", uid, c.Seed, now)
 	if r, ok := s.m[k]; ok && now.Sub(r.last) < convIDTTL {
 		s.touchLocked(k, r, now)
 		return r.id
@@ -96,6 +101,23 @@ func (s *convStore) id(uid string, c Conversation) string {
 	}
 	s.putLocked(k, convRecord{id: id, last: now}, now)
 	return id
+}
+
+// keyLocked 返回这条记录的键。还没有这条、这个号上有 1.6.0 按号记下的旧记录时，把旧记录挪到
+// 新键下，升级前开始的对话接着用原来的 id，前缀缓存不因升级断一次。旧记录 7 天内都会过期或被
+// 挪走，2026-11 以后这段可以删掉。
+func (s *convStore) keyLocked(kind, uid, digest string, now time.Time) [32]byte {
+	k := convKey(kind, digest)
+	if _, ok := s.m[k]; ok || uid == "" {
+		return k
+	}
+	old := legacyKey(kind, uid, digest)
+	if r, ok := s.m[old]; ok && now.Sub(r.last) < convIDTTL {
+		delete(s.m, old)
+		s.m[k] = r
+		s.dirty = true
+	}
+	return k
 }
 
 // touchLocked 记下这次使用。使用时刻跨了整点才算改动：存盘的时刻最多晚一小时，对 7 天的

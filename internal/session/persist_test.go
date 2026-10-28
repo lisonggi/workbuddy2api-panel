@@ -46,9 +46,9 @@ func testPersist(path string, r *Router, m Mirror) *Persist {
 	return p
 }
 
-// snapFor 一条第二轮以后的会话 id 记录（账号 + Seed）。
-func snapFor(uid, seed, id string, at time.Time) convSnap {
-	k := convKey("conv", uid, seed)
+// snapFor 一条第二轮以后的会话 id 记录（按 Seed）。
+func snapFor(seed, id string, at time.Time) convSnap {
+	k := convKey("conv", seed)
 	return convSnap{K: base64.RawURLEncoding.EncodeToString(k[:]), ID: id, T: at.Unix()}
 }
 
@@ -137,8 +137,8 @@ func TestPersistFlushOnlyWhenDirty(t *testing.T) {
 // 本地文件和 Redis 快照取较新的一份；Redis 快照坏了或版本不认识就用本地的。
 func TestPersistLoadPicksNewer(t *testing.T) {
 	now := time.Now()
-	local := persistFile{Version: persistVersion, Saved: now.Add(-time.Hour), Conversations: []convSnap{snapFor("u1", "L", "id-local", now)}}
-	remote := persistFile{Version: persistVersion, Saved: now, Conversations: []convSnap{snapFor("u1", "R", "id-remote", now)}}
+	local := persistFile{Version: persistVersion, Saved: now.Add(-time.Hour), Conversations: []convSnap{snapFor("L", "id-local", now)}}
+	remote := persistFile{Version: persistVersion, Saved: now, Conversations: []convSnap{snapFor("R", "id-remote", now)}}
 	remoteRaw, _ := json.Marshal(remote)
 	hasLocal := func(p *Persist) bool { return p.convs.id("u1", Conversation{Opener: "o", Seed: "L"}) == "id-local" }
 	hasRemote := func(p *Persist) bool { return p.convs.id("u1", Conversation{Opener: "o", Seed: "R"}) == "id-remote" }

@@ -870,8 +870,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 循环外**生成一次，循环内每次出站原样复用 → 换号/重试/降级全部同 ID，后台不再
 	// 碎片化（此前网关一个都不发，上游按 HTTP 请求逐条记账，同一对话几十上百个
 	// RequestID）。
-	//   - conversationID：客户端给了就原样透传；没给时选好号以后按账号定（循环内，
-	//     session.AccountConversationID：第一轮记下的 id 整段对话沿用，见 session/convids.go）；
+	//   - conversationID：客户端给了就原样透传；没给时选好号以后定（循环内，
+	//     session.OutboundConversationID：第一轮记下的 id 整段对话沿用，换号也不变，见 session/convids.go）；
 	//   - conversationRequestID：入站 X-Conversation-Request-ID 透传优先，否则按对话轮：
 	//     客户端给了会话 id 时由会话 id + 轮级键派生，没给时开轮新生成、轮内凭工具调用 id
 	//     找回（session/turns.go）；建不出轮级键时退化成会话级或本请求级随机——
@@ -990,9 +990,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// 出站会话 id 按这次选中的号定：客户端没给时取这段对话在这个号上的 id，换号重试就换成新号上的。
+		// 出站会话 id：客户端没给时取这段对话的 id，换号重试也是同一个（选中的号只用来认 1.6.0 的旧记录）。
 		if convID == "" {
-			chatMeta.ConversationID = session.AccountConversationID(acct.UID, conv)
+			chatMeta.ConversationID = session.OutboundConversationID(acct.UID, conv)
 		}
 
 		// 客户端 IP 按请求传递（PassthroughIP 开启时注入；消除共享字段竞态）。

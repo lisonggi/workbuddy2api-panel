@@ -626,8 +626,8 @@ func logChatRowEx(ttfb, total time.Duration, model, mode, uid, nick string, stat
 
 // cacheMissSignal 前缀缓存整段未命中的提示（issue #92 起；issue #2 改成按对话判断）。
 //
-// 上游的前缀缓存按号存，部分模型还按会话 id 存（glm-5.3-flash，见 docs/official-client.md）：
-// 新对话的头一轮、换了号、换了会话 id 都会整段未命中，这些是预期内的。以前按模型笼统判断
+// 上游的前缀缓存有的模型按号存（deepseek），有的按会话 id 存、换号也接得上（glm-5.3-flash），
+// 见 docs/official-client.md：新对话的头一轮、换了号、换了会话 id 都可能整段未命中，这些是预期内的。以前按模型笼统判断
 // 「此前命中过」，把它们都报成了异常（issue #2）。现在按对话（会话键）记下上一轮的模型、号、
 // 会话 id 和消息条数；这段对话命中过、这一轮大前缀（≥1000 token）却一点没命中时，对照上一轮说原因：
 //   - 换了模型 / 换了号 / 会话 id 变了 / 消息比上一轮少（客户端压缩或改写了历史）：预期内，记 INFO；
@@ -710,7 +710,7 @@ func cacheMissReason(prev convCacheState, o cacheObservation) string {
 	case prev.model != o.model:
 		return "换了模型（上一轮是 " + prev.model + "）"
 	case prev.uid != o.uid:
-		return "换了号（上一轮在 " + prev.acct + "），上游按号缓存"
+		return "换了号（上一轮在 " + prev.acct + "），部分模型按号缓存"
 	case prev.convID != o.convID:
 		return "会话 id 变了，部分模型按会话 id 缓存"
 	case o.msgs < prev.msgs:

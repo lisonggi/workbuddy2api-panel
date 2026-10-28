@@ -34,9 +34,9 @@ type entry struct {
 	lastActive time.Time
 }
 
-// warmEntry 一段对话最近成功用过的号，最近的在前（issue #2）。上游的前缀缓存按号存，绑定过期
-// （闲置超过 TTL）、绑定的号这次用不了、网关重启后，先回到这些号：上面留着这段对话的前缀
-// 缓存，出站会话 id 也还是原来那个（见 convids.go）。思路参考 workbuddy2api-hub 按会话记录
+// warmEntry 一段对话最近成功用过的号，最近的在前（issue #2）。有的模型的前缀缓存按号存
+// （deepseek，见 docs/official-client.md），绑定过期（闲置超过 TTL）、绑定的号这次用不了、
+// 网关重启后，先回到这些号：上面留着这段对话的前缀缓存。思路参考 workbuddy2api-hub 按会话记录
 // 用过的号（affinity），见 README 致谢。
 type warmEntry struct {
 	uids []string

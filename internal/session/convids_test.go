@@ -17,7 +17,7 @@ func testConvStore() (*convStore, *time.Time) {
 	return s, &now
 }
 
-// 一段对话第一轮记下的 id 之后各轮接着用；换了号就是另一个 id。
+// 一段对话第一轮记下的 id 之后各轮接着用，换了号也不变。
 func TestConvIDsKeepFirstTurnID(t *testing.T) {
 	s, _ := testConvStore()
 	turn1 := Conversation{Opener: "open-1"}
@@ -35,12 +35,58 @@ func TestConvIDsKeepFirstTurnID(t *testing.T) {
 	if got := s.id("u1", turn2); got != id {
 		t.Fatalf("之后各轮不变: %q / %q", id, got)
 	}
-	if other := s.id("u2", turn2); other == id || !uuidV7Dashed.MatchString(other) {
-		t.Fatalf("换了号应换一个 id: %q", other)
+	if got := s.id("u2", turn2); got != id {
+		t.Fatalf("换了号也沿用同一个 id: %q / %q", id, got)
 	}
-	a, b := AccountConversationID("u1", Conversation{}), AccountConversationID("u1", Conversation{})
+	if got := s.id("u3", Conversation{Opener: "open-2"}); got == id {
+		t.Fatal("别的对话应另起一个 id")
+	}
+	a, b := OutboundConversationID("u1", Conversation{}), OutboundConversationID("u1", Conversation{})
 	if a == b || !uuidV7Dashed.MatchString(a) {
 		t.Fatalf("认不出对话时每次新生成: %q / %q", a, b)
+	}
+}
+
+// 1.6.0 按号记的旧记录：对话第一次来时从这个号上的旧记录挪过来接着用，之后换号也不变；别的号
+// 上的旧记录不认，过期的旧记录不认。
+func TestConvIDsAdoptLegacy(t *testing.T) {
+	s, now := testConvStore()
+	put := func(kind, uid, digest, id string, last time.Time, claimed bool) {
+		s.m[legacyKey(kind, uid, digest)] = convRecord{id: id, last: last, claimed: claimed}
+	}
+	put("conv", "u1", "seed-A", "id-A-on-u1", *now, false)
+	put("conv", "u2", "seed-A", "id-A-on-u2", *now, false)
+	put("open", "u1", "open-B", "id-B", *now, false)
+	put("open", "u1", "open-C", "id-C", *now, true)
+	put("conv", "u1", "seed-D", "id-D", now.Add(-convIDTTL), false)
+	s.takeDirty()
+
+	if got := s.id("u2", Conversation{Opener: "o", Seed: "seed-A"}); got != "id-A-on-u2" {
+		t.Fatalf("应接着用这个号上的旧 id，got %q", got)
+	}
+	if !s.takeDirty() {
+		t.Fatal("挪旧记录算改动")
+	}
+	if got := s.id("u1", Conversation{Opener: "o", Seed: "seed-A"}); got != "id-A-on-u2" {
+		t.Fatalf("挪过来以后换号也不变，got %q", got)
+	}
+	if _, ok := s.m[legacyKey("conv", "u2", "seed-A")]; ok {
+		t.Fatal("挪过的旧记录应删掉")
+	}
+	if got := s.id("u1", Conversation{Opener: "open-B"}); got != "id-B" {
+		t.Fatalf("第一轮的旧记录也认，got %q", got)
+	}
+	if got := s.id("u1", Conversation{Opener: "open-B", Seed: "seed-B"}); got != "id-B" {
+		t.Fatalf("第二轮认领挪过来的第一轮记录，got %q", got)
+	}
+	if got := s.id("u1", Conversation{Opener: "open-C"}); got == "id-C" {
+		t.Fatal("已被认领的第一轮旧记录不能再给新对话用")
+	}
+	if got := s.id("u3", Conversation{Opener: "o", Seed: "seed-X"}); got == "id-A-on-u2" || got == "id-A-on-u1" {
+		t.Fatal("别的对话不受旧记录影响")
+	}
+	if got := s.id("u1", Conversation{Opener: "o", Seed: "seed-D"}); got == "id-D" {
+		t.Fatal("过期的旧记录不认")
 	}
 }
 

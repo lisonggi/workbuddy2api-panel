@@ -1884,9 +1884,9 @@ func TestChatMarkupRepairStrictModeRejectsUndeclaredTool(t *testing.T) {
 }
 
 // TestChatConversationIDFromFirstReply 客户端没给 conversation_id 时的出站 X-Conversation-ID：
-// 对话第一个请求用本轮的轮次 id；历史里有了第一条助手回复后，按「system + 首条 user + 首条回复 +
-// 账号」算出固定值，之后多轮不变；开头逐字相同、第一条回复不同的两段对话各用各的。客户端给的
-// conversation_id 原样透传。网关不再自动补 prompt_cache_key，客户端自己带的照转。
+// 对话第一个请求新生成一个（官方新会话的形状，不是轮次 id），之后多轮不变；开头逐字相同、第一条
+// 回复不同的两段对话第二轮起各用各的（见 session/convids.go）。客户端给的 conversation_id 原样
+// 透传。网关不再自动补 prompt_cache_key，客户端自己带的照转。
 func TestChatConversationIDFromFirstReply(t *testing.T) {
 	var mu sync.Mutex
 	var convIDs, turnIDs, cacheKeys []string
@@ -1961,5 +1961,69 @@ func TestChatConversationIDFromFirstReply(t *testing.T) {
 	}
 	if cacheKeys[4] != "client-key" {
 		t.Fatalf("客户端自带的 prompt_cache_key 应原样转发: got %q", cacheKeys[4])
+	}
+}
+
+// TestChatConversationIDSameAcrossAccounts 客户端没给 conversation_id 时，换号重试、换号续聊都用这段
+// 对话原来的出站会话 id：上游有的模型按会话 id 缓存、不认号（2026-10-28 生产实测，见 session/convids.go）。
+// 三轮对话每轮第一次出站都失败、换号重试，所有出站请求的会话 id 都相同。
+func TestChatConversationIDSameAcrossAccounts(t *testing.T) {
+	type call struct {
+		turn        int
+		uid, convID string
+	}
+	var mu sync.Mutex
+	var calls []call
+	turn := 0
+	up := &upstream.Client{
+		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			status, ct, body := 200, "text/event-stream", sseOK
+			if strings.Contains(r.URL.Path, "/chat/completions") {
+				mu.Lock()
+				first := len(calls) == 0 || calls[len(calls)-1].turn != turn
+				calls = append(calls, call{turn, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer at-"), r.Header.Get("X-Conversation-ID")})
+				mu.Unlock()
+				if first {
+					status, ct, body = 500, "application/json", `{"code":500}`
+				}
+			}
+			return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{ct}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+		})},
+		ChatBaseCN:    "https://fake.example",
+		BillingBaseCN: "https://fake.example",
+	}
+	var auths []*auth.Auth
+	for _, u := range []string{"u1", "u2", "u3", "u4"} {
+		auths = append(auths, &auth.Auth{UID: u, AccessToken: "at-" + u, ExpiresAt: 9999999999})
+	}
+	h := NewHandler(Config{Pool: testPoolWith(auths...), Upstream: up, SoftCooldown: time.Minute})
+	// 开头带上测试名：会话 id 记录是进程内共用的，免得和别的测试撞上。
+	head := `{"model":"glm-5.2","messages":[{"role":"user","content":"你好 ` + t.Name() + `"}`
+	for i, body := range []string{
+		head + `]}`,
+		head + `,{"role":"assistant","content":"你好！"},{"role":"user","content":"写一首诗"}]}`,
+		head + `,{"role":"assistant","content":"你好！"},{"role":"user","content":"写一首诗"},{"role":"assistant","content":"春眠不觉晓"},{"role":"user","content":"再来一首"}]}`,
+	} {
+		mu.Lock()
+		turn = i + 1
+		mu.Unlock()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("第 %d 轮：code=%d body=%s", i+1, rec.Code, rec.Body)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 6 || !upstreamtest.UUIDv7.MatchString(calls[0].convID) {
+		t.Fatalf("三轮应各失败一次、换号成功一次，会话 id 是官方新会话的形状: %+v", calls)
+	}
+	for i, c := range calls {
+		if c.convID != calls[0].convID {
+			t.Fatalf("换号后出站会话 id 应不变: %+v", calls)
+		}
+		if i%2 == 1 && c.uid == calls[i-1].uid {
+			t.Fatalf("第 %d 轮失败后应换号重试: %+v", c.turn, calls)
+		}
 	}
 }
