@@ -132,11 +132,11 @@ var autoActions = []autoAction{
 		Desc:     "真实轻量云专家召唤+使用链（chat 链带 has_expert，已验证：两账号点亮）",
 		run:      runExpertLighthouse,
 	},
-	// 「体验某位专家」类任务（2026-10 官方新上），照 expert_5 的判据做；四个 expert_use_* 2026-10-28 生产实测点亮。
+	// 「体验某位专家」类任务（2026-10 官方新上），照 expert_5 的判据做；2026-10-28 生产实测都点亮
+	// （四个 expert_use_* 在 1.6.0 上，WorkBuddy_Valorant 改成按名字搜索后在 1.7.0 上）。
 	{
 		TaskCode: "WorkBuddy_Valorant",
-		Desc:     "在专家页搜「无畏契约拼豆专家」→ 召唤 + 真实对话一次（照 expert_5 推断，搜索这条路未实测）",
-		Attempt:  true,
+		Desc:     "在专家页搜「无畏契约拼豆专家」→ 召唤 + 真实对话一次（生产实测点亮）",
 		run:      runExpertTask(expertTaskTarget{Name: "无畏契约拼豆专家"}),
 	},
 	{
@@ -1252,7 +1252,8 @@ func (p *Panel) findTaskExpert(a *auth.Auth, target expertTaskTarget) (upstream.
 // 和任务里的一致才算，两次都没有就报错，不召唤别的专家。
 //
 // 2026-10-28 生产上按推荐排序翻了 5 页没找到「无畏契约拼豆专家」，网关当时也只认响应里的
-// experts、不认 items，两个原因哪个起作用没确认；搜索这条路还没在真实账号上跑过。
+// experts、不认 items。改成搜索后，同日升级 1.7.0 在两个国内版号上实测搜得到、任务点亮；
+// 上面两个原因哪个起作用、是哪一次搜索搜到的，没有单独确认。
 func (p *Panel) searchTaskExpert(a *auth.Auth, name string) (upstream.MarketExpert, error) {
 	experts, err := p.cfg.Upstream.MarketExpertSearch(a, "agent", name)
 	if err != nil {
