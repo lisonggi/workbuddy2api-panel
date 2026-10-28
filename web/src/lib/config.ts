@@ -4,6 +4,7 @@
 
 // 配置页的字段定义：每个表单字段对应 config.json 里的一个路径（与旧版 CFG_MAP 一致），
 // 按标签页分组。保存时只提交表单管理的键，后端深合并，未知键原样保留。
+import type { StoreKind } from './storage'
 
 export type FieldKind = 'text' | 'password' | 'number' | 'hours' | 'duration' | 'switch' | 'select'
 
@@ -30,6 +31,8 @@ export interface FieldDef {
 export interface Section {
   title?: string
   fields: FieldDef[]
+  /** 日志留存的一类：卡片下面显示这类现在的占用，并能清空 */
+  store?: StoreKind
 }
 
 export interface ConfigTab {
@@ -46,6 +49,12 @@ const duration = (name: string, path: string[], label: string, placeholder: stri
   ({ name, path, label, kind: 'duration', placeholder, hint, restart })
 const num = (name: string, path: string[], label: string, placeholder: string, extra: Partial<FieldDef> = {}): FieldDef =>
   ({ name, path, label, kind: 'number', placeholder, ...extra })
+/** 一类按天写文件的日志：开关、保留天数（0 = 永久）、容量上限 */
+const archive = (prefix: string, label: string, hint: string, days: string, maxMB: string): FieldDef[] => [
+  toggle(prefix + '_enabled', ['logging', prefix + '_enabled'], label, hint),
+  num(prefix + '_retention_days', ['logging', prefix + '_retention_days'], '保留天数', days, { min: 0, hint: '0 = 永久保留（仍受容量上限）；超期的按天文件自动删除' }),
+  num(prefix + '_max_mb', ['logging', prefix + '_max_mb'], '容量上限（MiB）', maxMB, { min: 1, hint: '超过上限先删最旧的文件' }),
+]
 
 export const CONFIG_TABS: ConfigTab[] = [
   {
@@ -169,15 +178,40 @@ export const CONFIG_TABS: ConfigTab[] = [
           toggle('session_sticky_enabled', ['session_sticky', 'enabled'], '会话粘性路由'),
         ],
       },
+    ],
+  },
+  {
+    id: 'logs',
+    label: '日志留存',
+    sections: [
       {
-        title: '请求日志',
+        title: '请求记录',
+        store: 'requests',
         fields: [
+          toggle('request_archive_enabled', ['logging', 'request_archive_enabled'], '留存请求记录（JSONL 归档）',
+            '只记时间、状态、模型、账号、耗时、token、积分和失败原因，不记提示词、响应正文或密钥；关掉后请求记录页只剩内存里的最近 100 条'),
+          num('request_retention_days', ['logging', 'request_retention_days'], '保留天数', '7', { min: 0, hint: '0 = 永久保留（仍受容量上限）；超期的按天文件自动删除' }),
+          num('request_archive_max_mb', ['logging', 'request_archive_max_mb'], '容量上限（MiB）', '100', { min: 1, hint: '超过上限先删最旧的文件' }),
           toggle('request_client_info', ['logging', 'request_client_info'], '记录调用来源（客户端 IP / User-Agent）',
-            '开启后运行日志页的请求记录显示每次调用来自哪个 IP、用什么客户端；关闭则归档与面板都不再出现来源信息'),
-          toggle('request_archive_enabled', ['logging', 'request_archive_enabled'], '请求元数据 JSONL 归档',
-            '只记录时间、状态、模型、账号、耗时、token、积分，不记录提示词、响应正文或密钥', true),
-          num('request_retention_days', ['logging', 'request_retention_days'], '归档保留天数', '7', { min: 1, restart: true, hint: '超期文件在启动和定期清理时删除' }),
-          num('request_archive_max_mb', ['logging', 'request_archive_max_mb'], '归档容量上限（MiB）', '100', { min: 1, restart: true, hint: '超过上限先删最旧的文件' }),
+            '开启后请求记录页显示每次调用来自哪个 IP、用什么客户端；关闭则归档与面板都不再出现来源信息'),
+        ],
+      },
+      {
+        title: '任务日志',
+        store: 'task',
+        fields: archive('task_log', '留存任务日志', '运行日志「任务」频道（签到、保活、旅行、成长任务等）按天落盘，运行日志页可按时间范围查历史', '30', '20'),
+      },
+      {
+        title: '系统日志',
+        store: 'system',
+        fields: archive('system_log', '留存系统日志', '运行日志「系统」频道（选号、冷却、熔断、配置改动等）按天落盘，运行日志页可按时间范围查历史', '30', '50'),
+      },
+      {
+        title: '用量统计',
+        store: 'usage',
+        fields: [
+          num('usage_retention_days', ['logging', 'usage_retention_days'], '保留天数', '0',
+            { min: 0, hint: '0 = 永久保留；超期的整点、整天用量明细自动删除，用量页能查到的最早时间随之后移' }),
         ],
       },
     ],

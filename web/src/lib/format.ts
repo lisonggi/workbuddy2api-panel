@@ -126,6 +126,14 @@ export function fmtLocalDateTime(ms: number): string {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
 }
 
+/** 列表里的时刻：今天的只显示时刻，更早的带上日期（时间范围可以跨好几天）；没有时间返回空串 */
+export function dayClock(iso?: string | null, now = new Date()): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const t = d.toLocaleTimeString('zh-CN', { hour12: false })
+  return d.toDateString() === now.toDateString() ? t : d.getMonth() + 1 + '-' + String(d.getDate()).padStart(2, '0') + ' ' + t
+}
+
 export function fmtBytes(bytes?: number | null): string {
   const n = Number(bytes || 0)
   if (n < 1024) return n + ' B'

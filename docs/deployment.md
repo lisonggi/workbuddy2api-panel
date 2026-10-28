@@ -21,7 +21,7 @@
 | 单文件二进制 | Windows / macOS / Linux，不想装 Docker | 无；面板前端已打进二进制 |
 | 从源码构建 | 开发调试 | Go 1.26+、Node.js 22+ |
 
-所有方式都只需要两个可写目录：`auths/`（账号凭证）和 `data/`（池状态、用量、请求归档）。
+所有方式都只需要两个可写目录：`auths/`（账号凭证）和 `data/`（池状态、用量、请求记录与运行日志的留存）。
 
 ## Docker 镜像（推荐）
 
@@ -172,7 +172,7 @@ Compose 部署：`git pull && docker compose up -d --build`。
 |---|---|
 | 账号凭证（明文 token，务必妥善保管） | `auths/` |
 | 池状态（积分、冷却、计数、暂停标记） | `data/state.json` |
-| 用量统计与请求归档 | `data/usage.json`、`data/request-logs/` |
+| 用量统计与日志留存 | `data/usage.json`、`data/request-logs/`（请求记录）、`data/runtime-logs/`（任务日志、系统日志） |
 | 客户端密钥（含密钥原文和各自的用量） | `data/api_keys.json` |
 | 会话记录（客户端没给会话 id 时网关定的会话 id、每段对话用过的号） | `data/sessions.json` |
 | 配置 | `config.json`（或 `data/config.json`） |

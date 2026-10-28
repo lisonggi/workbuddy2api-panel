@@ -119,7 +119,7 @@ export interface ModelLockRow {
 
 export interface LogEntry {
   ts: string
-  /** task / chat / sys */
+  /** task / sys */
   ch: string
   text: string
 }
@@ -428,14 +428,47 @@ export interface RequestMetrics {
   avg_duration_ms?: number
   /** 最近的请求，最新的在前 */
   recent?: RequestEvent[] | null
-  archive?: {
-    enabled: boolean
-    dir?: string
-    files?: number
-    bytes?: number
-    dropped_writes?: number
-    last_error?: string
-  }
+  archive?: ArchiveStats
+}
+
+/** 一类日志归档的存储状态（请求记录、任务日志、系统日志） */
+export interface ArchiveStats {
+  enabled: boolean
+  dir?: string
+  /** 保留天数，0 = 永久保留 */
+  retention_days?: number
+  max_bytes?: number
+  files?: number
+  bytes?: number
+  /** 最早那份文件的日期（YYYY-MM-DD），没有文件时没有这一项 */
+  oldest_day?: string
+  dropped_writes?: number
+  last_error?: string
+}
+
+/** 用量统计的存储状态 */
+export interface UsageStoreStats {
+  /** 保留天数，0 = 永久保留 */
+  retention_days: number
+  buckets: number
+  /** usage.json 的大小 */
+  bytes: number
+  oldest_day?: string
+}
+
+/** /panel/api/log_storage：日志留存各类的状态，没接上的为 null */
+export interface LogStorage {
+  requests: ArchiveStats | null
+  task: ArchiveStats | null
+  system: ArchiveStats | null
+  usage: UsageStoreStats | null
+}
+
+/** /panel/api/logs/archive：按时间范围查到的运行日志，按时间先后排；more = 更早的还有没返回的 */
+export interface LogArchiveResp {
+  entries: LogEntry[] | null
+  limit: number
+  more: boolean
 }
 
 export interface CompensationStatus {

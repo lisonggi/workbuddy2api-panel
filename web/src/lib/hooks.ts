@@ -29,6 +29,16 @@ export function useStoredChoice<T extends string>(key: string, choices: readonly
   return [value, set] as const
 }
 
+/** 停下 ms 毫秒不再变才跟上的值：关键字交给网关筛时，不必每敲一个字查一次 */
+export function useDebounced<T>(value: T, ms = 400): T {
+  const [v, setV] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return v
+}
+
 /** 每隔 intervalMs 返回一次当前时间（冷却倒计时逐秒走） */
 export function useNow(intervalMs = 1000) {
   const [now, setNow] = useState(() => Date.now())

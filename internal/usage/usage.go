@@ -12,7 +12,8 @@
 //
 // 保留策略（分片粒度自动降级，总量因此有界）：
 //   - 近 hourlyKeep 小时内：小时桶（细粒度，看尖峰）
-//   - 更早：折叠为日桶，**永久保留**（看长期趋势）
+//   - 更早：折叠为日桶，缺省**永久保留**（看长期趋势）；设了保留天数（logging.usage_retention_days）
+//     时，整段早于这么多天的桶删掉
 //
 // 落盘：data/usage.json，原子替换 + 防抖刷新（默认 30s），重启不丢。
 // 桶数上界 ≈ 账号数 × 模型数 × (hourlyKeep + 已过天数)，实测单桶约 90 字节。
@@ -90,6 +91,8 @@ type Recorder struct {
 	buckets map[string]*bucket // key: scope|realm|uid|model|rate
 	dirty   bool
 	started time.Time
+	// retentionDays 保留天数，0 = 永久保留（见 SetRetentionDays）。
+	retentionDays int
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -131,6 +134,7 @@ func (r *Recorder) Start() {
 				if n > maxBuckets {
 					r.Rollup(time.Now())
 				}
+				r.pruneExpired(time.Now())
 				r.flush(false)
 			}
 		}
@@ -323,14 +327,14 @@ func (r *Recorder) load() error {
 	return nil
 }
 
-func (r *Recorder) flush(force bool) {
+func (r *Recorder) flush(force bool) error {
 	if r == nil || r.path == "" {
-		return
+		return nil
 	}
 	r.mu.Lock()
 	if !r.dirty && !force {
 		r.mu.Unlock()
-		return
+		return nil
 	}
 	snap := file{Version: fileVersion, Saved: time.Now().Format(time.RFC3339), Buckets: make([]bucket, 0, len(r.buckets))}
 	for _, b := range r.buckets {
@@ -342,20 +346,107 @@ func (r *Recorder) flush(force bool) {
 	raw, err := json.Marshal(snap)
 	if err != nil {
 		log.Printf("[usage] 序列化失败: %v", err)
-		return
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
 		log.Printf("[usage] 建目录失败: %v", err)
-		return
+		return err
 	}
 	tmp := r.path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		log.Printf("[usage] 写临时文件失败: %v", err)
-		return
+		return err
 	}
 	if err := os.Rename(tmp, r.path); err != nil {
 		log.Printf("[usage] 原子替换失败: %v", err)
+		return err
 	}
+	return nil
+}
+
+// ---------------------------------------------------------------- 留存 ----
+
+// SetRetentionDays 设保留天数：整段早于这么多天的用量桶删掉；0 = 永久保留（缺省），负数当 0。
+// 面板保存配置即生效，马上按新天数清一次。
+func (r *Recorder) SetRetentionDays(days int) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.retentionDays = max(days, 0)
+	r.mu.Unlock()
+	r.pruneExpired(time.Now())
+}
+
+// pruneExpired 删掉整段早于保留天数的用量桶：小时桶到这一小时结束、日桶到次日零点才算整段过去；
+// 保留天数为 0 时不删。
+func (r *Recorder) pruneExpired(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.retentionDays <= 0 {
+		return
+	}
+	cutoff := now.AddDate(0, 0, -r.retentionDays)
+	for k, b := range r.buckets {
+		start, ok := bucketTime(b.Scope)
+		if !ok {
+			continue
+		}
+		end := start.AddDate(0, 0, 1)
+		if strings.HasPrefix(b.Scope, "h:") {
+			end = start.Add(time.Hour)
+		}
+		if !end.After(cutoff) {
+			delete(r.buckets, k)
+			r.dirty = true
+		}
+	}
+}
+
+// StoreStats 用量统计的存储状态（面板「日志留存」显示）。
+type StoreStats struct {
+	RetentionDays int   `json:"retention_days"`
+	Buckets       int   `json:"buckets"`
+	Bytes         int64 `json:"bytes"` // usage.json 的大小
+	// OldestDay 最早那个用量桶的日期（YYYY-MM-DD），没有数据时为空。
+	OldestDay string `json:"oldest_day,omitempty"`
+}
+
+// StoreStats 返回保留天数、桶数、usage.json 大小和最早那个桶的日期。
+func (r *Recorder) StoreStats() StoreStats {
+	if r == nil {
+		return StoreStats{}
+	}
+	r.mu.Lock()
+	st := StoreStats{RetentionDays: r.retentionDays, Buckets: len(r.buckets)}
+	var oldest time.Time
+	for _, b := range r.buckets {
+		if t, ok := bucketTime(b.Scope); ok && (oldest.IsZero() || t.Before(oldest)) {
+			oldest = t
+		}
+	}
+	r.mu.Unlock()
+	if !oldest.IsZero() {
+		st.OldestDay = oldest.Format(dayLayout)
+	}
+	if r.path != "" {
+		if fi, err := os.Stat(r.path); err == nil {
+			st.Bytes = fi.Size()
+		}
+	}
+	return st
+}
+
+// Clear 清空全部用量明细并马上落盘：用量页从零开始。客户端密钥的每天、总量限额另有计数，不受影响。
+func (r *Recorder) Clear() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	r.buckets = make(map[string]*bucket)
+	r.dirty = true
+	r.mu.Unlock()
+	return r.flush(true)
 }
 
 // Save 立即落盘（面板「刷新」或关闭前调用）。

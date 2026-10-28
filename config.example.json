@@ -14,7 +14,14 @@
     "request_archive_enabled": true,
     "request_retention_days": 7,
     "request_archive_max_mb": 100,
-    "request_client_info": true
+    "request_client_info": true,
+    "task_log_enabled": true,
+    "task_log_retention_days": 30,
+    "task_log_max_mb": 20,
+    "system_log_enabled": true,
+    "system_log_retention_days": 30,
+    "system_log_max_mb": 50,
+    "usage_retention_days": 0
   },
   "cooldown": {
     "soft_rate": "600s",

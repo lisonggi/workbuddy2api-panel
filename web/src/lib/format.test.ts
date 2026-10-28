@@ -5,7 +5,7 @@
 // 从上游 internal/panel/frontend_test.go 的 TestAppJSCreditDimensionFormatting 平移（期望值原样保留）：
 // 积分扣除维度的格式要稳定，缺样本 / 缺匹配 Token 时不能伪造比例。
 import { describe, expect, it } from 'vitest'
-import { fmtBytes, fmtCredit, fmtCreditRatio, fmtModelRate } from './format'
+import { dayClock, fmtBytes, fmtCredit, fmtCreditRatio, fmtModelRate } from './format'
 
 describe('积分格式', () => {
   it('积分、积分 / 1M Token、倍率', () => {
@@ -22,5 +22,12 @@ describe('积分格式', () => {
     expect(fmtBytes(512)).toBe('512 B')
     expect(fmtBytes(2048)).toBe('2.0 KB')
     expect(fmtBytes(3 * 1024 * 1024)).toBe('3.0 MB')
+  })
+  it('今天只显示时刻，更早的带日期', () => {
+    const now = new Date(2026, 9, 28, 15, 0, 0)
+    expect(dayClock(new Date(2026, 9, 28, 9, 5, 7).toISOString(), now)).toBe('09:05:07')
+    expect(dayClock(new Date(2026, 9, 3, 23, 59, 1).toISOString(), now)).toBe('10-03 23:59:01')
+    expect(dayClock('', now)).toBe('')
+    expect(dayClock(undefined, now)).toBe('')
   })
 })

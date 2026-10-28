@@ -4,8 +4,8 @@
 
 package reqlog
 
-// reqlog_more_test.go reqlog 的补充用例：请求 ID、nil 接收者、空结果、归档默认
-// 参数与各类 IO 失败、跨天/轮转命名、prune 与 stats 的边界。已有用例不重复。
+// reqlog_more_test.go reqlog 的补充用例：请求 ID、nil 接收者、空结果、归档默认参数与关闭状态、
+// 运行中改开关与清空、目录不可用、跨天文件、读取边界。归档文件本身的轮转、清理在 logarchive 里测。
 
 import (
 	"os"
@@ -44,6 +44,10 @@ func TestNilRecorderMethods(t *testing.T) {
 	if rows, err := r.ReadArchive(10, Filter{}); rows != nil || err != nil {
 		t.Fatalf("nil ReadArchive = %v, %v", rows, err)
 	}
+	r.SetArchive(true, 7, 1<<20)
+	if err := r.ClearArchive(); err != nil {
+		t.Fatalf("nil ClearArchive = %v", err)
+	}
 	r.Close()
 }
 
@@ -71,13 +75,11 @@ func TestRecordDerivesOutcomeAndCapsRecent(t *testing.T) {
 	}
 }
 
-// 归档默认参数与关闭状态：Enabled=false 时读为空、Close 无副作用。
+// 归档默认参数与关闭状态：不填天数 = 永久保留、容量回落 100 MiB；Enabled=false 时读为空、Close 无副作用。
 func TestArchiveDefaultsAndDisabled(t *testing.T) {
 	r := New(Config{Enabled: true, Dir: t.TempDir()})
-	a := r.archive
-	if a.cfg.RetentionDays != 7 || a.cfg.MaxBytes != 100<<20 ||
-		a.cfg.FileMaxBytes != defaultFileMax || a.cfg.QueueSize != defaultQueue {
-		t.Fatalf("归档默认参数不对: %+v", a.cfg)
+	if a := r.Snapshot().Archive; !a.Enabled || a.RetentionDays != 0 || a.MaxBytes != 100<<20 {
+		t.Fatalf("归档默认参数不对: %+v", a)
 	}
 	r.Close()
 
@@ -93,7 +95,62 @@ func TestArchiveDefaultsAndDisabled(t *testing.T) {
 	}
 }
 
-// 归档目录建不出来（路径是文件）：setErr 记录错误、降级为不可用、不 panic。
+// 运行中关掉归档：之后的请求不再写盘，读归档为空（面板改用内存里的最近 100 条）；再打开接着写；
+// 清空删掉全部归档文件，内存指标不动。
+func TestSetArchiveAndClear(t *testing.T) {
+	dir := t.TempDir()
+	r := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 7})
+	defer r.Close()
+	waitRows := func(want int) []Event {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			rows, err := r.ReadArchive(10, Filter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) == want || time.Now().After(deadline) {
+				return rows
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	r.Record(Event{RequestID: "on-1", Status: 200, OK: true})
+	if rows := waitRows(1); len(rows) != 1 {
+		t.Fatalf("开着时应写盘: %+v", rows)
+	}
+
+	r.SetArchive(false, 7, 1<<20)
+	r.Record(Event{RequestID: "off", Status: 200, OK: true})
+	if rows, err := r.ReadArchive(10, Filter{}); rows != nil || err != nil {
+		t.Fatalf("关掉后读归档应为空: %v, %v", rows, err)
+	}
+	if a := r.Snapshot().Archive; a.Enabled || a.Files != 1 {
+		t.Fatalf("关掉后已有的文件留着: %+v", a)
+	}
+
+	r.SetArchive(true, 30, 1<<20)
+	r.Record(Event{RequestID: "on-2", Status: 200, OK: true})
+	rows := waitRows(2)
+	if len(rows) != 2 || rows[0].RequestID != "on-2" || rows[1].RequestID != "on-1" {
+		t.Fatalf("再打开应接着写，关着时的请求不写: %+v", rows)
+	}
+	if a := r.Snapshot().Archive; a.RetentionDays != 30 {
+		t.Fatalf("保留天数应改成 30: %+v", a)
+	}
+
+	if err := r.ClearArchive(); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.Snapshot().Archive; a.Files != 0 || a.Bytes != 0 {
+		t.Fatalf("清空后不应再有文件: %+v", a)
+	}
+	if s := r.Snapshot(); s.Completed != 3 || len(s.Recent) != 3 {
+		t.Fatalf("清空归档不动内存指标: completed=%d recent=%d", s.Completed, len(s.Recent))
+	}
+}
+
+// 归档目录建不出来（路径是文件）：记录错误、读归档报错、不 panic。
 func TestArchiveMkdirFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "not-a-dir")
@@ -101,21 +158,20 @@ func TestArchiveMkdirFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := New(Config{Enabled: true, Dir: path})
-	s := r.Snapshot().Archive
-	if s.Enabled || s.LastError == "" {
-		t.Fatalf("目录不可建时应禁用归档并记录错误: %+v", s)
-	}
 	r.Record(Event{Status: 200, OK: true})
-	if rows, err := r.ReadArchive(10, Filter{}); rows != nil || err != nil {
-		t.Fatalf("不可用归档 ReadArchive = %v, %v", rows, err)
-	}
 	r.Close()
+	if s := r.Snapshot().Archive; s.LastError == "" {
+		t.Fatalf("目录不可建时应记录错误: %+v", s)
+	}
+	if _, err := r.ReadArchive(10, Filter{}); err == nil {
+		t.Fatal("目录不可用时 ReadArchive 应报错")
+	}
 }
 
 // 跨天换文件：不同日期的事件落到各自的 requests-<day>.jsonl。
 func TestArchiveCrossDayFiles(t *testing.T) {
 	dir := t.TempDir()
-	r := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 7})
+	r := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20})
 	day1 := time.Date(2026, 3, 1, 12, 0, 0, 0, time.Local)
 	day2 := day1.AddDate(0, 0, 1)
 	r.Record(Event{Time: day1, RequestID: "d1", Status: 200, OK: true, Outcome: OutcomeSuccess})
@@ -126,104 +182,12 @@ func TestArchiveCrossDayFiles(t *testing.T) {
 			t.Fatalf("缺少 %s 的归档文件: %v", day, err)
 		}
 	}
-}
-
-// latestArchiveForDay / nextArchivePath / fileExists 的命名与边界。
-func TestArchiveFileNaming(t *testing.T) {
-	dir := t.TempDir()
-	day := "2026-10-19"
-	if got := latestArchiveForDay(dir, day); got != "" {
-		t.Fatalf("空目录应返回空串: %q", got)
-	}
-	if got := nextArchivePath(dir, day); got != filepath.Join(dir, "requests-"+day+".jsonl") {
-		t.Fatalf("首个文件路径不对: %q", got)
-	}
-
-	for _, name := range []string{
-		"requests-" + day + ".jsonl",
-		"requests-" + day + ".1.jsonl",
-		"requests-" + day + ".2.jsonl",
-		"requests-" + day + ".bad.jsonl", // 非数字后缀：忽略
-		"notes.txt",
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Mkdir(filepath.Join(dir, "requests-"+day+".9.jsonl"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if got := latestArchiveForDay(dir, day); got != "requests-"+day+".2.jsonl" {
-		t.Fatalf("latestArchiveForDay = %q", got)
-	}
-	if got := nextArchivePath(dir, day); got != filepath.Join(dir, "requests-"+day+".3.jsonl") {
-		t.Fatalf("nextArchivePath = %q", got)
-	}
-	if !fileExists(filepath.Join(dir, "requests-"+day+".jsonl")) {
-		t.Fatal("普通文件应存在")
-	}
-	if fileExists(filepath.Join(dir, "requests-"+day+".9.jsonl")) {
-		t.Fatal("目录不应被当作归档文件")
-	}
-
-	// 目录不存在时 latestArchiveForDay 返回空串。
-	if got := latestArchiveForDay(filepath.Join(dir, "missing"), day); got != "" {
-		t.Fatalf("目录不存在应返回空串: %q", got)
+	if s := r.Snapshot().Archive; s.OldestDay != "2026-03-01" || s.Files != 2 {
+		t.Fatalf("最早那份应是 03-01: %+v", s)
 	}
 }
 
-// openFile 失败：目录被换成文件、目标文件名被目录占用时记录错误。
-func TestArchiveOpenFileErrors(t *testing.T) {
-	t.Run("目录变成文件", func(t *testing.T) {
-		dir := filepath.Join(t.TempDir(), "arch")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		w := &archiveWriter{
-			cfg:  Config{Enabled: true, Dir: dir, FileMaxBytes: 1 << 20, MaxBytes: 1 << 20, RetentionDays: 7},
-			ch:   make(chan Event, 1),
-			stop: make(chan struct{}),
-			done: make(chan struct{}),
-		}
-		if err := os.RemoveAll(dir); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dir, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		w.writeEvent(Event{Time: time.Now(), Status: 200})
-		if w.errString() == "" {
-			t.Fatal("目录不可建时应记录错误")
-		}
-	})
-
-	t.Run("目标文件名被目录占用", func(t *testing.T) {
-		dir := t.TempDir()
-		now := time.Now()
-		if err := os.Mkdir(filepath.Join(dir, "requests-"+now.Format("2006-01-02")+".jsonl"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		w := &archiveWriter{
-			cfg:  Config{Enabled: true, Dir: dir, FileMaxBytes: 1 << 20, MaxBytes: 1 << 20, RetentionDays: 7},
-			ch:   make(chan Event, 1),
-			stop: make(chan struct{}),
-			done: make(chan struct{}),
-		}
-		w.writeEvent(Event{Time: now, Status: 200})
-		if w.errString() == "" {
-			t.Fatal("OpenFile 失败时应记录错误")
-		}
-	})
-
-	// setErr(nil) 是空操作。
-	w := &archiveWriter{}
-	w.setErr(nil)
-	if w.errString() != "" {
-		t.Fatal("setErr(nil) 不应记录错误")
-	}
-}
-
-// ReadArchive 的边界：limit 回落/夹取、非归档文件跳过、目录缺失报错、
+// ReadArchive 的边界：limit 回落/夹取、非归档文件跳过、目录被删后读为空、
 // 归档文件读失败（符号链接指向不存在目标）报错。
 func TestArchiveReadEdges(t *testing.T) {
 	t.Run("limit 回落与夹取", func(t *testing.T) {
@@ -255,18 +219,18 @@ func TestArchiveReadEdges(t *testing.T) {
 		r.Close()
 	})
 
-	t.Run("目录被删后读取与统计报错", func(t *testing.T) {
+	t.Run("目录被删后读为空", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "arch")
 		r := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 7})
 		r.Close()
 		if err := os.RemoveAll(dir); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.ReadArchive(10, Filter{}); err == nil {
-			t.Fatal("目录缺失时 ReadArchive 应报错")
+		if rows, err := r.ReadArchive(10, Filter{}); err != nil || len(rows) != 0 {
+			t.Fatalf("目录不存在算没有记录: %v, %v", rows, err)
 		}
-		if s := r.Snapshot().Archive; s.LastError == "" {
-			t.Fatalf("目录缺失时 stats 应记录错误: %+v", s)
+		if s := r.Snapshot().Archive; s.Files != 0 || s.LastError != "" {
+			t.Fatalf("目录不存在算没有文件: %+v", s)
 		}
 	})
 
@@ -281,67 +245,4 @@ func TestArchiveReadEdges(t *testing.T) {
 		}
 		r.Close()
 	})
-}
-
-// prune：归档关闭时空操作；目录缺失记录错误；非归档文件与同名目录不删；
-// mtime 相同时按路径稳定排序（同批旧文件都被清理）。
-func TestArchivePruneEdges(t *testing.T) {
-	t.Run("归档关闭时为空操作", func(t *testing.T) {
-		w := &archiveWriter{cfg: Config{Enabled: false, Dir: t.TempDir()}}
-		w.prune()
-		if w.errString() != "" {
-			t.Fatal("关闭状态不应记录错误")
-		}
-	})
-
-	t.Run("目录缺失记录错误", func(t *testing.T) {
-		w := &archiveWriter{cfg: Config{Enabled: true, Dir: filepath.Join(t.TempDir(), "nope"), RetentionDays: 7, MaxBytes: 1 << 20}, done: make(chan struct{})}
-		w.prune()
-		if w.errString() == "" {
-			t.Fatal("目录缺失应记录错误")
-		}
-	})
-
-	t.Run("只清理过期归档文件", func(t *testing.T) {
-		dir := t.TempDir()
-		oldStamp := time.Unix(1700000000, 0)
-		for _, name := range []string{"requests-2026-01-01.jsonl", "requests-2026-01-02.jsonl"} {
-			path := filepath.Join(dir, name)
-			if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chtimes(path, oldStamp, oldStamp); err != nil { // mtime 相同，覆盖排序 tie 分支
-				t.Fatal(err)
-			}
-		}
-		keep := filepath.Join(dir, "notes.txt")
-		if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Mkdir(filepath.Join(dir, "requests-dir.jsonl"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		w := &archiveWriter{cfg: Config{Enabled: true, Dir: dir, RetentionDays: 7, MaxBytes: 1 << 20}, done: make(chan struct{})}
-		w.prune()
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var names []string
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		if len(names) != 2 || names[0] != "notes.txt" || names[1] != "requests-dir.jsonl" {
-			t.Fatalf("只应保留非归档文件与目录: %v", names)
-		}
-	})
-}
-
-// flush：没有打开文件时为空操作；有 buffer 时写盘（Close 后内容完整可读）。
-func TestArchiveFlushNoop(t *testing.T) {
-	w := &archiveWriter{cfg: Config{Enabled: true, Dir: t.TempDir()}}
-	w.flush()
-	if w.errString() != "" {
-		t.Fatalf("无 buffer 时 flush 不应出错: %s", w.errString())
-	}
 }

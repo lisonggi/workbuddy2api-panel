@@ -8,11 +8,12 @@
 // 归档开着时按时间范围与条数从 JSONL 归档读；关键字与结果筛选只在已读到的条目上做，不发新请求。
 import { useMemo, useState } from 'react'
 import { Chip, Label, ListBox, SearchField, Select, Table, useMediaQuery } from '@heroui/react'
-import { fmtBytes, fmtMs, fmtTok } from '../../lib/format'
+import { dayClock, fmtMs, fmtTok } from '../../lib/format'
 import { useRequestMetrics } from '../../lib/queries'
 import {
   OUTCOME_LABEL, cacheRateText, matchRequest, outcomeLevel, requestCredit, requestLogText, requestTokens,
 } from '../../lib/requests'
+import { retentionText, storageProblem, storageSummary } from '../../lib/storage'
 import { initialRange } from '../../lib/timerange'
 import type { RequestEvent, RequestMetrics as Metrics } from '../../lib/types'
 import { BusyButton, Empty, ErrorBox, Loaded } from '../../components/Feedback'
@@ -33,16 +34,10 @@ function summary(m: Metrics | null): string {
 function archiveNote(m: Metrics | null): string {
   const a = m?.archive
   if (!a?.enabled) return '仅内存指标（最近 100 条），JSONL 归档已关闭'
-  return 'JSONL 归档 ' + fmtBytes(a.bytes) + (a.dropped_writes ? ' · 丢弃 ' + a.dropped_writes + ' 条' : '') + (a.last_error ? ' · 错误：' + a.last_error : '')
+  return ['JSONL 归档', retentionText(a.retention_days), storageSummary('requests', a), storageProblem(a)].filter(Boolean).join(' · ')
 }
 
-/** 今天的只显示时刻，更早的带上日期（时间范围可以跨好几天） */
-function clock(e: RequestEvent): string {
-  if (!e.time) return '—'
-  const d = new Date(e.time)
-  const t = d.toLocaleTimeString('zh-CN', { hour12: false })
-  return d.toDateString() === new Date().toDateString() ? t : d.getMonth() + 1 + '-' + String(d.getDate()).padStart(2, '0') + ' ' + t
-}
+const clock = (e: RequestEvent) => dayClock(e.time) || '—'
 
 function Outcome({ e }: { e: RequestEvent }) {
   return (

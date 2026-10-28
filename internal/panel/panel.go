@@ -32,6 +32,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/changelog"
 	"github.com/yreidev/workbuddy2api-panel/internal/httpauth"
 	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
+	"github.com/yreidev/workbuddy2api-panel/internal/logarchive"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
 	"github.com/yreidev/workbuddy2api-panel/internal/reqlog"
 	"github.com/yreidev/workbuddy2api-panel/internal/scheduler"
@@ -77,6 +78,10 @@ type Config struct {
 	Usage *usage.Recorder
 	// RequestLog 请求指标与归档（nil = 对应接口返回 501）。
 	RequestLog *reqlog.Recorder
+	// TaskLog / SystemLog 运行日志里任务、系统两个频道的留存归档：每行入环后按频道落盘，
+	// 按时间范围查历史、日志留存的占用与清空都读这里（nil = 这个频道不落盘）。
+	TaskLog   *logarchive.Store
+	SystemLog *logarchive.Store
 
 	// ProbeFile 模型输出上限探测结果文件（scripts/probe_max_tokens.py --panel-out
 	// 写入；空或文件不存在 = model_probes 端点返回空集，面板不显示任何实测标注）。
@@ -168,6 +173,9 @@ func New(cfg Config) *Panel {
 		assets:   embeddedDist(),
 		releases: changelog.Parse(cfg.Changelog),
 	}
+	if cfg.TaskLog != nil || cfg.SystemLog != nil {
+		p.logs.SetSink(p.archiveLogLine)
+	}
 	p.routes()
 	return p
 }
@@ -187,6 +195,9 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/update", p.withAuth(p.selfUpdate))
 	p.mux.HandleFunc("POST /panel/api/update/rollback", p.withAuth(p.selfUpdateRollback))
 	p.mux.HandleFunc("GET /panel/api/logs", p.withAuth(p.logsHandler))
+	p.mux.HandleFunc("GET /panel/api/logs/archive", p.withAuth(p.logsArchive))
+	p.mux.HandleFunc("GET /panel/api/log_storage", p.withAuth(p.logStorage))
+	p.mux.HandleFunc("POST /panel/api/log_storage/{kind}/clear", p.withAuth(p.logStorageClear))
 	p.mux.HandleFunc("GET /panel/api/request_metrics", p.withAuth(p.requestMetrics))
 	p.mux.HandleFunc("GET /panel/api/request_logs", p.withAuth(p.requestLogs))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))

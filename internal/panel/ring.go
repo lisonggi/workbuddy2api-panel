@@ -4,7 +4,8 @@
 
 // ring.go 固定容量的结构化日志环形缓冲（并发安全，实现 io.Writer）。
 // main 把 log 包输出经 MultiWriter 镜像进来，面板 /panel/api/logs 读取快照；
-// 超出容量的旧行按 FIFO 淘汰，不分频道。
+// 超出容量的旧行按 FIFO 淘汰，不分频道。开了任务日志、系统日志留存时，每行入环后
+// 再按频道交给对应的归档落盘（见 SetSink），面板按时间范围查历史走 /panel/api/logs/archive。
 //
 // 对话请求的表格流水行只打到 stdout、不进这里：同样的信息面板「请求记录」里有，
 // 而且流量一大就会把任务和系统日志挤出环。每行入环时按前缀规则归类频道
@@ -57,6 +58,7 @@ type Ring struct {
 	mu      sync.Mutex
 	entries []LogEntry
 	cap     int
+	sink    func(LogEntry) // 每行入环后再交给它落盘；nil = 不落盘
 }
 
 // NewRing 构建容量为 capacity 的日志环（非正值回退 500）。
@@ -67,19 +69,34 @@ func NewRing(capacity int) *Ring {
 	return &Ring{cap: capacity}
 }
 
+// SetSink 设置每行入环后的去处（面板接到任务日志、系统日志的归档）。
+func (r *Ring) SetSink(f func(LogEntry)) {
+	r.mu.Lock()
+	r.sink = f
+	r.mu.Unlock()
+}
+
 // Write 按 \n 切分入环（实现 io.Writer）。空行丢弃；超容量淘汰最旧行。
 func (r *Ring) Write(p []byte) (int, error) {
 	now := time.Now()
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	start := len(r.entries)
 	for _, line := range strings.Split(strings.TrimRight(string(p), "\r\n"), "\n") {
 		if line == "" {
 			continue
 		}
 		text := tsPrefixRe.ReplaceAllString(line, "")
 		r.entries = append(r.entries, LogEntry{TS: now, Ch: classifyLine(text), Text: text})
-		if overflow := len(r.entries) - r.cap; overflow > 0 {
-			r.entries = r.entries[overflow:]
+	}
+	added := append([]LogEntry(nil), r.entries[start:]...)
+	if overflow := len(r.entries) - r.cap; overflow > 0 {
+		r.entries = r.entries[overflow:]
+	}
+	sink := r.sink
+	r.mu.Unlock()
+	if sink != nil {
+		for _, e := range added {
+			sink(e)
 		}
 	}
 	return len(p), nil

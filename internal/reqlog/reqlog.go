@@ -4,43 +4,30 @@
 
 // Package reqlog 记录脱敏的请求级指标与可选 JSONL 归档。
 //
-// 内存指标有界保存最近 100 条并维护进程级计数；磁盘归档只写请求元数据，
-// 不写提示词、响应正文、Authorization 或其它凭证。可选的调用来源（客户端 IP /
+// 内存指标有界保存最近 100 条并维护进程级计数；磁盘归档（requests-<日期>.jsonl，见 logarchive）
+// 只写请求元数据，不写提示词、响应正文、Authorization 或其它凭证。可选的调用来源（客户端 IP /
 // User-Agent，见 Event.ClientIP/UserAgent）由 server 按配置开关决定是否填充。
 // 归档队列满时丢弃并计数，不允许日志写盘阻塞模型请求。
 package reqlog
 
 import (
-	"bufio"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/yreidev/workbuddy2api-panel/internal/logarchive"
 )
 
 const (
-	recentLimit     = 100
-	defaultFileMax  = int64(16 << 20)
-	defaultQueue    = 1024
-	defaultReadMax  = 1000
-	archiveFileGlob = "requests-*.jsonl"
+	recentLimit    = 100
+	defaultReadMax = 1000
+	archivePrefix  = "requests"
 )
 
-// 测试可替换：随机数失败回退、归档刷盘周期与写缓冲、文件 Stat。
-// 默认值就是原来的直接调用/常量，行为不变。
-var (
-	randRead        = rand.Read
-	archiveTick     = time.Second
-	newArchiveBuf   = bufio.NewWriterSize
-	statArchiveFile = (*os.File).Stat
-)
+// 测试可替换：随机数失败回退。
+var randRead = rand.Read
 
 // NewRequestID 生成不含用户信息的本地请求 ID。
 func NewRequestID() string {
@@ -58,7 +45,8 @@ const (
 	OutcomeInterrupted = "interrupted"
 )
 
-// Config 归档参数。Enabled=false 时仍保留内存指标。
+// Config 归档参数。Enabled=false 时仍保留内存指标。RetentionDays=0 = 永久保留（仍受 MaxBytes 限制），
+// MaxBytes<=0 回落 100 MiB。
 type Config struct {
 	Dir           string
 	Enabled       bool
@@ -118,14 +106,7 @@ type Filter struct {
 }
 
 // ArchiveStats 归档存储状态。
-type ArchiveStats struct {
-	Enabled       bool   `json:"enabled"`
-	Dir           string `json:"dir,omitempty"`
-	Files         int    `json:"files"`
-	Bytes         int64  `json:"bytes"`
-	DroppedWrites uint64 `json:"dropped_writes"`
-	LastError     string `json:"last_error,omitempty"`
-}
+type ArchiveStats = logarchive.Stats
 
 // Snapshot 一次面板读取的完整指标快照。
 type Snapshot struct {
@@ -151,19 +132,17 @@ type Recorder struct {
 	httpSuccess int64
 	durationSum int64
 	recent      []Event
-	archive     *archiveWriter
+	archive     *logarchive.Store
 }
 
 // New 创建记录器；Dir 为空或 Enabled=false 时只启用内存指标。
 func New(cfg Config) *Recorder {
-	if cfg.FileMaxBytes <= 0 {
-		cfg.FileMaxBytes = defaultFileMax
-	}
-	if cfg.QueueSize <= 0 {
-		cfg.QueueSize = defaultQueue
-	}
 	r := &Recorder{started: time.Now(), recent: make([]Event, 0, recentLimit)}
-	r.archive = newArchiveWriter(cfg)
+	r.archive = logarchive.New(logarchive.Config{
+		Dir: cfg.Dir, Prefix: archivePrefix, Enabled: cfg.Enabled,
+		RetentionDays: cfg.RetentionDays, MaxBytes: cfg.MaxBytes,
+		FileMaxBytes: cfg.FileMaxBytes, QueueSize: cfg.QueueSize,
+	})
 	return r
 }
 
@@ -209,9 +188,7 @@ func (r *Recorder) Record(e Event) {
 		r.recent = r.recent[:recentLimit]
 	}
 	r.mu.Unlock()
-	if r.archive != nil {
-		r.archive.enqueue(e)
-	}
+	r.archive.Append(e.Time, e)
 }
 
 // Snapshot 返回进程内指标和归档状态。
@@ -234,304 +211,14 @@ func (r *Recorder) Snapshot() Snapshot {
 		s.AvgDurationMs = float64(r.durationSum) / float64(r.completed)
 	}
 	r.mu.Unlock()
-	if r.archive != nil {
-		s.Archive = r.archive.stats()
-	}
+	s.Archive = r.archive.Stats()
 	return s
 }
 
 // ReadArchive 返回最近的归档事件（按时间倒序）。limit<=0 时回落 200，最大 1000。
+// 归档关着时返回空（面板改用内存里的最近 100 条），即使磁盘上还留着关之前的文件。
 func (r *Recorder) ReadArchive(limit int, filter Filter) ([]Event, error) {
-	if r == nil || r.archive == nil {
-		return nil, nil
-	}
-	return r.archive.read(limit, filter)
-}
-
-// Close 刷盘并停止后台归档。
-func (r *Recorder) Close() {
-	if r == nil || r.archive == nil {
-		return
-	}
-	r.archive.close()
-}
-
-func round1(v float64) float64 {
-	return float64(int(v*10+0.5)) / 10
-}
-
-type archiveWriter struct {
-	cfg       Config
-	ch        chan Event
-	stop      chan struct{}
-	done      chan struct{}
-	closeOnce sync.Once
-	dropped   atomic.Uint64
-	lastErrMu sync.Mutex
-	lastErr   string
-
-	file *os.File
-	buf  *bufio.Writer
-	path string
-	day  string
-	size int64
-}
-
-func newArchiveWriter(cfg Config) *archiveWriter {
-	if !cfg.Enabled || strings.TrimSpace(cfg.Dir) == "" {
-		return &archiveWriter{cfg: cfg}
-	}
-	if cfg.RetentionDays <= 0 {
-		cfg.RetentionDays = 7
-	}
-	if cfg.MaxBytes <= 0 {
-		cfg.MaxBytes = 100 << 20
-	}
-	if cfg.FileMaxBytes <= 0 {
-		cfg.FileMaxBytes = defaultFileMax
-	}
-	if cfg.QueueSize <= 0 {
-		cfg.QueueSize = defaultQueue
-	}
-	w := &archiveWriter{
-		cfg:  cfg,
-		ch:   make(chan Event, cfg.QueueSize),
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
-	}
-	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
-		w.setErr(err)
-		w.cfg.Enabled = false
-		close(w.done)
-		return w
-	}
-	go w.run()
-	return w
-}
-
-func (w *archiveWriter) enabled() bool {
-	return w != nil && w.cfg.Enabled && w.cfg.Dir != "" && w.done != nil
-}
-
-func (w *archiveWriter) enqueue(e Event) {
-	if !w.enabled() {
-		return
-	}
-	select {
-	case w.ch <- e:
-	default:
-		w.dropped.Add(1)
-	}
-}
-
-func (w *archiveWriter) run() {
-	defer close(w.done)
-	ticker := time.NewTicker(archiveTick)
-	defer ticker.Stop()
-	for {
-		select {
-		case e := <-w.ch:
-			w.writeEvent(e)
-		case <-ticker.C:
-			w.flush()
-			w.prune()
-		case <-w.stop:
-			for {
-				select {
-				case e := <-w.ch:
-					w.writeEvent(e)
-				default:
-					w.flush()
-					w.closeFile()
-					return
-				}
-			}
-		}
-	}
-}
-
-func (w *archiveWriter) writeEvent(e Event) {
-	raw, err := json.Marshal(e)
-	if err != nil {
-		w.setErr(err)
-		return
-	}
-	now := e.Time
-	if now.IsZero() {
-		now = time.Now()
-	}
-	day := now.Format("2006-01-02")
-	if w.file == nil || w.day != day {
-		if err := w.openFile(now, false); err != nil {
-			w.setErr(err)
-			return
-		}
-	}
-	if w.size > 0 && w.size+int64(len(raw))+1 > w.cfg.FileMaxBytes {
-		if err := w.openFile(now, true); err != nil {
-			w.setErr(err)
-			return
-		}
-	}
-	if _, err := w.buf.Write(raw); err != nil {
-		w.setErr(err)
-		return
-	}
-	if err := w.buf.WriteByte('\n'); err != nil {
-		w.setErr(err)
-		return
-	}
-	w.size += int64(len(raw)) + 1
-}
-
-func (w *archiveWriter) openFile(now time.Time, rotate bool) error {
-	w.closeFile()
-	day := now.Format("2006-01-02")
-	if err := os.MkdirAll(w.cfg.Dir, 0o700); err != nil {
-		return err
-	}
-	path := filepath.Join(w.cfg.Dir, "requests-"+day+".jsonl")
-	if rotate {
-		path = nextArchivePath(w.cfg.Dir, day)
-	} else if latest := latestArchiveForDay(w.cfg.Dir, day); latest != "" {
-		path = filepath.Join(w.cfg.Dir, latest)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	info, err := statArchiveFile(f)
-	if err != nil {
-		_ = f.Close()
-		return err
-	}
-	w.file = f
-	w.buf = newArchiveBuf(f, 64<<10)
-	w.path = path
-	w.day = day
-	w.size = info.Size()
-	return nil
-}
-
-func latestArchiveForDay(dir, day string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-	prefix := "requests-" + day
-	best := ""
-	bestIndex := -1
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		idx := 0
-		if name[len(prefix):len(name)-len(".jsonl")] != "" {
-			part := strings.TrimSuffix(strings.TrimPrefix(name[len(prefix):], "."), ".jsonl")
-			n, err := strconv.Atoi(part)
-			if err != nil {
-				continue
-			}
-			idx = n
-		}
-		if idx > bestIndex {
-			bestIndex = idx
-			best = name
-		}
-	}
-	if best == "" {
-		return ""
-	}
-	return best
-}
-
-func nextArchivePath(dir, day string) string {
-	base := filepath.Join(dir, "requests-"+day)
-	path := base + ".jsonl"
-	for i := 1; fileExists(path); i++ {
-		path = fmt.Sprintf("%s.%d.jsonl", base, i)
-	}
-	return path
-}
-
-func fileExists(path string) bool {
-	st, err := os.Stat(path)
-	return err == nil && !st.IsDir()
-}
-
-func (w *archiveWriter) flush() {
-	if w.buf == nil {
-		return
-	}
-	if err := w.buf.Flush(); err != nil {
-		w.setErr(err)
-	}
-}
-
-func (w *archiveWriter) closeFile() {
-	if w.buf != nil {
-		_ = w.buf.Flush()
-	}
-	if w.file != nil {
-		_ = w.file.Close()
-	}
-	w.file = nil
-	w.buf = nil
-	w.path = ""
-	w.day = ""
-	w.size = 0
-}
-
-func (w *archiveWriter) prune() {
-	if !w.enabled() {
-		return
-	}
-	entries, err := os.ReadDir(w.cfg.Dir)
-	if err != nil {
-		w.setErr(err)
-		return
-	}
-	type item struct {
-		path  string
-		size  int64
-		mtime time.Time
-	}
-	items := make([]item, 0, len(entries))
-	var total int64
-	cutoff := time.Now().AddDate(0, 0, -w.cfg.RetentionDays)
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		path := filepath.Join(w.cfg.Dir, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		items = append(items, item{path: path, size: info.Size(), mtime: info.ModTime()})
-		total += info.Size()
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].mtime.Equal(items[j].mtime) {
-			return items[i].path < items[j].path
-		}
-		return items[i].mtime.Before(items[j].mtime)
-	})
-	for _, it := range items {
-		if it.path != w.path && (it.mtime.Before(cutoff) || total > w.cfg.MaxBytes) {
-			if err := os.Remove(it.path); err == nil {
-				total -= it.size
-			}
-		}
-	}
-}
-
-func (w *archiveWriter) read(limit int, filter Filter) ([]Event, error) {
-	if !w.enabled() {
+	if r == nil || !r.archive.Enabled() {
 		return nil, nil
 	}
 	if limit <= 0 {
@@ -540,51 +227,48 @@ func (w *archiveWriter) read(limit int, filter Filter) ([]Event, error) {
 	if limit > defaultReadMax {
 		limit = defaultReadMax
 	}
-	entries, err := os.ReadDir(w.cfg.Dir)
-	if err != nil {
-		return nil, err
-	}
-	// 文件读取顺序无关紧要：结果一律按事件时间排序。不能依赖归档文件的 mtime 还原时间
-	// 顺序——同一秒内连续轮转写出的多个文件 mtime 经常完全相同（Linux 文件时间戳粒度粗），
-	// os.ReadDir 的字典序又会把装着最早事件的基准文件 requests-<day>.jsonl 排在
-	// requests-<day>.N.jsonl 之后；目录被整体拷贝 / 恢复备份后 mtime 更不可信。
-	var out []Event
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(name, "requests-") || !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		rows, err := readFile(filepath.Join(w.cfg.Dir, name), filter)
-		if err != nil {
-			return out, err
-		}
-		out = append(out, rows...)
-	}
-	// 契约：按事件时间倒序返回最近 limit 条（同一时刻用 Stable 保留落盘先后）。
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.After(out[j].Time) })
-	if len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
+	rows, _, err := logarchive.Read(r.archive, logarchive.Query[Event]{
+		Limit: limit, From: filter.From, To: filter.To,
+		Time: func(e Event) time.Time { return e.Time },
+		Keep: filter.match,
+	})
+	return rows, err
 }
 
-func readFile(path string, filter Filter) ([]Event, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+// ArchiveStats 归档的存储状态（不带内存指标，面板「日志留存」用）。
+func (r *Recorder) ArchiveStats() ArchiveStats {
+	if r == nil {
+		return ArchiveStats{}
 	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64<<10), 1<<20)
-	var out []Event
-	for scanner.Scan() {
-		var e Event
-		if json.Unmarshal(scanner.Bytes(), &e) != nil || !filter.match(e) {
-			continue
-		}
-		out = append(out, e)
+	return r.archive.Stats()
+}
+
+// SetArchive 运行中改归档的开关、保留天数（0 = 永久）和容量上限，面板保存配置即生效。
+func (r *Recorder) SetArchive(enabled bool, days int, maxBytes int64) {
+	if r == nil {
+		return
 	}
-	return out, scanner.Err()
+	r.archive.Reconfigure(enabled, days, maxBytes)
+}
+
+// ClearArchive 删掉全部请求归档文件（内存里的指标和最近 100 条不动）。
+func (r *Recorder) ClearArchive() error {
+	if r == nil {
+		return nil
+	}
+	return r.archive.Clear()
+}
+
+// Close 刷盘并停止后台归档。
+func (r *Recorder) Close() {
+	if r == nil {
+		return
+	}
+	r.archive.Close()
+}
+
+func round1(v float64) float64 {
+	return float64(int(v*10+0.5)) / 10
 }
 
 func (f Filter) match(e Event) bool {
@@ -621,51 +305,4 @@ func containsFold(haystack, needle string) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
-}
-
-func (w *archiveWriter) stats() ArchiveStats {
-	s := ArchiveStats{Enabled: w.enabled(), Dir: w.cfg.Dir, DroppedWrites: w.dropped.Load(), LastError: w.errString()}
-	if !s.Enabled {
-		return s
-	}
-	entries, err := os.ReadDir(w.cfg.Dir)
-	if err != nil {
-		s.LastError = err.Error()
-		return s
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		if info, err := entry.Info(); err == nil {
-			s.Files++
-			s.Bytes += info.Size()
-		}
-	}
-	return s
-}
-
-func (w *archiveWriter) close() {
-	if !w.enabled() {
-		return
-	}
-	w.closeOnce.Do(func() {
-		close(w.stop)
-		<-w.done
-	})
-}
-
-func (w *archiveWriter) setErr(err error) {
-	if err == nil {
-		return
-	}
-	w.lastErrMu.Lock()
-	w.lastErr = err.Error()
-	w.lastErrMu.Unlock()
-}
-
-func (w *archiveWriter) errString() string {
-	w.lastErrMu.Lock()
-	defer w.lastErrMu.Unlock()
-	return w.lastErr
 }

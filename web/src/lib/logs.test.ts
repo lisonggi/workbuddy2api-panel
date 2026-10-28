@@ -3,7 +3,8 @@
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
 import { describe, expect, it } from 'vitest'
-import { filterLogs, isLegacyChatLink, logLevel } from './logs'
+import { filterLogs, isLegacyChatLink, logArchiveQuery, logLevel } from './logs'
+import { initialRange } from './timerange'
 
 const entries = [
   { ts: '', ch: 'task', text: '签到完成 uid=a' },
@@ -32,5 +33,19 @@ describe('logs', () => {
     expect(isLegacyChatLink({ ch: 'task' })).toBe(false)
     expect(isLegacyChatLink({})).toBe(false)
     expect(isLegacyChatLink(undefined)).toBe(false)
+  })
+
+  it('查历史的参数：区间一律折算成 from/to，筛选条件交给网关', () => {
+    const now = new Date(2026, 9, 28, 15, 0, 0).getTime()
+    const today = logArchiveQuery({ preset: 'today', from: null, to: null }, 'all', 'all', '  ', 500, now)
+    expect(Object.fromEntries(today)).toEqual({ from: String(new Date(2026, 9, 28).getTime() / 1000), limit: '500' })
+    const week = logArchiveQuery({ preset: '168', from: null, to: null }, 'task', 'warn', ' 签到 ', 2000, now)
+    expect(Object.fromEntries(week)).toEqual({ from: String((now - 168 * 3600_000) / 1000), ch: 'task', level: 'warn', q: '签到', limit: '2000' })
+    const custom = initialRange('custom')
+    const p = logArchiveQuery(custom, 'sys', 'error', '', 5000, now)
+    expect(p.get('from')).toBe(String(Math.floor(custom.from!.getTime() / 1000)))
+    expect(p.get('to')).toBe(String(Math.floor(custom.to!.getTime() / 1000)))
+    expect(p.get('level')).toBe('error')
+    expect(logArchiveQuery({ preset: '0', from: null, to: null }, 'all', 'all', '', 500, now).toString()).toBe('limit=500')
   })
 })

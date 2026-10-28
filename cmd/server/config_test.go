@@ -96,12 +96,40 @@ func TestLoggingDefaults(t *testing.T) {
 	if off.Logging.RequestClientInfo {
 		t.Fatalf("explicit false ignored: %+v", off.Logging)
 	}
-	fallback, err := ParseConfig([]byte(`{"logging":{"request_retention_days":0,"request_archive_max_mb":0}}`))
+	// 保留天数 0 = 永久保留（不再回落 7 天），负值回落默认；容量 <=0 回落默认。
+	fallback, err := ParseConfig([]byte(`{"logging":{"request_retention_days":0,"request_archive_max_mb":0,
+		"task_log_retention_days":-1,"task_log_max_mb":0,"system_log_retention_days":-5,"system_log_max_mb":-1,
+		"usage_retention_days":-3}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fallback.Logging.RequestRetentionDays != 7 || fallback.Logging.RequestArchiveMaxMB != 100 {
-		t.Fatalf("logging fallback = %+v", fallback.Logging)
+	l := fallback.Logging
+	if l.RequestRetentionDays != 0 || l.RequestArchiveMaxMB != 100 || l.TaskLogRetentionDays != 30 || l.TaskLogMaxMB != 20 ||
+		l.SystemLogRetentionDays != 30 || l.SystemLogMaxMB != 50 || l.UsageRetentionDays != 0 {
+		t.Fatalf("logging fallback = %+v", l)
+	}
+}
+
+// 任务日志、系统日志、用量统计的留存：缺省开、30 / 30 天、20 / 50 MiB、用量永久；显式值照用。
+func TestLoggingRetentionDefaults(t *testing.T) {
+	c := Default()
+	if err := c.normalize(); err != nil {
+		t.Fatal(err)
+	}
+	l := c.Logging
+	if !l.TaskLogEnabled || l.TaskLogRetentionDays != 30 || l.TaskLogMaxMB != 20 ||
+		!l.SystemLogEnabled || l.SystemLogRetentionDays != 30 || l.SystemLogMaxMB != 50 || l.UsageRetentionDays != 0 {
+		t.Fatalf("留存缺省值不对: %+v", l)
+	}
+	set, err := ParseConfig([]byte(`{"logging":{"task_log_enabled":false,"task_log_retention_days":0,"task_log_max_mb":5,
+		"system_log_enabled":false,"system_log_retention_days":3,"system_log_max_mb":8,"usage_retention_days":90}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l = set.Logging
+	if l.TaskLogEnabled || l.TaskLogRetentionDays != 0 || l.TaskLogMaxMB != 5 ||
+		l.SystemLogEnabled || l.SystemLogRetentionDays != 3 || l.SystemLogMaxMB != 8 || l.UsageRetentionDays != 90 {
+		t.Fatalf("显式值应照用: %+v", l)
 	}
 }
 

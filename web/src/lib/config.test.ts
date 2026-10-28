@@ -3,7 +3,7 @@
 // 复制或改写本文件须保留以上声明，并按 NOTICE 的署名条款注明出处：https://github.com/yreidev/workbuddy2api-panel
 
 import { describe, expect, it } from 'vitest'
-import { ALL_FIELDS, changedFields, fromForm, toForm, validateField } from './config'
+import { ALL_FIELDS, CONFIG_TABS, changedFields, fromForm, tabOfField, toForm, validateField } from './config'
 
 const field = (name: string) => ALL_FIELDS.find((f) => f.name === name)!
 
@@ -70,6 +70,22 @@ describe('配置表单', () => {
     expect(validateField(field('checkin_hours'), '9，21')).toBeNull()
     expect(validateField(field('checkin_hours'), '9, 24')).not.toBeNull()
     expect(validateField(field('max_in_flight_global'), '0')).not.toBeNull()
+    // 保留天数 0 = 永久保留，容量上限至少 1 MiB
+    expect(validateField(field('request_retention_days'), '0')).toBeNull()
+    expect(validateField(field('task_log_retention_days'), '-1')).not.toBeNull()
+    expect(validateField(field('system_log_max_mb'), '0')).not.toBeNull()
+  })
+
+  it('日志留存：四类各一张卡片，保存即生效，不标需重启', () => {
+    const tab = CONFIG_TABS.find((t) => t.id === 'logs')!
+    expect(tab.sections.map((s) => s.store)).toEqual(['requests', 'task', 'system', 'usage'])
+    expect(tab.sections.flatMap((s) => s.fields).filter((f) => f.restart)).toEqual([])
+    expect(field('task_log_enabled').path).toEqual(['logging', 'task_log_enabled'])
+    expect(field('system_log_max_mb').path).toEqual(['logging', 'system_log_max_mb'])
+    expect(field('usage_retention_days').path).toEqual(['logging', 'usage_retention_days'])
+    expect(tabOfField('request_client_info')).toBe('logs')
+    const body = fromForm({ ...toForm({}), usage_retention_days: '0', task_log_retention_days: '14' }) as { logging: Record<string, unknown> }
+    expect(body.logging).toMatchObject({ usage_retention_days: 0, task_log_retention_days: 14, task_log_enabled: false })
   })
 
   it('统计改动项（忽略首尾空格）', () => {

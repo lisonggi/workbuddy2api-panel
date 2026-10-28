@@ -4,6 +4,7 @@
 
 // 配置：直接改 config.json。能热生效的字段保存即生效，装配期字段（监听地址、超时等）标「需重启」。
 // 写入是深合并 + 原子替换，表单只提交它管理的键，未知键原样保留。
+// 「日志留存」分组每类一张卡片，页脚显示这类日志现在的占用并能清空（见 StoreFooter）。
 import { useMemo, useState } from 'react'
 import { Eye, EyeSlash } from '@gravity-ui/icons'
 import {
@@ -17,9 +18,10 @@ import {
   ALL_FIELDS, CONFIG_TABS, changedFields, fromForm, tabOfField, toForm, validateField, type FieldDef, type FormValues,
 } from '../../lib/config'
 import { toastError } from '../../lib/hooks'
-import { qk, useConfig } from '../../lib/queries'
+import { qk, useConfig, useLogStorage } from '../../lib/queries'
 import type { SaveConfigResp } from '../../lib/types'
 import { BusyButton, Confirm, Loaded } from '../../components/Feedback'
+import { StoreFooter } from './StoreFooter'
 
 export function ConfigPage() {
   const query = useConfig()
@@ -36,6 +38,7 @@ function ConfigForm({ path, config }: { path?: string; config: Record<string, un
   const [edits, setEdits] = useState<FormValues>({})
   const [tab, setTab] = useState('service')
   const [saving, setSaving] = useState(false)
+  const storage = useLogStorage(tab === 'logs')
   const values = { ...base, ...edits }
   const changed = changedFields(base, values)
   const errors = Object.fromEntries(ALL_FIELDS.map((f) => [f.name, validateField(f, values[f.name])]))
@@ -62,6 +65,8 @@ function ConfigForm({ path, config }: { path?: string; config: Record<string, un
       setEdits({})
       void qc.invalidateQueries({ queryKey: qk.config })
       void qc.invalidateQueries({ queryKey: qk.overview })
+      // 改了保留天数或容量上限，网关保存时就清理一次：占用跟着变
+      void qc.invalidateQueries({ queryKey: qk.logStorage })
     } catch (e) {
       toastError(e, '保存失败：')
     } finally {
@@ -87,25 +92,36 @@ function ConfigForm({ path, config }: { path?: string; config: Record<string, un
             ))}
           </Tabs.List>
         </Tabs.ListContainer>
-        {CONFIG_TABS.map((t) => (
-          <Tabs.Panel key={t.id} id={t.id} className="pt-4">
-            <div className={`grid gap-4 ${t.id === 'schedule' ? 'md:grid-cols-2' : ''}`}>
-              {t.sections.map((s, i) => (
-                <Card key={s.title ?? i} className="gap-4">
-                  {s.title && <Card.Header><Card.Title>{s.title}</Card.Title></Card.Header>}
-                  <Card.Content className={`grid gap-x-5 gap-y-4 ${t.id === 'schedule' ? '' : 'md:grid-cols-2 xl:grid-cols-3'}`}>
-                    {s.fields.map((f) => (
-                      <Field key={f.name} f={f} value={values[f.name]} error={errors[f.name]} onChange={(v) => set(f.name, v)} />
-                    ))}
-                  </Card.Content>
-                </Card>
-              ))}
-            </div>
-            {t.id === 'upstream' && (
-              <p className="mt-3 text-sm text-muted">Upstash Redis 镜像、凭证目录与状态文件路径需手工编辑配置文件（判为重启项）。</p>
-            )}
-          </Tabs.Panel>
-        ))}
+        {CONFIG_TABS.map((t) => {
+          // 定时任务、日志留存的卡片小：两张一排，卡片里一列；同一排矮的那张各项靠上，不被拉开
+          const twoUp = t.id === 'schedule' || t.id === 'logs'
+          return (
+            <Tabs.Panel key={t.id} id={t.id} className="pt-4">
+              <div className={`grid gap-4 ${twoUp ? 'md:grid-cols-2' : ''}`}>
+                {t.sections.map((s, i) => (
+                  <Card key={s.title ?? i} className="gap-4">
+                    {s.title && <Card.Header><Card.Title>{s.title}</Card.Title></Card.Header>}
+                    <Card.Content className={`grid gap-x-5 gap-y-4 ${twoUp ? 'content-start' : 'md:grid-cols-2 xl:grid-cols-3'}`}>
+                      {s.fields.map((f) => (
+                        <Field key={f.name} f={f} value={values[f.name]} error={errors[f.name]} onChange={(v) => set(f.name, v)} />
+                      ))}
+                    </Card.Content>
+                    {s.store && <StoreFooter kind={s.store} storage={storage.data} loading={storage.isLoading} />}
+                  </Card>
+                ))}
+              </div>
+              {t.id === 'upstream' && (
+                <p className="mt-3 text-sm text-muted">Upstash Redis 镜像、凭证目录与状态文件路径需手工编辑配置文件（判为重启项）。</p>
+              )}
+              {t.id === 'logs' && (
+                <p className="mt-3 text-sm text-muted">
+                  {'都写在状态文件所在的目录：请求记录在 request-logs/，任务和系统日志在 runtime-logs/，用量统计是 usage.json。'
+                    + '保存即生效，超期、超容量的文件当场清理一次，之后定期清理。'}
+                </p>
+              )}
+            </Tabs.Panel>
+          )
+        })}
       </Tabs>
 
       <Card className="sticky bottom-3 z-30 flex-row flex-wrap items-center gap-3 p-3 shadow-lg">

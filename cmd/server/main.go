@@ -27,6 +27,7 @@ import (
 	"github.com/yreidev/workbuddy2api-panel/internal/apikeys"
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
+	"github.com/yreidev/workbuddy2api-panel/internal/logarchive"
 	"github.com/yreidev/workbuddy2api-panel/internal/logfmt"
 	"github.com/yreidev/workbuddy2api-panel/internal/panel"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
@@ -304,9 +305,10 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 	// datapath 由 state 文件路径推出，避免再加一个配置项。
 	usagePath := usagePathFor(cfg.StateFile)
 	rec := usage.New(usagePath)
+	rec.SetRetentionDays(cfg.Logging.UsageRetentionDays)
 	rec.Start()
 	defer rec.Stop()
-	log.Printf("[usage] 逐请求用量记录已启用: %s (%s)", usagePath, rec.Describe())
+	log.Printf("[usage] 逐请求用量记录已启用: %s (%s，%s)", usagePath, rec.Describe(), retentionText(cfg.Logging.UsageRetentionDays))
 
 	// 客户端密钥（面板里建、发给别人调 /v1/* 的密钥）：与 state 文件同目录。读不了就不启动——
 	// 当成没有密钥会让「建过密钥就必须带」的规则悄悄失效，接口变成谁都能调。
@@ -328,19 +330,39 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 		MaxBytes:      int64(cfg.Logging.RequestArchiveMaxMB) << 20,
 	})
 	defer requestLog.Close()
-	rs := requestLog.Snapshot().Archive
+	rs := requestLog.ArchiveStats()
 	if rs.Enabled {
-		log.Printf("[reqlog] 请求指标已启用；JSONL 归档 %s（保留 %d 天，上限 %d MiB）",
-			rs.Dir, cfg.Logging.RequestRetentionDays, cfg.Logging.RequestArchiveMaxMB)
+		log.Printf("[reqlog] 请求指标已启用；JSONL 归档 %s（%s，上限 %d MiB）",
+			rs.Dir, retentionText(cfg.Logging.RequestRetentionDays), cfg.Logging.RequestArchiveMaxMB)
 	} else {
 		log.Printf("[reqlog] 请求指标已启用；JSONL 归档已关闭")
 	}
+
+	// 运行日志的任务、系统两个频道落盘留存（data/runtime-logs/task-<日期>.jsonl、system-<日期>.jsonl），
+	// 面板按时间范围查历史。没开留存也建：要按天数清掉以前留下的文件，运行中打开时接着写。
+	runtimeLogDir := stateSibling(cfg.StateFile, "runtime-logs")
+	taskLog := logarchive.New(logarchive.Config{
+		Dir: runtimeLogDir, Prefix: "task", Enabled: cfg.Logging.TaskLogEnabled,
+		RetentionDays: cfg.Logging.TaskLogRetentionDays, MaxBytes: int64(cfg.Logging.TaskLogMaxMB) << 20,
+	})
+	defer taskLog.Close()
+	systemLog := logarchive.New(logarchive.Config{
+		Dir: runtimeLogDir, Prefix: "system", Enabled: cfg.Logging.SystemLogEnabled,
+		RetentionDays: cfg.Logging.SystemLogRetentionDays, MaxBytes: int64(cfg.Logging.SystemLogMaxMB) << 20,
+	})
+	defer systemLog.Close()
+	log.Printf("[logs] 运行日志留存 %s：任务日志%s，系统日志%s", runtimeLogDir,
+		runtimeLogText(cfg.Logging.TaskLogEnabled, cfg.Logging.TaskLogRetentionDays, cfg.Logging.TaskLogMaxMB),
+		runtimeLogText(cfg.Logging.SystemLogEnabled, cfg.Logging.SystemLogRetentionDays, cfg.Logging.SystemLogMaxMB))
+	logs := logStores{requests: requestLog, task: taskLog, system: systemLog, usage: rec}
 
 	pn := panel.New(panel.Config{
 		Pool:        p,
 		Usage:       rec,
 		Keys:        keys,
 		RequestLog:  requestLog,
+		TaskLog:     taskLog,
+		SystemLog:   systemLog,
 		Upstream:    up,
 		Scheduler:   sch,
 		AuthDir:     cfg.AuthDir,
@@ -359,7 +381,7 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 			return Load(cfgPath)
 		},
 		SaveConfig: func(raw []byte) ([]string, error) {
-			return saveConfig(raw, cfgPath, live, p, up, sch)
+			return saveConfig(raw, cfgPath, live, p, up, sch, logs)
 		},
 	})
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
@@ -607,6 +629,7 @@ var renameConfig = os.Rename
 //   - features.sanitize_blacklist_fingerprints / upstream.model_optimization → upstream.Client 的 atomic 开关
 //   - pool.* → pool.SetBreaker/SetMaxInFlight/SetSoftRateMax/SetWeights/SetCostExploreInterval/SetPreferExpiring/SetCreditFloor/SetRestrictionWave
 //   - schedule.* → scheduler.Reconfigure/SetBalanceInterval/SetExpiringSoonWindow
+//   - logging.*（日志留存的开关、保留天数、容量上限）→ logStores.apply
 //
 // 需重启（涉及监听地址、HTTP client 超时、auth_dir 等装配期依赖）：
 //   - listen / auth_dir / state_file / upstream.* / upstash.* / session_sticky.*（TTL 类）
@@ -614,7 +637,7 @@ var renameConfig = os.Rename
 // 落盘用"先写 tmp 再 rename"原子替换，且优先保留磁盘上的原始 JSON 结构（只改
 // 面板表单覆盖到的键），避免把用户手写的注释性字段/未知键洗掉——这里直接整体
 // 序列化校验后的配置，未知键在 json.Unmarshal 时已丢失，故先合并原始 map。
-func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up *upstream.Client, sch *scheduler.Scheduler) ([]string, error) {
+func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up *upstream.Client, sch *scheduler.Scheduler, logs logStores) ([]string, error) {
 	// 1) 解析原始 JSON 为 map（保留用户手写的未知键），再叠加面板提交的键。
 	oldRaw, err := os.ReadFile(path)
 	if err != nil {
@@ -706,8 +729,41 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		!newCfg.Schedule.GrowthEnabled)
 	sch.SetBalanceInterval(newCfg.BalanceRefreshInterval)
 	sch.SetIncludeDisabledInTasks(newCfg.Schedule.IncludeDisabledInTasks)
+	logs.apply(newCfg)
 
 	return restartRequiredFields(newCfg), nil
+}
+
+// logStores 日志留存要热改的几样：请求记录归档、任务日志、系统日志、用量统计。零值什么都不改。
+type logStores struct {
+	requests *reqlog.Recorder
+	task     *logarchive.Store
+	system   *logarchive.Store
+	usage    *usage.Recorder
+}
+
+// apply 把配置里的开关、保留天数、容量上限交给各自的归档，马上按新规则清理一次。
+func (l logStores) apply(c *Config) {
+	l.requests.SetArchive(c.Logging.RequestArchiveEnabled, c.Logging.RequestRetentionDays, int64(c.Logging.RequestArchiveMaxMB)<<20)
+	l.task.Reconfigure(c.Logging.TaskLogEnabled, c.Logging.TaskLogRetentionDays, int64(c.Logging.TaskLogMaxMB)<<20)
+	l.system.Reconfigure(c.Logging.SystemLogEnabled, c.Logging.SystemLogRetentionDays, int64(c.Logging.SystemLogMaxMB)<<20)
+	l.usage.SetRetentionDays(c.Logging.UsageRetentionDays)
+}
+
+// retentionText 保留天数的说法：「保留 7 天」或「永久保留」。
+func retentionText(days int) string {
+	if days <= 0 {
+		return "永久保留"
+	}
+	return fmt.Sprintf("保留 %d 天", days)
+}
+
+// runtimeLogText 一类运行日志的留存设置：「已关闭」或「保留 30 天、上限 20 MiB」。
+func runtimeLogText(enabled bool, days, maxMB int) string {
+	if !enabled {
+		return "已关闭"
+	}
+	return fmt.Sprintf("%s、上限 %d MiB", retentionText(days), maxMB)
 }
 
 // restartRequiredFields 返回本次改动中无法热生效、需要重启进程的字段名。
@@ -733,7 +789,6 @@ func restartRequiredFields(c *Config) []string {
 		out = append(out, "upstash")
 	}
 	out = append(out, "session_sticky.ttl", "session_sticky.gc_interval")
-	out = append(out, "logging.request_archive_enabled", "logging.request_retention_days", "logging.request_archive_max_mb")
 	out = append(out, "server.read_timeout")
 	return out
 }

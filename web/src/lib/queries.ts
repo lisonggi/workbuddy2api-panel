@@ -6,11 +6,12 @@
 // 只读网关内存的接口（总览、日志、队列、版本）按页面需要轮询；标签页切到后台时轮询自动暂停。
 import { QueryClient, keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ApiError, acct, api, errorMessage } from './api'
+import { logArchiveQuery, type LevelFilter, type LogChannel } from './logs'
 import { rangeKey, rangeQuery, type TimeRange } from './timerange'
 import { SEEN_VERSION_KEY, readStored, updateBusy } from './update'
 import type {
-  CompensationResp, ConfigResp, KeysResp, LogEntry, Model, Overview, PackageAccount, ProbesResp, QueueState, RequestEvent, RequestMetrics, Task, UsageResp,
-  VersionResp, VoucherAccount,
+  CompensationResp, ConfigResp, KeysResp, LogArchiveResp, LogEntry, LogStorage, Model, Overview, PackageAccount, ProbesResp, QueueState, RequestEvent,
+  RequestMetrics, Task, UsageResp, VersionResp, VoucherAccount,
 } from './types'
 
 export const queryClient = new QueryClient({
@@ -26,6 +27,9 @@ export const queryClient = new QueryClient({
 export const qk = {
   overview: ['overview'] as const,
   logs: ['logs'] as const,
+  /** 按时间范围查的历史运行日志；清空留存后按前缀 ['logs_archive'] 一起作废 */
+  logArchive: (range: TimeRange, ch: string, level: string, q: string, limit: number) => ['logs_archive', rangeKey(range), ch, level, q, limit] as const,
+  logStorage: ['log_storage'] as const,
   requests: (range: TimeRange, limit: number) => ['request_metrics', rangeKey(range), limit] as const,
   models: ['models'] as const,
   probes: ['model_probes'] as const,
@@ -54,6 +58,27 @@ export function useLogs(live: boolean) {
     queryKey: qk.logs,
     queryFn: () => api<{ entries: LogEntry[] | null }>('logs'),
     refetchInterval: live ? 5000 : false,
+  })
+}
+
+/**
+ * 历史运行日志：按时间范围从任务日志、系统日志的留存里查，频道 / 级别 / 关键字在网关侧筛。
+ * 留存是磁盘上的文件，不轮询，换条件或点「重新读取」才查；换条件时先留着上一次的结果。
+ */
+export function useLogArchive(range: TimeRange, ch: LogChannel, level: LevelFilter, q: string, limit: number) {
+  return useQuery({
+    queryKey: qk.logArchive(range, ch, level, q, limit),
+    queryFn: () => api<LogArchiveResp>('logs/archive?' + logArchiveQuery(range, ch, level, q, limit).toString()),
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** 日志留存各类的占用（文件数、大小、最早日期）：配置页「日志留存」打开时查，保存配置或清空后重查 */
+export function useLogStorage(enabled: boolean) {
+  return useQuery({
+    queryKey: qk.logStorage,
+    queryFn: () => api<LogStorage>('log_storage'),
+    enabled,
   })
 }
 

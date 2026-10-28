@@ -303,7 +303,7 @@ func TestSaveConfigEBUSYFallbackWriteError(t *testing.T) {
 		}
 		return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: syscall.EBUSY}
 	})
-	_, err := saveConfig([]byte(`{"api_key":"new-key"}`), path, live, p, up, sch)
+	_, err := saveConfig([]byte(`{"api_key":"new-key"}`), path, live, p, up, sch, logStores{})
 	if err == nil || !strings.Contains(err.Error(), "完整新内容保留在") ||
 		!strings.Contains(err.Error(), "no space left on device") {
 		t.Fatalf("err=%v", err)
@@ -335,7 +335,7 @@ func TestSaveConfigEBUSYFallbackCloseError(t *testing.T) {
 	configFileClose = func(*os.File) error { return errors.New("close boom") }
 	t.Cleanup(func() { configFileClose = oldClose })
 
-	_, err := saveConfig([]byte(`{"api_key":"new-key"}`), path, live, p, up, sch)
+	_, err := saveConfig([]byte(`{"api_key":"new-key"}`), path, live, p, up, sch, logStores{})
 	if err == nil || !strings.Contains(err.Error(), "bind mount fallback") || !strings.Contains(err.Error(), "close boom") {
 		t.Fatalf("err=%v", err)
 	}

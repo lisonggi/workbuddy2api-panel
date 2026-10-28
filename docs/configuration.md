@@ -37,14 +37,30 @@
 | `panel.package_detail_limit` | `5` | 积分构成页单个账号默认展开的最早到期积分包数，其余折叠 |
 | `panel.update_check` | `true` | 每 6 小时从 GitHub 读取一次更新日志，有新版本时面板提醒，并可[一键更新](panel.md#一键更新)；`false` = 不联网检查，也不出现一键更新按钮。见[更新提醒](panel.md#更新提醒) |
 
-### 日志
+### 日志留存
+
+请求记录、任务日志、系统日志各自按天写文件，各设开关、保留天数和容量上限；用量统计只设保留天数。面板「配置 → 日志留存」里改，**保存即生效**：当场按新规则清理一次，之后每分钟左右再查一次。
+
+- 保留天数 `0` = 永久保留，按天的文件仍受容量上限约束；负数回落默认值。
+- 超过容量上限先删最旧的文件；正在写的那份不删。
+- 关掉某类留存后不再写新文件，已有的文件照样按保留天数到期删除；任务、系统日志关掉后，运行日志页的「历史」仍查得到关闭前留下的。
+- 配置页每类卡片下面显示现有的文件数、大小和最早日期，可以一键清空（要再确认一次）。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `logging.request_archive_enabled` | `true` | 请求元数据按天归档为 `requests-<日期>.jsonl`。只记模型、账号、耗时、token 等元数据，失败的请求另记失败原因（回给客户端的错误消息，最多 200 字），**不记提示词、响应正文和 Authorization** |
-| `logging.request_retention_days` | `7` | 归档保留天数 |
-| `logging.request_archive_max_mb` | `100` | 归档总容量上限（MiB），超出先删最旧的 |
+| `logging.request_archive_enabled` | `true` | 请求元数据按天归档为 `request-logs/requests-<日期>.jsonl`。只记模型、账号、耗时、token 等元数据，失败的请求另记失败原因（回给客户端的错误消息，最多 200 字），**不记提示词、响应正文和 Authorization**。关掉后请求记录页只有内存里的最近 100 条 |
+| `logging.request_retention_days` | `7` | 请求记录保留天数，`0` = 永久保留 |
+| `logging.request_archive_max_mb` | `100` | 请求记录的容量上限（MiB） |
 | `logging.request_client_info` | `true` | 是否记录调用来源（客户端 IP 与 User-Agent）。IP 属于个人信息，共享部署可关 |
+| `logging.task_log_enabled` | `true` | 运行日志「任务」频道（签到、保活、旅行、成长任务等）按天写进 `runtime-logs/task-<日期>.jsonl` |
+| `logging.task_log_retention_days` | `30` | 任务日志保留天数，`0` = 永久保留 |
+| `logging.task_log_max_mb` | `20` | 任务日志的容量上限（MiB） |
+| `logging.system_log_enabled` | `true` | 运行日志「系统」频道（选号、冷却、熔断、配置改动等）按天写进 `runtime-logs/system-<日期>.jsonl` |
+| `logging.system_log_retention_days` | `30` | 系统日志保留天数，`0` = 永久保留 |
+| `logging.system_log_max_mb` | `50` | 系统日志的容量上限（MiB） |
+| `logging.usage_retention_days` | `0` | 用量统计（`usage.json` 里按小时、按天的用量明细）保留天数，`0` = 永久保留。超期的明细删掉后，用量页能查到的最早时间随之后移；客户端密钥的每天、总量限额另有计数，不受影响 |
+
+目录都在状态文件（`state_file`）旁边，Docker 部署就是 `data/` 下面。
 
 ### 冷却
 
@@ -184,7 +200,7 @@
 
 ## 热生效与写回规则
 
-- **立即生效**：`api_key`、`cooldown.soft_rate`、`features.*`、`logging.request_client_info`、`panel.*`、`pool.*`、`schedule.*`、`model_routes`。
-- **需要重启**：`listen`、`auth_dir`、`state_file`、`server.read_timeout`、`upstream.*`、`prompt.*`、`upstash.*`、`session_sticky.*`，以及请求归档的开关、保留天数与容量。面板在保存后会提示具体是哪几项。
+- **立即生效**：`api_key`、`cooldown.soft_rate`、`features.*`、`logging.*`、`panel.*`、`pool.*`、`schedule.*`、`model_routes`。
+- **需要重启**：`listen`、`auth_dir`、`state_file`、`server.read_timeout`、`upstream.*`、`prompt.*`、`upstash.*`、`session_sticky.*`。面板在保存后会提示具体是哪几项。
 - 面板写回配置时做**深合并 + 原子替换**：只更新表单里出现的键，你手写的其他键（包括程序不认识的键）原样保留。
 - 时长字段使用 Go 的写法，如 `600s`、`30m`、`2h`、`168h`。

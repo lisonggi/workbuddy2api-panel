@@ -41,11 +41,15 @@ type Config struct {
 	} `json:"panel"`
 
 	Logging struct {
+		// 日志留存：请求记录、任务日志、系统日志各自一个开关、保留天数、容量上限，用量统计只设
+		// 保留天数。保留天数 0 = 永久保留（容量上限照样生效），负值回落默认；容量 <=0 回落默认。
+		// 全部热生效（面板保存配置即生效）。
+
 		// RequestArchiveEnabled 请求元数据 JSONL 归档开关，缺省 true。
 		RequestArchiveEnabled bool `json:"request_archive_enabled"`
-		// RequestRetentionDays 归档保留天数，缺省 7；<=0 回落默认。
+		// RequestRetentionDays 请求归档保留天数，缺省 7。
 		RequestRetentionDays int `json:"request_retention_days"`
-		// RequestArchiveMaxMB 归档总上限（MiB），缺省 100；<=0 回落默认。
+		// RequestArchiveMaxMB 请求归档总上限（MiB），缺省 100。
 		RequestArchiveMaxMB int `json:"request_archive_max_mb"`
 		// RequestClientInfo 是否在请求日志（归档事件 + stdout 流水行 + 面板运行
 		// 日志）里记录调用来源：客户端 IP 与 User-Agent。缺省 true。
@@ -55,6 +59,21 @@ type Config struct {
 		// 关掉。关闭后 Event.ClientIP/UserAgent 保持为空，归档里不出现该字段。
 		// 热生效（经 livecfg 快照），无需重启。
 		RequestClientInfo bool `json:"request_client_info"`
+
+		// TaskLogEnabled 任务日志（运行日志的任务频道：签到、领奖、任务中心等）落盘留存，缺省 true。
+		TaskLogEnabled bool `json:"task_log_enabled"`
+		// TaskLogRetentionDays 任务日志保留天数，缺省 30。
+		TaskLogRetentionDays int `json:"task_log_retention_days"`
+		// TaskLogMaxMB 任务日志总上限（MiB），缺省 20。和系统日志分开设，免得系统日志把任务日志挤掉。
+		TaskLogMaxMB int `json:"task_log_max_mb"`
+		// SystemLogEnabled 系统日志（运行日志的系统频道：启动、热更新、冷却风控、告警等）落盘留存，缺省 true。
+		SystemLogEnabled bool `json:"system_log_enabled"`
+		// SystemLogRetentionDays 系统日志保留天数，缺省 30。
+		SystemLogRetentionDays int `json:"system_log_retention_days"`
+		// SystemLogMaxMB 系统日志总上限（MiB），缺省 50。
+		SystemLogMaxMB int `json:"system_log_max_mb"`
+		// UsageRetentionDays 用量统计保留天数，缺省 0 = 永久保留。
+		UsageRetentionDays int `json:"usage_retention_days"`
 	} `json:"logging"`
 
 	Server struct {
@@ -282,6 +301,12 @@ func Default() *Config {
 	c.Logging.RequestArchiveEnabled = true
 	c.Logging.RequestRetentionDays = 7
 	c.Logging.RequestArchiveMaxMB = 100
+	c.Logging.TaskLogEnabled = true
+	c.Logging.TaskLogRetentionDays = 30
+	c.Logging.TaskLogMaxMB = 20
+	c.Logging.SystemLogEnabled = true
+	c.Logging.SystemLogRetentionDays = 30
+	c.Logging.SystemLogMaxMB = 50
 	// 缺省 true 靠显式赋值实现（同 Schedule 开关）：JSON 里键缺席时字段保留此值，
 	// 只有显式 false 才关闭来源记录。
 	c.Logging.RequestClientInfo = true
@@ -510,11 +535,31 @@ func (c *Config) normalize() error {
 	if c.Panel.PackageDetailLimit <= 0 {
 		c.Panel.PackageDetailLimit = 5
 	}
-	if c.Logging.RequestRetentionDays <= 0 {
-		c.Logging.RequestRetentionDays = 7
+	// 日志留存：保留天数 0 = 永久，负值回落默认；容量 <=0 回落默认。
+	for _, d := range []struct {
+		days *int
+		def  int
+	}{
+		{&c.Logging.RequestRetentionDays, 7},
+		{&c.Logging.TaskLogRetentionDays, 30},
+		{&c.Logging.SystemLogRetentionDays, 30},
+		{&c.Logging.UsageRetentionDays, 0},
+	} {
+		if *d.days < 0 {
+			*d.days = d.def
+		}
 	}
-	if c.Logging.RequestArchiveMaxMB <= 0 {
-		c.Logging.RequestArchiveMaxMB = 100
+	for _, m := range []struct {
+		mb  *int
+		def int
+	}{
+		{&c.Logging.RequestArchiveMaxMB, 100},
+		{&c.Logging.TaskLogMaxMB, 20},
+		{&c.Logging.SystemLogMaxMB, 50},
+	} {
+		if *m.mb <= 0 {
+			*m.mb = m.def
+		}
 	}
 	// 入站读取上限（issue #100）：空值回落默认 300s；"0" 合法（不限制）；
 	// 负值无语义，fail fast（静默钳 0 会把保护悄悄关掉）。

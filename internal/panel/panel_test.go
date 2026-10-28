@@ -256,11 +256,11 @@ func TestPanelRequestMetricsLogs(t *testing.T) {
 
 	t.Run("归档读取失败 500", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "archive")
-		rec := reqlog.New(reqlog.Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 7})
-		rec.Close()
-		if err := os.RemoveAll(dir); err != nil {
+		if err := os.WriteFile(dir, []byte("x"), 0o600); err != nil { // 归档目录的位置被文件占了
 			t.Fatal(err)
 		}
+		rec := reqlog.New(reqlog.Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 7})
+		rec.Close()
 		p, _ := newPanelFor(t, Config{RequestLog: rec})
 		rec2 := get(p, http.MethodGet, "/panel/api/request_logs")
 		autoWantCode(t, rec2, http.StatusInternalServerError)

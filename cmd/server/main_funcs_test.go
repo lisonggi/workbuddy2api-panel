@@ -24,9 +24,12 @@ import (
 
 	"github.com/yreidev/workbuddy2api-panel/internal/auth"
 	"github.com/yreidev/workbuddy2api-panel/internal/livecfg"
+	"github.com/yreidev/workbuddy2api-panel/internal/logarchive"
 	"github.com/yreidev/workbuddy2api-panel/internal/pool"
+	"github.com/yreidev/workbuddy2api-panel/internal/reqlog"
 	"github.com/yreidev/workbuddy2api-panel/internal/scheduler"
 	"github.com/yreidev/workbuddy2api-panel/internal/upstream"
+	"github.com/yreidev/workbuddy2api-panel/internal/usage"
 )
 
 // 路径推导：state 文件为空/相对/绝对三种形态。
@@ -70,13 +73,27 @@ func TestPanelListenPath(t *testing.T) {
 	}
 }
 
-// restartRequiredFields：空字段不列，固定项恒在，upstash 有 URL 或 token 时出现。
+// retentionText / runtimeLogText 启动日志里留存设置的说法。
+func TestRetentionText(t *testing.T) {
+	if got := retentionText(7); got != "保留 7 天" {
+		t.Fatalf("retentionText(7)=%q", got)
+	}
+	if got := retentionText(0); got != "永久保留" {
+		t.Fatalf("retentionText(0)=%q", got)
+	}
+	if got := runtimeLogText(true, 30, 20); got != "保留 30 天、上限 20 MiB" {
+		t.Fatalf("runtimeLogText 开着=%q", got)
+	}
+	if got := runtimeLogText(false, 30, 20); got != "已关闭" {
+		t.Fatalf("runtimeLogText 关着=%q", got)
+	}
+}
+
+// restartRequiredFields：空字段不列，固定项恒在，upstash 有 URL 或 token 时出现；日志留存的键都热生效，不列。
 func TestRestartRequiredFields(t *testing.T) {
 	fixed := []string{
 		"upstream.timeout_seconds", "upstream.header_timeout_seconds", "upstream.idle_timeout_seconds",
-		"upstream.user_agent", "session_sticky.ttl", "session_sticky.gc_interval",
-		"logging.request_archive_enabled", "logging.request_retention_days",
-		"logging.request_archive_max_mb", "server.read_timeout",
+		"upstream.user_agent", "session_sticky.ttl", "session_sticky.gc_interval", "server.read_timeout",
 	}
 	empty := Config{}
 	if got := restartRequiredFields(&empty); !reflect.DeepEqual(got, fixed) {
@@ -90,9 +107,7 @@ func TestRestartRequiredFields(t *testing.T) {
 	full.Upstash.URL = "redis://x"
 	want := append([]string{"listen", "auth_dir", "state_file"},
 		"upstream.timeout_seconds", "upstream.header_timeout_seconds", "upstream.idle_timeout_seconds",
-		"upstream.user_agent", "upstash", "session_sticky.ttl", "session_sticky.gc_interval",
-		"logging.request_archive_enabled", "logging.request_retention_days",
-		"logging.request_archive_max_mb", "server.read_timeout")
+		"upstream.user_agent", "upstash", "session_sticky.ttl", "session_sticky.gc_interval", "server.read_timeout")
 	if got := restartRequiredFields(&full); !reflect.DeepEqual(got, want) {
 		t.Fatalf("完整配置清单不对:\n got %v\nwant %v", got, want)
 	}
@@ -219,7 +234,7 @@ func TestSaveConfig(t *testing.T) {
 
 	t.Run("配置文件读不到", func(t *testing.T) {
 		path, live, p, up, sch := newRig(t, "")
-		_, err := saveConfig([]byte(`{}`), path, live, p, up, sch)
+		_, err := saveConfig([]byte(`{}`), path, live, p, up, sch, logStores{})
 		if err == nil || !strings.Contains(err.Error(), "read current config") {
 			t.Fatalf("err=%v", err)
 		}
@@ -228,7 +243,7 @@ func TestSaveConfig(t *testing.T) {
 	t.Run("提交的不是 JSON 且磁盘不变", func(t *testing.T) {
 		path, live, p, up, sch := newRig(t, base)
 		before, _ := os.ReadFile(path)
-		_, err := saveConfig([]byte(`{broken`), path, live, p, up, sch)
+		_, err := saveConfig([]byte(`{broken`), path, live, p, up, sch, logStores{})
 		if err == nil || !strings.Contains(err.Error(), "parse submitted config") {
 			t.Fatalf("err=%v", err)
 		}
@@ -240,7 +255,7 @@ func TestSaveConfig(t *testing.T) {
 
 	t.Run("磁盘文件不是 JSON 当空配置继续", func(t *testing.T) {
 		path, live, p, up, sch := newRig(t, `{broken`)
-		if _, err := saveConfig([]byte(`{"api_key":"k2"}`), path, live, p, up, sch); err != nil {
+		if _, err := saveConfig([]byte(`{"api_key":"k2"}`), path, live, p, up, sch, logStores{}); err != nil {
 			t.Fatalf("磁盘坏 JSON 不应阻塞保存: %v", err)
 		}
 		if got := live.Load().APIKey; got != "k2" {
@@ -253,6 +268,43 @@ func TestSaveConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("日志留存保存即生效", func(t *testing.T) {
+		path, live, p, up, sch := newRig(t, base)
+		dir := t.TempDir()
+		logs := logStores{
+			requests: reqlog.New(reqlog.Config{Dir: filepath.Join(dir, "request-logs"), Enabled: true, RetentionDays: 7}),
+			task:     logarchive.New(logarchive.Config{Dir: filepath.Join(dir, "runtime-logs"), Prefix: "task", Enabled: true, RetentionDays: 30}),
+			system:   logarchive.New(logarchive.Config{Dir: filepath.Join(dir, "runtime-logs"), Prefix: "system", Enabled: true, RetentionDays: 30}),
+			usage:    usage.New(""),
+		}
+		defer logs.requests.Close()
+		defer logs.task.Close()
+		defer logs.system.Close()
+		restart, err := saveConfig([]byte(`{"logging":{"request_archive_enabled":false,"request_retention_days":0,"request_archive_max_mb":10,
+			"task_log_enabled":false,"task_log_retention_days":3,"task_log_max_mb":2,
+			"system_log_retention_days":0,"system_log_max_mb":4,"usage_retention_days":14}}`), path, live, p, up, sch, logs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range restart {
+			if strings.HasPrefix(f, "logging.") {
+				t.Fatalf("日志留存不应要求重启: %v", restart)
+			}
+		}
+		if a := logs.requests.ArchiveStats(); a.Enabled || a.RetentionDays != 0 || a.MaxBytes != 10<<20 {
+			t.Fatalf("请求记录: %+v", a)
+		}
+		if a := logs.task.Stats(); a.Enabled || a.RetentionDays != 3 || a.MaxBytes != 2<<20 {
+			t.Fatalf("任务日志: %+v", a)
+		}
+		if a := logs.system.Stats(); !a.Enabled || a.RetentionDays != 0 || a.MaxBytes != 4<<20 {
+			t.Fatalf("系统日志（没提交开关，沿用缺省开）: %+v", a)
+		}
+		if u := logs.usage.StoreStats(); u.RetentionDays != 14 {
+			t.Fatalf("用量统计: %+v", u)
+		}
+	})
+
 	t.Run("临时文件写不进去", func(t *testing.T) {
 		path, live, p, up, sch := newRig(t, base)
 		// tmp 路径被目录占住 → os.WriteFile 失败（root 下权限限制不成立，用类型冲突）。
@@ -260,7 +312,7 @@ func TestSaveConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 		before, _ := os.ReadFile(path)
-		_, err := saveConfig([]byte(`{"api_key":"k2"}`), path, live, p, up, sch)
+		_, err := saveConfig([]byte(`{"api_key":"k2"}`), path, live, p, up, sch, logStores{})
 		if err == nil || !strings.Contains(err.Error(), "write config") {
 			t.Fatalf("err=%v", err)
 		}
@@ -275,7 +327,7 @@ func TestSaveConfig(t *testing.T) {
 		stubRename(t, func(oldPath, newPath string) error {
 			return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: syscall.EBUSY}
 		})
-		if _, err := saveConfig([]byte(`{"api_key":"bind-key"}`), path, live, p, up, sch); err != nil {
+		if _, err := saveConfig([]byte(`{"api_key":"bind-key"}`), path, live, p, up, sch, logStores{}); err != nil {
 			t.Fatalf("EBUSY 回退应成功: %v", err)
 		}
 		raw, err := os.ReadFile(path)
@@ -300,7 +352,7 @@ func TestSaveConfig(t *testing.T) {
 		stubRename(t, func(oldPath, newPath string) error {
 			return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: syscall.EXDEV}
 		})
-		_, err := saveConfig([]byte(`{"api_key":"k2"}`), path, live, p, up, sch)
+		_, err := saveConfig([]byte(`{"api_key":"k2"}`), path, live, p, up, sch, logStores{})
 		if err == nil || !strings.Contains(err.Error(), "replace config") || strings.Contains(err.Error(), "bind mount") {
 			t.Fatalf("err=%v", err)
 		}
@@ -322,7 +374,7 @@ func TestSaveConfig(t *testing.T) {
 			}
 			return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: syscall.EBUSY}
 		})
-		_, err := saveConfig([]byte(`{"api_key":"k2"}`), path, live, p, up, sch)
+		_, err := saveConfig([]byte(`{"api_key":"k2"}`), path, live, p, up, sch, logStores{})
 		if err == nil || !strings.Contains(err.Error(), "bind mount fallback") {
 			t.Fatalf("err=%v", err)
 		}
@@ -338,7 +390,7 @@ func TestSaveConfig(t *testing.T) {
 		path, live, p, up, sch := newRig(t, base)
 		before, _ := os.ReadFile(path)
 		incoming := `{"pool":{"credit_floor":9},"schedule":{"checkin_hours":[99]}}`
-		_, err := saveConfig([]byte(incoming), path, live, p, up, sch)
+		_, err := saveConfig([]byte(incoming), path, live, p, up, sch, logStores{})
 		if err == nil || !strings.Contains(err.Error(), "schedule.checkin_hours") {
 			t.Fatalf("err=%v", err)
 		}
@@ -369,7 +421,7 @@ func TestSaveConfig(t *testing.T) {
   "upstream": {"timeout_seconds": 45, "model_optimization": true},
   "model_routes": [{"match": " claude-*haiku* ", "target": "cn:glm-5.2 "}]
 }`
-		got, err := saveConfig([]byte(incoming), path, live, p, up, sch)
+		got, err := saveConfig([]byte(incoming), path, live, p, up, sch, logStores{})
 		if err != nil {
 			t.Fatalf("saveConfig: %v", err)
 		}
