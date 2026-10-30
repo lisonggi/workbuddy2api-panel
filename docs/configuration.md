@@ -114,6 +114,7 @@
 | `upstream.client_name` | 空（= `WorkBuddy`） | 对话请求的归属头。空或 `WorkBuddy` 时按官方桌面端发送 `X-Agent-Purpose`、`X-IDE-Name`、`X-IDE-Type`、`X-IDE-Version`；配 `SaaS` 是旧行为，对话不带这几个头（联网搜索同样不带 `X-IDE-*`），积分、签到这类请求不带 UA。`X-Product` 不受这项影响，带它的请求和官方一样固定为 `SaaS` |
 | `upstream.device_token` | 空 | 设备风控头 `X-Device-Token` 的全局兜底值；单个凭证文件里的 `device_token` 优先。签到、登录的发起授权，以及对话都带（对话只在填了才带——网关在 Linux 做不出真令牌，没填就不发），见[官方客户端对照](official-client.md#几类请求) |
 | `upstream.device_token_file` | 空 | 从文件读取 device token（5 分钟缓存），优先级低于前两者 |
+| `upstream.device_id_list` | 空 | 对话请求头 `X-Device-Id-List`（`{"qimei36":"..."}` 设备指纹）的全局兜底值，填 36 位值或完整 JSON 均可；单个凭证文件里的 `device_id_list` 优先。本 fork 自有：账号入池时若两者都空，按 UID 派生一个稳定值，缺这个头上游会回 11140。官方按 macOS 版对齐、本来不发这个头，见[官方客户端对照](official-client.md#登录) |
 | `upstream.passthrough_ip` | `false` | 是否把客户端 IP 透传给上游 |
 | `upstream.model_optimization` | `false` | 是否允许上游用对话做模型优化。关闭时每条对话都带 `X-Private-Data: true`（不允许），等于在桌面端手动关掉「模型优化」：国际版 5.9.4 没动过这个开关时也是这样，国内版 5.9.3 起没动过时个人号发 `false`（允许）。打开时个人号发 `false`，企业号（有企业 id，或账号类型是 `ultimate`、`exclusive`）仍发 `true`，和国内版 5.9.3 没动过开关时一样。面板「上游与高级 → 出站请求」可改，保存即生效 |
 | `upstream.tls_fingerprint` | `true` | 出站 TLS 握手是否伪装成官方桌面端的 ClientHello（用 uTLS 复刻，降低被按握手指纹识别的概率，见[官方客户端对照](official-client.md#没对齐或没实测的)）。默认开；关掉回落 Go 标准库握手。改 config 后重载生效，对新建连接起用 |
@@ -213,6 +214,7 @@
 | `WB2A_CLIENT_VERSION` / `WB2A_CLI_VERSION` | `upstream.client_version` / `upstream.cli_version` |
 | `WB2A_CLIENT_NAME` | `upstream.client_name` |
 | `WB2A_DEVICE_TOKEN` / `WB2A_DEVICE_TOKEN_FILE` | `upstream.device_token` / `upstream.device_token_file` |
+| `WB2A_DEVICE_ID_LIST` | `upstream.device_id_list` |
 | `WB2A_PASSTHROUGH_IP` | `upstream.passthrough_ip`（布尔） |
 | `WB2A_MODEL_OPTIMIZATION` | `upstream.model_optimization`（布尔） |
 | `WB2A_TLS_FINGERPRINT` | `upstream.tls_fingerprint`（布尔） |

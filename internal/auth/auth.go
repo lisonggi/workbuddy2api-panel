@@ -7,6 +7,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,6 +65,11 @@ type Auth struct {
 	// 手写扁平形 auth 文件可直接写 "device_token": "..."；插件 OAuth 嵌套形
 	// 顶层 device_token 也会被解析（与桌面端共用状态文件的部署方式）。
 	DeviceToken string
+
+	// DeviceIDList X-Device-Id-List 头的取值（qimei36 设备指纹），来源 auth 文件的
+	// device_id_list 键。缺省为空 = 入池时按 UID 自动派生（见 EnsureDeviceIDList）。
+	// 想用真实桌面端指纹时，手工写进文件即可（非空则不被覆盖）。
+	DeviceIDList string
 
 	// proxy 号绑的出站代理（代理池，见 internal/proxies），落盘于顶层 proxy 对象，嵌套形与扁平形
 	// 共用。零值 = 没绑，走默认线路（环境变量里的代理或直连）。读写都持 a.mu（ProxyBinding /
@@ -329,6 +336,34 @@ func expiresAtSeconds(v int64) int64 {
 	return v
 }
 
+// DeriveDeviceIDList 按 UID 派生一个稳定的 device_id_list 值，
+// 形如 {"qimei36":"<36 位 hex>"}。
+//
+// 真实 qimei36 由官方客户端 qimei.dll（腾讯 Beacon）在本机生成，网关在 Linux 造不出来；
+// 上游只校验「X-Device-Id-List 头存在且形状合法」，不校验内容，所以用派生值即可。
+//
+// 关键性质：**纯函数，只由 UID 决定**。因此不需要持久化——重启、刷新令牌、重新导入
+// 得到的都是同一个值，不存在「字段被抹掉」或「需要迁移老文件」的问题。
+// 用 UID 而非手机号作种子：换绑手机号设备指纹不变，账号注销后重新注册则拿到新指纹。
+func DeriveDeviceIDList(uid string) string {
+	sum := sha256.Sum256([]byte("workbuddy2api/qimei36/" + uid))
+	return `{"qimei36":"` + hex.EncodeToString(sum[:])[:36] + `"}`
+}
+
+// EnsureDeviceIDList 在 device_id_list 为空时按 UID 派生补齐，返回是否发生变更（仅内存，不落盘）。
+func (a *Auth) EnsureDeviceIDList() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if strings.TrimSpace(a.DeviceIDList) != "" {
+		return false
+	}
+	a.DeviceIDList = DeriveDeviceIDList(a.UID)
+	return true
+}
+
 // Parse 兼容两种磁盘形态：
 //
 //	嵌套形 {"auth":{...},"account":{...}}  （插件 OAuth 输出）
@@ -365,6 +400,8 @@ func Parse(raw []byte) (*Auth, error) {
 			} `json:"account"`
 			// DeviceToken 顶层 device_token（嵌套形与扁平形共用；手写时无需嵌进 auth 对象）。
 			DeviceToken string `json:"device_token"`
+			// DeviceIDList 顶层 device_id_list（X-Device-Id-List 的设备指纹），见 Auth.DeviceIDList。
+			DeviceIDList string `json:"device_id_list"`
 			// Proxy、ProxyURL 顶层 proxy、proxy_url（两种形状共用），见 Auth.proxy。
 			Proxy    ProxyBinding `json:"proxy"`
 			ProxyURL string       `json:"proxy_url"`
@@ -388,6 +425,7 @@ func Parse(raw []byte) (*Auth, error) {
 			IDP:                n.Account.IDP,
 			TokenType:          n.Auth.TokenType,
 			DeviceToken:        n.DeviceToken,
+			DeviceIDList:       n.DeviceIDList,
 			proxy:              n.Proxy,
 			proxyURL:           strings.TrimSpace(n.ProxyURL),
 		}
@@ -407,6 +445,7 @@ func Parse(raw []byte) (*Auth, error) {
 			IDP            *string      `json:"idp"`
 			TokenType      *string      `json:"tokenType"`
 			DeviceToken    string       `json:"device_token"`
+			DeviceIDList   string       `json:"device_id_list"`
 			Proxy          ProxyBinding `json:"proxy"`
 			ProxyURL       string       `json:"proxy_url"`
 		}
@@ -429,6 +468,7 @@ func Parse(raw []byte) (*Auth, error) {
 			IDP:                f.IDP,
 			TokenType:          f.TokenType,
 			DeviceToken:        f.DeviceToken,
+			DeviceIDList:       f.DeviceIDList,
 			proxy:              f.Proxy,
 			proxyURL:           strings.TrimSpace(f.ProxyURL),
 		}
@@ -488,6 +528,10 @@ func (a *Auth) documentLocked() map[string]any {
 	// （保持与插件 OAuth 输出形状一致，插件读取忽略未知键）。
 	if a.DeviceToken != "" {
 		doc["device_token"] = a.DeviceToken
+	}
+	// DeviceIDList 非空才写回：与 DeviceToken 同理，避免给无该键的旧文件引入空键。
+	if a.DeviceIDList != "" {
+		doc["device_id_list"] = a.DeviceIDList
 	}
 	// 绑了代理才写 proxy；proxy_url 只是导入时的线索，不写回（认出的代理已记在 proxy 里）。
 	if !a.proxy.Empty() {

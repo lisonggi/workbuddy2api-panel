@@ -736,6 +736,10 @@ type Client struct {
 	// 解析优先级：auth.Auth.DeviceToken > DeviceToken（config）> DeviceTokenFile（文件）。
 	DeviceToken string
 
+	// DeviceIDList X-Device-Id-List 设备指纹头全局兜底：config upstream.device_id_list。
+	// 解析优先级：auth.Auth.DeviceIDList（每号）> DeviceIDList（config）。空 = 不注入该头。
+	DeviceIDList string
+
 	// DeviceTokenFile 设备 token 文件路径兜底（宿主落盘的桌面端 token，5 分钟读取缓存）。
 	DeviceTokenFile string
 
@@ -1163,6 +1167,7 @@ func (c *Client) refreshTokenOnce(a *auth.Auth) error {
 		EnterpriseID:       a.EnterpriseID,
 		Nickname:           a.Nickname,
 		DeviceToken:        a.DeviceToken,
+		DeviceIDList:       a.DeviceIDList,
 		DepartmentFullName: a.DepartmentFullName,
 		DepartmentSet:      a.DepartmentSet,
 		AccountType:        a.AccountType,

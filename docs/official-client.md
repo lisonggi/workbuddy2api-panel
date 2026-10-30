@@ -257,7 +257,7 @@ npm 上更新的 CLI 只作对照，取值以安装包内置的版本为准：�
 
 轮询令牌：官方除了 `11217` 继续等，其他结果（别的业务码、HTTP 错误、网络错误）都当登录失败，不再轮询。网关的面板遇到这些照旧显示「等待授权完成」，前端每 3 秒继续查，直到 15 分钟后登录会话过期，和官方不同。
 
-`X-Device-Id-List`：官方拿得到设备的 qimei36 时才发（发起授权和对话请求都是）。qimei36 由腾讯闭源的设备标识 SDK 算出（`@tencent/qimei-node`，Windows 上是 `qimei.dll`，主进程起一个 `qimei-helper.js` 去取）。下载的两个 macOS 安装包里 `qimei-node` 只有 `package.json`、没有原生库，也没有打进 `qimei-helper.js`，所以 macOS 版官方客户端拿不到 qimei36，这个头一直不发，上报事件里也没有 `qimei36`。网关按 macOS 版对齐（见[设备与平台](#设备与平台)），同样不发。
+`X-Device-Id-List`：官方拿得到设备的 qimei36 时才发（发起授权和对话请求都是）。qimei36 由腾讯闭源的设备标识 SDK 算出（`@tencent/qimei-node`，Windows 上是 `qimei.dll`，主进程起一个 `qimei-helper.js` 去取）。下载的两个 macOS 安装包里 `qimei-node` 只有 `package.json`、没有原生库，也没有打进 `qimei-helper.js`，所以 macOS 版官方客户端拿不到 qimei36，这个头一直不发，上报事件里也没有 `qimei36`。网关按 macOS 版对齐（见[设备与平台](#设备与平台)），同样不发。**本 fork 例外**：对话请求会带这个头（值按 UID 派生，或凭证文件 / config 显式指定），因为实测缺它会回 11140 request illegal，见[配置](configuration.md#上游)。
 
 2026-10-20 生产实测：两个域按上表发起授权、轮询（未登录时 `code=11217`）、取账号都正常；按上面的规则修饰过的授权页两个域都返回 200；国际版的账号列表是 `data.accounts[]`，里面有本号的 uid。同日用国内版走完了扫码登录：扫码确认后轮询拿到令牌（有效期约 28 天）和账号，按面板的方式落盘、读回，再拉模型目录、查积分包都成功。1.1.2 以前是旧版 CodeBuddy CLI 的形状（UA `CLI/2.63.2 CodeBuddy/2.63.2`、带 `Origin` 和 `Referer`、`platform=CLI`）。
 
