@@ -134,6 +134,33 @@ func (c *Client) resolveDeviceToken(a *auth.Auth) string {
 // 服务每次提问前现取图灵盾设备令牌加在模型请求上（取不到时改发 X-Device-Token-Error，两样都没有
 // 时都不发）。网关在 Linux 做不出真令牌，对话只在使用者填了 device_token 时照发，没填就不发——对应
 // 官方「两样都没有」的状态，不造 X-Device-Token-Error，见 docs/official-client.md「几类请求」。
+// resolveDeviceIDList 解析本次请求的 X-Device-Id-List 取值。
+// 优先级：auth.Auth.DeviceIDList（每号）> Client.DeviceIDList（config）。皆空返回空串。
+func (c *Client) resolveDeviceIDList(a *auth.Auth) string {
+	if a != nil && a.DeviceIDList != "" {
+		return a.DeviceIDList
+	}
+	if c != nil && c.DeviceIDList != "" {
+		return c.DeviceIDList
+	}
+	return ""
+}
+
+// injectDeviceIDList 注入 X-Device-Id-List（仅当取值非空）。官方桌面端由
+// WorkbuddyAuthStateHeaderProvider 发出，形如 {"qimei36":"<36 位>"}，值由 qimei.dll
+// （腾讯 Beacon）在本机生成；网关造不出真实值，入池时按 UID 派生（见 auth.DeriveDeviceIDList）。
+// 已是 JSON 则原样发送。
+func (c *Client) injectDeviceIDList(req *http.Request, a *auth.Auth) {
+	v := strings.TrimSpace(c.resolveDeviceIDList(a))
+	if v == "" {
+		return
+	}
+	if !strings.HasPrefix(v, "{") {
+		v = `{"qimei36":"` + v + `"}`
+	}
+	req.Header.Set("X-Device-Id-List", v)
+}
+
 func (c *Client) injectDeviceToken(req *http.Request, a *auth.Auth) {
 	if tok := c.resolveDeviceToken(a); tok != "" {
 		req.Header.Set("X-Device-Token", tok)
@@ -272,6 +299,8 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	// 做不出真令牌，只在使用者填了 device_token（账号 / config / 文件）时照发，没填就不发——
 	// 对应官方「令牌和错误码都没有时都不发」的状态，不凭空造 X-Device-Token-Error。
 	c.injectDeviceToken(req, a)
+	// X-Device-Id-List：qimei36 设备指纹（入池时按 UID 派生，或 auth 文件/config 显式指定）。
+	c.injectDeviceIDList(req, a)
 	// X-Expert-Id 是官方专家插件激活时追加的内部请求头，专家团另带 X-Expert-Team-Task: true
 	// （桌面端 applyPreparedExpertSettings：expertType === "team"）；普通对话都不带。
 	if meta.ExpertID != "" {

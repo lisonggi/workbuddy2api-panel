@@ -216,6 +216,7 @@ func run(ctx context.Context, cfg *Config, cfgPath string, upd *selfupdate.Updat
 	// 出站 TLS 指纹伪装（默认开）：关掉回落标准库 TLS。改这项要重启。
 	upstream.SetTLSMimic(cfg.Upstream.TLSFingerprint)
 	up.DeviceTokenFile = cfg.Upstream.DeviceTokenFile
+	up.DeviceIDList = cfg.Upstream.DeviceIDList
 	up.PassthroughIP = cfg.Upstream.PassthroughIP
 	up.ModelOptimization.Store(cfg.Upstream.ModelOptimization)
 	// global realm 路由（config global 段）：上游侧开关（第一道闸）+ base 覆盖；

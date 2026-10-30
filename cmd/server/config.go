@@ -179,6 +179,10 @@ type Config struct {
 		DeviceToken string `json:"device_token"`
 		// DeviceTokenFile device token 文件路径兜底（宿主落盘的桌面端 token，5 分钟读取缓存）。
 		DeviceTokenFile string `json:"device_token_file"`
+		// DeviceIDList X-Device-Id-List 设备指纹头全局兜底；空 = 不注入该头（每号仍会按 UID 自动派生）。
+		// 官方桌面端发 {"qimei36":"..."} 形状；此处填 36 位值或完整 JSON 均可。每号 auth 文件的
+		// device_id_list 键优先于本项。
+		DeviceIDList string `json:"device_id_list"`
 		// PassthroughIP 是否透传客户端 IP 给上游（默认 false，反代安全边界）。
 		PassthroughIP bool `json:"passthrough_ip"`
 		// ModelOptimization 允许上游用对话做模型优化（默认 false）：false 时对话一律带
@@ -503,6 +507,9 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("WB2A_DEVICE_TOKEN_FILE"); v != "" {
 		c.Upstream.DeviceTokenFile = v
+	}
+	if v := os.Getenv("WB2A_DEVICE_ID_LIST"); v != "" {
+		c.Upstream.DeviceIDList = v
 	}
 	if v := os.Getenv("WB2A_PASSTHROUGH_IP"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {

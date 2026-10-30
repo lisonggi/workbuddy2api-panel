@@ -432,6 +432,14 @@ func (p *Pool) Remove(uid string) *auth.Auth {
 // upsertLocked 更新或插入单个账号；已存在则只换凭证、保留 credits/cooling 状态。
 // 调用方必须已持有 p.mu；Add 与 SyncToDir 共用此 upsert 逻辑。
 func (p *Pool) upsertLocked(a *auth.Auth) {
+	// device_id_list 的唯一补齐点。
+	//
+	// 账号进入可调度状态只有这几条路：面板授权、文件导入、启动扫描（SyncToDir）——
+	// 它们最终都落到 upsertLocked，所以在这里补一次即可，不必在每条路上各写一遍。
+	// 缺这个字段的号上游必回 11140，等于白注册。
+	//
+	// 值由 UID 确定性派生（auth.DeriveDeviceIDList），不落盘也不会丢：重启/刷新令牌后重新算出来一样。
+	a.EnsureDeviceIDList()
 	if e, ok := p.byUID[a.UID]; ok {
 		e.a = a // 保留 credits/cooling 状态
 		return
