@@ -63,6 +63,7 @@
     "client_name": "",
     "device_token": "",
     "device_token_file": "",
+    "device_id_list": "",
     "passthrough_ip": false,
     "model_optimization": false,
     "tls_fingerprint": true
