@@ -71,45 +71,73 @@ go test ./...                       # 先构建前端，面板相关的测试要
 - 每个提交都要能编译、测试通过。
 - 发版见 [docs/releasing.md](docs/releasing.md)：推送到 `main` 就发版；使用者看得到的改动，要在最后的 `chore(release): x.y.z` 提交里升 `cmd/server/main.go` 的 `appVersion`，并写 `docs/CHANGELOG.md`。
 
-## 本 fork 的线上部署（运维记录）
+## 本 fork 的线上部署与运维（2026-11 实测）
 
-线上跑的是本仓库的 fork，部署在自建服务器上，对外压在一个独立的 nginx 网关后面。这一节记录拓扑、本机配置和踩过的坑，换机器时照着做。**真实的域名、IP、面板 api_key、代理密码都不写进仓库**（见「写代码的规矩」），放在部署机的本地文件里。
+本仓库是 <https://github.com/yreidev/workbuddy2api-panel> 的 fork（`lisonggi/workbuddy2api-panel`），`main` = 官方最新 tag + **一处定制提交**。
+线上部署在自建服务器上，公网入口是同一台机器上的 nginx 容器。**真实的域名、IP、面板 api_key、代理密码都不写进仓库**（见「写代码的规矩」），只写在部署机的本地文件里。
 
-### 拓扑
+### 拓扑（以部署机实测为准）
 
-- 入口：宿主上的独立网关容器（`nginx:1.27-alpine`，host 网络，占 80/443），配置在 `/opt/gateway/`：`nginx.conf`、`conf.d/*.conf`、证书 `/opt/certs/`。
-  - 一个站点 = `conf.d/NN-<项目>.conf` 里写 `server_name` + `proxy_pass http://127.0.0.1:<端口>`；`default_server` 只在 `00-default.conf` 声明一次。
-  - 改完：`docker exec <网关容器> nginx -t && docker exec <网关容器> nginx -s reload`，不动业务容器。
-- 业务：本仓库 clone 到 `/opt/<项目>`，`docker compose` 起容器，**只发布到 `127.0.0.1:<端口>`**，不直接对外。
-- 本项目的片段：80 跳 301 到 https，443 反代到 `127.0.0.1:7863`；因为对话是 SSE 长连接，必须 `proxy_buffering off`、`proxy_http_version 1.1`、`proxy_read_timeout` 放长（3600s），请求体上限按长上下文放宽（64m）。
+- 入口：服务器上的 `nginx` 容器（`nginx:alpine`，compose 项目 `project`），配置与站点目录都从宿主机挂入：`/root/project/nginx/{nginx.conf,conf.d,html,certs,logs}`。
+  本项目的 vhost 是 `conf.d/wb2api.conf` + `conf.d/wb2api-locations.inc`：80 跳 301 到 https，443 反代到 `http://workbuddy2api:7863`；对话是 SSE 长连接，location 里必须有 `proxy_buffering off`、`proxy_http_version 1.1`、放长的 `proxy_read_timeout`。
+- 业务：容器 `workbuddy2api`，部署目录 `/root/workbuddy2api`（**不是 git 仓库**，只有 `docker-compose.yml`、`auths/`、`data/`、`README-DEPLOY.md`），加入 `project_default` 网络，只在该网络内用容器名暴露 7863，不直接对外开端口。
+- 内部调用方（比公网更要紧）：new-api 的渠道 `cbcn`(#151)、`glm-5.3-flash-cbcn`(#187)、`cbcn_eco`(#190) 直连 `http://workbuddy2api:7863`；所以 `workbuddy2api` 这个名字必须一直可解析。
+- 云厂商安全组通常只放行 22/80/443，`7863` 这类业务端口外网不通；对外一律走 nginx。
 
-### 本机配置（不在 git 里，重建时要重做）
+### 定制内容（不要丢）
 
-- `docker-compose.override.yml`：只写时区和 `ports: !override "127.0.0.1:7863:7863"`（base 里的 `7863:7863` 是 0.0.0.0，必须用 `!override` 整个替换）。**不要**在这里写 proxy 环境变量。
-- `data/proxies.json`：`settings.require_bound = true`（只许走号的代理），并有一个池设为 cn/global 默认池。
-- `api_key.txt`：面板 api_key（`config.json` 里的 `api_key`，面板用 Bearer 鉴权）。
-- 代理（含密码）只在面板「代理」页维护，不进仓库也不进 config。
+`X-Device-Id-List` 设备指纹：`internal/auth` 按 UID 派生（`DeriveDeviceIDList`）→ `internal/pool` 入池时写入 auth → `internal/upstream/headers.go` 在对话请求上注入头（允许 JSON 或 36 位值，自动包成 `{"qimei36":...}`）；`upstream.device_id_list`（config）与 `WB2A_DEVICE_ID_LIST`（env）是兜底，`auth` 文件里的 `device_id_list` 优先。
+上游按 macOS 版对齐本来不发这个头（见 `docs/official-client.md`「登录」），实测缺它上游回 `11140 request illegal`。
+相对官方的差异应始终只有 9 个文件 / 约 98 行：`cmd/server/{config,main}.go`、`config.example.json`、`docs/{configuration,official-client}.md`、`internal/auth/auth.go`、`internal/pool/pool.go`、`internal/upstream/{client,headers}.go`。
 
-### 已知坑
+### 跟随上游升级
 
-1. **面板改代理池设置不落盘**（上游 1.13.1）：`internal/proxies` 的 `UpdateSettings` 改完只改内存，没设 `t.saveFile`，所以重启后「只许走号的代理」等开关会回到文件里的旧值。要么直接改 `data/proxies.json`，要么给它补 `t.saveFile = true`（一行，附测试）。
-2. **面板「一键更新」会冲掉本 fork**：`internal/selfupdate` 里下载地址写死上游 release，装了就把官方二进制替换进来、丢设备指纹改动。长期部署建议 `panel.update_check: false`。
-3. **云厂商安全组**通常只放行 22/80/443，`7863`、`8080`、`8443` 这类端口外网不通；所以对外一律走 nginx，不要指望直接开业务端口。
-4. **灰云（DNS only）**：客户端直连服务器，真实 IP 由 nginx 的 `X-Real-IP` 传；`upstream.passthrough_ip` 保持 `false`，别把反代 IP 当客户端 IP 转给上游。
-5. **代理只走池**：开了 `require_bound` 后，没绑池的号不接请求、不跑定时任务、命令行工具跳过；池里没有可用代理的号会「等代理」。钉 IP 重发也走号的代理；HTTPDNS 查询本身按设计直连（不带账号凭证）。
-6. **容器健康检查**在没加账号时是 `unhealthy`：`/healthz` 返回 503 属于设计行为，加第一个号后自动恢复。
+```bash
+git remote add upstream git@github.com:yreidev/workbuddy2api-panel.git   # 只需一次
+git fetch --tags upstream
+git rebase upstream/main        # 定制提交在顶部重放，通常无冲突
+# 验证：版本号、差异规模、定制代码都在
+grep -n 'appVersion' cmd/server/main.go | head -1
+git diff --stat upstream/main..HEAD
+# 推送：变基后与 origin/main 分叉，需要
+git push --force-with-lease origin main
+```
+
+- 冲突通常只在 `internal/auth/auth.go`：上游新增的字段（如代理绑定 `proxy`/`proxy_url`）与本 fork 的 `DeviceIDList` 并存即可。
+- HTTPS 访问 GitHub 在本机可能被重置，用 SSH remote。
+
+### 构建与发布（蓝绿，容器名交接）
+
+- 应用是**单写者**：`data/*.json`（`config.json`、`api_keys.json`、`sessions.json`、`usage.json`、`state.json`）由唯一进程持有；**绝不能同时跑两个实例**，否则状态与计费记录会互相覆盖。
+- 因此蓝绿用「容器名交接」而不是改 nginx 上游：停止线上的 `workbuddy2api` → 改名为 `workbuddy2api-blue-<ts>`（回滚锚点，保留）→ 启动候选 `workbuddy2api-green` → 改名为 `workbuddy2api`。这样 nginx 与内部调用方都不用动，回滚也不需要迁移状态。代价是一次 5–15s 中断（实测约 6s）。
+- 前置准备：`npm ci && npm run build`（tsc+eslint+vitest+vite，产物进 `internal/panel/dist`，由 `go:embed` 编入）→ WSL 交叉编译 4 个 linux/amd64 二进制（`-trimpath -s -w`，`CGO_ENABLED=0`）→ 在服务器上叠加现有镜像构建 `workbuddy2api-panel:<版本>-deviceid`（`FROM` 当前线上镜像，只 `COPY` 二进制与脚本）。
+- 镜像自检：`--version`、镜像内 `/app/wb2api` 的 sha256 与构建产物一致、`grep -a X-Device-Id-List /app/wb2api` 命中。
+- 预演（无停机）：复制 `data/`、`auths/` 到临时目录，副本 `config.json` 里把 `schedule.*_enabled` 全关（避免与线上重复签到/上报），起独立容器验 `/healthz`、`/readyz`、`/panel/`、`/v1/models` 401，验完清理。
+- 发布脚本与记录在服务器 `/root/project/redeploy-YYYYMMDD-wb2api/` 与 `/root/project/BLUEGREEN-YYYYMMDD-wb2api.md`（含切流、回滚、看门狗、自动回滚触发条件）。
+- 切流完成后，运行中的 `workbuddy2api` 容器是被改名接管的，**不再由 compose 的 `container_name` 管理**：不要直接 `docker compose up -d`（会重建容器、撞名或回退到旧镜像）；下次发布继续用同一套「改名交接」脚本。旧版本留作回滚锚点：容器 `workbuddy2api-blue-<ts>`（已停止）+ 镜像 `workbuddy2api-panel:<旧版本>`，观察稳定前不要删。
+- Windows 检出（`core.autocrlf=true`）里跑 `go test ./...` 会假失败（`LICENSE 不是 AGPL-3.0 原文` + 许可头行尾），以 WSL 的 LF 检出为准。
+
+### 数据与凭据（只记位置，不记值）
+
+- `/root/workbuddy2api/{data,auths}` → 容器内 `/app/{data,auths}`，属主 10001；`data/` 约 114MB（含 `sessions.json`、`usage.json`），备份时整目录打包。
+- 面板 api_key 在 `data/api_keys.json`（容器内 `config.json` 的 `api_key`），另有一份 `/root/.secrets/wb2api_api_key.txt`；代理（含密码）只在面板「代理」页维护，`data/proxies.json`。
+- 部署机上 nginx 侧配置：`/root/project/nginx/conf.d/wb2api.conf` 与 `wb2api-locations.inc`。
+
+### 已知坑（2026-11 在 1.13.2 上复核）
+
+1. **面板改代理池设置不落盘**：`internal/proxies` 的 `Registry.UpdateSettings` 只改内存、没设 `tx.saveFile`，重启后「只许走号的代理」等开关回到 `data/proxies.json` 里的旧值。要么直接改 `data/proxies.json`，要么补 `t.saveFile = true`（一行，附测试）。上游 1.13.1 起就存在，1.13.2 仍在。
+2. **面板「一键更新」会冲掉本 fork**：`internal/selfupdate` 的 `DefaultDownloadBase` 写死 `https://github.com/yreidev/workbuddy2api-panel/releases/download/v`，一键更新会把官方二进制装进来、丢掉设备指纹改动。长期部署把 `panel.update_check` 设为 `false`（关掉检查就没有更新按钮）。
+3. **无账号时 `/healthz` 返回 503 是设计行为**：空池 `healthy=0`，加第一个号后自动恢复；`/readyz` 与账号数无关，停机 drain 时才是 503。
+4. **代理只走池**：开 `settings.require_bound = true` 后，没绑池的号不接请求、不跑定时任务；池里没有可用代理的号会「等代理」；钉 IP 重发也走号的代理，HTTPDNS 查询本身按设计直连（不带账号凭证）。
+5. **灰云（DNS only）**：客户端直连服务器，真实 IP 由 nginx 的 `X-Real-IP` 传；`upstream.passthrough_ip` 保持 `false`，别把反代 IP 当客户端 IP 转给上游。
 
 ### 常用命令
 
 ```bash
-cd /opt/<项目>
-git pull && docker compose up -d --build     # 更新并重建
-docker compose ps && docker compose logs --tail 50
-curl -sk https://<入口域名>/healthz          # 无号 503，有号 200
-docker compose restart                        # 只重启，不重建（改了 env 必须 up -d 重建）
+ssh root@<生产机> 'docker ps --filter name=workbuddy --format "{{.Names}} | {{.Status}} | {{.Image}}"'
+docker inspect -f '{{.Config.Image}} {{.State.Health.Status}}' workbuddy2api
+docker exec workbuddy2api /app/wb2api --version
+curl -s -o /dev/null -w '%{http_code}\n' https://<面板域名>/panel/          # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://<面板域名>/v1/models       # 401 属正常（鉴权链在）
+docker exec newapi-server-green wget -qO- http://workbuddy2api:7863/healthz  # 内部调用路径
 ```
-
-### 本 fork 与上游的差异
-
-- `feat(net): 对话带 X-Device-Id-List，按 UID 派生设备指纹`：`auth.Auth.DeviceIDList`（解析/写回 `device_id_list`）、`auth.DeriveDeviceIDList`（按 UID 派生 qimei36）、`pool.upsertLocked` 入池时补齐、`ChatHeaders` 注入、`upstream.device_id_list` 全局兜底。上游按 macOS 版对齐本来不发这个头（见 `docs/official-client.md`「登录」），实测缺它上游回 `11140 request illegal`。
-- 同步上游：`git fetch upstream && git rebase upstream/main`（`upstream` = `yreidev/workbuddy2api-panel`）。冲突通常只在 `internal/auth/auth.go`：上游新增的字段（如代理绑定 `proxy`/`proxy_url`）与本 fork 的 `DeviceIDList` 并存即可。
