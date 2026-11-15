@@ -70,3 +70,46 @@ go test ./...                       # 先构建前端，面板相关的测试要
 - 提交规则见 [docs/commits.md](docs/commits.md)：中文 Conventional Commits，scope 从表里选，标题不超过 50 字，提交要签名。本地钩子：`git config core.hooksPath .githooks`。
 - 每个提交都要能编译、测试通过。
 - 发版见 [docs/releasing.md](docs/releasing.md)：推送到 `main` 就发版；使用者看得到的改动，要在最后的 `chore(release): x.y.z` 提交里升 `cmd/server/main.go` 的 `appVersion`，并写 `docs/CHANGELOG.md`。
+
+## 本 fork 的线上部署（运维记录）
+
+线上跑的是本仓库的 fork，部署在自建服务器上，对外压在一个独立的 nginx 网关后面。这一节记录拓扑、本机配置和踩过的坑，换机器时照着做。**真实的域名、IP、面板 api_key、代理密码都不写进仓库**（见「写代码的规矩」），放在部署机的本地文件里。
+
+### 拓扑
+
+- 入口：宿主上的独立网关容器（`nginx:1.27-alpine`，host 网络，占 80/443），配置在 `/opt/gateway/`：`nginx.conf`、`conf.d/*.conf`、证书 `/opt/certs/`。
+  - 一个站点 = `conf.d/NN-<项目>.conf` 里写 `server_name` + `proxy_pass http://127.0.0.1:<端口>`；`default_server` 只在 `00-default.conf` 声明一次。
+  - 改完：`docker exec <网关容器> nginx -t && docker exec <网关容器> nginx -s reload`，不动业务容器。
+- 业务：本仓库 clone 到 `/opt/<项目>`，`docker compose` 起容器，**只发布到 `127.0.0.1:<端口>`**，不直接对外。
+- 本项目的片段：80 跳 301 到 https，443 反代到 `127.0.0.1:7863`；因为对话是 SSE 长连接，必须 `proxy_buffering off`、`proxy_http_version 1.1`、`proxy_read_timeout` 放长（3600s），请求体上限按长上下文放宽（64m）。
+
+### 本机配置（不在 git 里，重建时要重做）
+
+- `docker-compose.override.yml`：只写时区和 `ports: !override "127.0.0.1:7863:7863"`（base 里的 `7863:7863` 是 0.0.0.0，必须用 `!override` 整个替换）。**不要**在这里写 proxy 环境变量。
+- `data/proxies.json`：`settings.require_bound = true`（只许走号的代理），并有一个池设为 cn/global 默认池。
+- `api_key.txt`：面板 api_key（`config.json` 里的 `api_key`，面板用 Bearer 鉴权）。
+- 代理（含密码）只在面板「代理」页维护，不进仓库也不进 config。
+
+### 已知坑
+
+1. **面板改代理池设置不落盘**（上游 1.13.1）：`internal/proxies` 的 `UpdateSettings` 改完只改内存，没设 `t.saveFile`，所以重启后「只许走号的代理」等开关会回到文件里的旧值。要么直接改 `data/proxies.json`，要么给它补 `t.saveFile = true`（一行，附测试）。
+2. **面板「一键更新」会冲掉本 fork**：`internal/selfupdate` 里下载地址写死上游 release，装了就把官方二进制替换进来、丢设备指纹改动。长期部署建议 `panel.update_check: false`。
+3. **云厂商安全组**通常只放行 22/80/443，`7863`、`8080`、`8443` 这类端口外网不通；所以对外一律走 nginx，不要指望直接开业务端口。
+4. **灰云（DNS only）**：客户端直连服务器，真实 IP 由 nginx 的 `X-Real-IP` 传；`upstream.passthrough_ip` 保持 `false`，别把反代 IP 当客户端 IP 转给上游。
+5. **代理只走池**：开了 `require_bound` 后，没绑池的号不接请求、不跑定时任务、命令行工具跳过；池里没有可用代理的号会「等代理」。钉 IP 重发也走号的代理；HTTPDNS 查询本身按设计直连（不带账号凭证）。
+6. **容器健康检查**在没加账号时是 `unhealthy`：`/healthz` 返回 503 属于设计行为，加第一个号后自动恢复。
+
+### 常用命令
+
+```bash
+cd /opt/<项目>
+git pull && docker compose up -d --build     # 更新并重建
+docker compose ps && docker compose logs --tail 50
+curl -sk https://<入口域名>/healthz          # 无号 503，有号 200
+docker compose restart                        # 只重启，不重建（改了 env 必须 up -d 重建）
+```
+
+### 本 fork 与上游的差异
+
+- `feat(net): 对话带 X-Device-Id-List，按 UID 派生设备指纹`：`auth.Auth.DeviceIDList`（解析/写回 `device_id_list`）、`auth.DeriveDeviceIDList`（按 UID 派生 qimei36）、`pool.upsertLocked` 入池时补齐、`ChatHeaders` 注入、`upstream.device_id_list` 全局兜底。上游按 macOS 版对齐本来不发这个头（见 `docs/official-client.md`「登录」），实测缺它上游回 `11140 request illegal`。
+- 同步上游：`git fetch upstream && git rebase upstream/main`（`upstream` = `yreidev/workbuddy2api-panel`）。冲突通常只在 `internal/auth/auth.go`：上游新增的字段（如代理绑定 `proxy`/`proxy_url`）与本 fork 的 `DeviceIDList` 并存即可。
